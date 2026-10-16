@@ -223,6 +223,13 @@ when the player leaves). Verified: client connected to `srcds -insecure +sv_lan 
 inventory and the pistol in game slot 2. (The server binds to the LAN address, so `connect 192.168.1.2:27020`, not
 127.0.0.1.)
 
+## Boxes on demand
+
+The weight is the limit: `slots` (24) and `weapon_slots` (8) are only caps (an ini from before, `layout` < 4, is raised
+to them). The inventory keeps all its boxes (numbers stay put, items never move), and the HUD draws the item boxes up
+to the last one in use plus one free box, and the weapon boxes up to the last one in use (`shown_items` /
+`shown_weapons`); the grid moves up and down with them.
+
 ## Carried items and switching
 
 A game-slot-5 item (gas can, tanks, fireworks, gnome, cola) is dropped by the game as soon as the hands switch to

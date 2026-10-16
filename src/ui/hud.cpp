@@ -232,6 +232,27 @@ namespace hud
             return true;
         }
 
+        // Boxes on demand: the weight is what limits, so the HUD shows the item boxes up to the last one in use and one
+        // free box after it (where the next item can go), and the weapon boxes up to the last one in use.  A box emptied
+        // in the middle stays (items keep their boxes); the grid shrinks again when the last ones empty.
+        int shown_items(const inv::Inventory& inventory)
+        {
+            int last = -1;
+            for (int i = 0; i < inventory.slot_count(); ++i)
+                if (!inventory.slot(i).empty())
+                    last = i;
+            return std::min(inventory.slot_count(), last + 2);
+        }
+
+        int shown_weapons(const inv::Inventory& inventory)
+        {
+            int shown = 0;
+            for (int k = 0; k < inventory.weapon_slot_count(); ++k)
+                if (!inventory.slot(inventory.first_weapon_slot() + k).empty())
+                    shown = k + 1;
+            return shown;
+        }
+
         // A melee script name as a title: "frying_pan" -> "Frying Pan" ("fireaxe" stays "Fireaxe").
         std::string melee_title(const std::string& script)
         {
@@ -309,7 +330,7 @@ namespace hud
             const float scale = cfg.hud_scale * std::max(1.f, display.y / 900.f);
             const int size = static_cast<int>(40.f * scale);
             const int gap = static_cast<int>(4.f * scale);
-            const int n = inventory.slot_count();
+            const int n = shown_items(inventory);
             const int m = hotbar_native(session);
             const int wide = 2 * size; // the gun boxes: the game's gun icons are 2:1 to 4:1
             const int total = m * wide + n * size + (m + n - 1) * gap;
@@ -501,7 +522,7 @@ namespace hud
             // throwable box below it started 6.7 units lower), one under the other where the panel's item boxes began.
             const float weapon_w = 53.3f * unit, weapon_h = 20.f * unit, weapon_pitch = 26.7f * unit;
             const float weapons_top = display.y * 0.5f - 22.7f * unit;
-            for (int k = 0; k < inventory.weapon_slot_count(); ++k)
+            for (int k = 0; k < shown_weapons(inventory); ++k)
             {
                 const int i = inventory.first_weapon_slot() + k;
                 const inv::Stack& stack = inventory.slot(i);
@@ -548,10 +569,10 @@ namespace hud
 
             // the item grid, under the weapon boxes
             const float first_bottom = display.y * 0.5f + 54.f * unit - 2.f * pitch_f +
-                                       static_cast<float>(inventory.weapon_slot_count()) * weapon_pitch; // the bottom of row 0
+                                       static_cast<float>(shown_weapons(inventory)) * weapon_pitch; // the bottom of row 0
 
             const ImU32 green = IM_COL32(142, 214, 57, 255);
-            const int n = inventory.slot_count();
+            const int n = shown_items(inventory);
             for (int i = 0; i < n; ++i)
             {
                 const Cell cell = grid_cell(i);
@@ -975,13 +996,13 @@ namespace hud
             if (nc::BeginGroupBox("Limits", ImVec2(0, 0)))
             {
                 int slots = cfg.slots;
-                if (nc::InputInt("Slots:", &slots, 1, 4))
+                if (nc::InputInt("Max item boxes:", &slots, 1, 4))
                 {
                     cfg.slots = slots < 1 ? 1 : (slots > 24 ? 24 : slots);
                     changed = true;
                 }
                 int weapon_slots = cfg.weapon_slots;
-                if (nc::InputInt("Weapon slots:", &weapon_slots, 1, 2))
+                if (nc::InputInt("Max weapon boxes:", &weapon_slots, 1, 2))
                 {
                     cfg.weapon_slots = weapon_slots < 0 ? 0 : (weapon_slots > 8 ? 8 : weapon_slots);
                     changed = true;

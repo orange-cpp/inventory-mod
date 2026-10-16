@@ -3,6 +3,7 @@
 #include "core/log.hpp"
 #include "inv/rules.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -86,10 +87,14 @@ namespace core
             g_config.key_pickup = 'H';
         }
         if (layout < 3) // files from before the column beside the game's panel, which is the default now
-        {
             g_config.replace_native = false;
-            config_save();
+        if (layout < 4) // files from before the boxes on demand: the weight is the limit, the box counts only a cap
+        {
+            g_config.slots = std::max(g_config.slots, 24);
+            g_config.weapon_slots = std::max(g_config.weapon_slots, 8);
         }
+        if (layout < 4)
+            config_save();
         INV_LOG("config loaded");
         rules_load();
     }
@@ -132,7 +137,7 @@ namespace core
         fprintf(f, "key_toggle=%d\nkey_prev=%d\nkey_next=%d\nkey_use=%d\nkey_drop=%d\nkey_store=%d\nkey_pickup=%d\n",
                 g_config.key_toggle, g_config.key_prev, g_config.key_next, g_config.key_use, g_config.key_drop,
                 g_config.key_store, g_config.key_pickup);
-        fprintf(f, "slots=%d\nmax_weight=%.2f\nshow_hotbar=%d\nauto_store=%d\nhud_scale=%.2f\nreplace_native=%d\nlayout=3\n",
+        fprintf(f, "slots=%d\nmax_weight=%.2f\nshow_hotbar=%d\nauto_store=%d\nhud_scale=%.2f\nreplace_native=%d\nlayout=4\n",
                 g_config.slots, g_config.max_weight, g_config.show_hotbar ? 1 : 0, g_config.auto_store ? 1 : 0,
                 g_config.hud_scale, g_config.replace_native ? 1 : 0);
         fprintf(f, "weapon_slots=%d\n", g_config.weapon_slots);

@@ -31,7 +31,8 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   difference).
 - **Beside the game's weapon panel** (`replace_native=0`, the default): the game's own panel on the right stays as it
   is for the gun and the melee / pistol (ammo, slot keys `1`, `2`); its three item boxes are hidden and the inventory
-  is a grid under them, three boxes per row, drawn the same way. The throwable, kit and pills you carry live in their
+  is a grid under them, three boxes per row, drawn the same way. Boxes appear as they are needed (the ones in use and
+  one free box; up to `slots`, 24 by default), so the weight limit is what limits. The throwable, kit and pills you carry live in their
   own inventory box (counted in its number), green while in your hands, so every item has one place. The wheel (and
   `[` / `]`) steps through everything: gun, melee / pistol, then the grid row by row, left to right. `3`..`9`, `0` take inventory boxes 1-8 in hand, and
   the drop key drops what is in your hands (gun or item), like the game's own.
@@ -48,7 +49,7 @@ Supported items: first aid kit, defibrillator, pain pills, adrenaline, pipe bomb
 upgrade packs, gas can, propane / oxygen tank, fireworks, gnome, cola bottles, and every gun and melee weapon (pistol,
 magnum, melee weapons, chainsaw, SMGs, shotguns, rifles, sniper rifles, M60, grenade launcher).
 
-**Weapons** go into weapon boxes of their own (`weapon_slots`, 2 by default), drawn like the game's gun and melee
+**Weapons** go into weapon boxes of their own (up to `weapon_slots`, 8 by default; a box appears only while it holds a weapon), drawn like the game's gun and melee
 boxes, between the game's melee box and the item grid. Each keeps what is in it: a gun its magazine and its reserve
 (shown like the game's gun box, magazine over reserve; the reserve leaves the player with it, so nothing is gained or
 lost), a melee weapon which one it is ("fireaxe", "katana" ...). The store key stores the gun or melee weapon in your

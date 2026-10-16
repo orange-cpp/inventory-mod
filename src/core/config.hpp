@@ -22,9 +22,11 @@ namespace core
         // weapon panel is hidden and its slot keys / wheel no longer reach it.
         bool replace_native = false;
 
-        int slots = 8;
+        // The most boxes a player can have; the HUD shows only those in use (and one free item box), so the weight
+        // limit is what really limits.
+        int slots = 24;
         float max_weight = 0.f; // 0: unlimited
-        int weapon_slots = 2; // boxes for stored guns and melee weapons (0..8), apart from the item boxes
+        int weapon_slots = 8; // the most boxes for stored guns and melee weapons (0..8), apart from the item boxes
         bool show_hotbar = true;
         bool auto_store = false; // +use on a catalogue item always stores it (otherwise only when the player's slot is full)
         float hud_scale = 1.f;
