@@ -449,14 +449,12 @@ namespace hud
             const float unit = display.y / 480.f;
             const float size_f = 23.3f * unit, pitch_f = 26.7f * unit;
             const int size = static_cast<int>(size_f);
-            const int gap = static_cast<int>(pitch_f - size_f);
             const float right = display.x - 8.3f * unit;
             const float first_bottom = display.y * 0.5f + 54.f * unit - 2.f * pitch_f; // the bottom of row 0
             const float thickness = std::max(1.f, unit * 0.5f);
 
             const ImU32 green = IM_COL32(142, 214, 57, 255);
             const int n = inventory.slot_count();
-            const int first_row_top = static_cast<int>(first_bottom - size_f);
             for (int i = 0; i < n; ++i)
             {
                 const Cell cell = grid_cell(i);
@@ -508,24 +506,7 @@ namespace hud
                     nc::AddText(dl, fonts.Normal, x0 + 3, y0 + 1, ImVec4(1.f, 1.f, 1.f, 0.55f), key);
                 }
             }
-
-            // the selected item's name, and a status line from the game side for a few seconds, left of the first row
-            const int text_right = static_cast<int>(right - 3.f * pitch_f) - gap;
-            int y = first_row_top;
-            const inv::Stack& selected = inventory.slot(inventory.selected());
-            if (!selected.empty())
-            {
-                const int tw = nc::CalcTextWidth(fonts.Normal, selected.def->name);
-                nc::AddText(dl, fonts.Normal, text_right - tw + 1, y + 1, ImVec4(0.f, 0.f, 0.f, 0.9f), selected.def->name);
-                nc::AddText(dl, fonts.Normal, text_right - tw, y, ImVec4(1.f, 1.f, 1.f, 0.9f), selected.def->name);
-                y += line + 2;
-            }
-            if (!session.message.empty() && GetTickCount64() < session.message_until)
-            {
-                const int tw = nc::CalcTextWidth(fonts.Header, session.message.c_str());
-                nc::AddText(dl, fonts.Header, text_right - tw + 1, y + 1, ImVec4(0.f, 0.f, 0.f, 0.9f), session.message.c_str());
-                nc::AddText(dl, fonts.Header, text_right - tw, y, ImVec4(0.56f, 0.84f, 0.22f, 1.f), session.message.c_str());
-            }
+            // no item name or status line here: the boxes say it (the messages still go to inventory_mod.log)
         }
 
         void slot_grid(inv::Inventory& inventory)
