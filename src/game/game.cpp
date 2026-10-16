@@ -1921,8 +1921,11 @@ namespace game
 
             void pump() override
             {
-                // beside the game's panel its item boxes are the mod's grid's (see hk_item_boxes)
-                g_hide_item_boxes = !core::config().replace_native && core::config().show_hotbar && core::shows_slots();
+                // beside the game's panel its item boxes are the mod's grid's (see hk_item_boxes); with the wheel only
+                // they are hidden too: the wheel shows the items
+                g_hide_item_boxes = !core::config().replace_native &&
+                                    (core::config().inventory_view == core::view_wheel ||
+                                     (core::config().show_hotbar && core::shows_slots()));
                 refresh_view();
                 for (;;)
                 {

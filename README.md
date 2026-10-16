@@ -42,8 +42,8 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
 - The column or hotbar shows only while you play a living survivor (not in menus, as a spectator or as infected).
 - Hotkeys are ignored while the console, the chat line or a menu has the keyboard.
 - **Inventory view** (Settings, `view` under `[hud]` in `inventory_mod_settings.toml`): slots and wheel ("both", the default), slots only ("slots": the
-  middle mouse button stays the game's), or wheel only ("wheel": no grid or weapon boxes; the game's own throwable / kit /
-  pills boxes come back, and the number keys and the mouse wheel are the game's again).
+  middle mouse button stays the game's), or wheel only ("wheel": no grid or weapon boxes, and the game's own throwable / kit /
+  pills boxes stay hidden too, the wheel shows everything; the number keys and the mouse wheel are the game's again).
 - A carried item (gas can, propane / oxygen tank, fireworks, gnome, cola) is put back into its box when you switch
   with the mod (wheel, keys, boxes) instead of being dropped, as the game would; with no room it is dropped as before.
   The game's own keys `1` / `2` still drop it.

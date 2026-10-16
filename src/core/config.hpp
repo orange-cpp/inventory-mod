@@ -24,8 +24,8 @@ namespace core
         // How the inventory is shown and picked from (the window, I, is always there):
         //   view_both:  the slots (grid, weapon boxes) and the radial wheel (middle mouse)
         //   view_slots: the slots only; the middle mouse button is the game's
-        //   view_wheel: the wheel only; the game's own throwable / kit / pills boxes come back, and the number keys and
-        //               the mouse wheel are the game's
+        //   view_wheel: the wheel only; no item boxes (the game's own throwable / kit / pills boxes stay hidden too), and
+        //               the number keys and the mouse wheel are the game's
         int inventory_view = 0;
 
         // The most boxes a player can have; the HUD shows only those in use (and one free item box), so the weight

@@ -991,8 +991,8 @@ namespace hud
                 changed |= nc::Checkbox("Show hotbar", &cfg.show_hotbar);
                 static const char* k_views[] = {"Slots and wheel", "Slots only", "Wheel only"};
                 changed |= nc::Combo("Inventory view:", &cfg.inventory_view, k_views, 3);
-                nc::TextDisabled("Wheel: hold the middle mouse button. Wheel only gives the game back its own item boxes,");
-                nc::TextDisabled("its number keys and its mouse wheel.");
+                nc::TextDisabled("Wheel: hold the middle mouse button. Wheel only: no item boxes at all (the wheel shows");
+                nc::TextDisabled("everything); the number keys and the mouse wheel are the game's again.");
                 changed |= nc::Checkbox("Store items on use", &cfg.auto_store);
                 changed |= nc::Checkbox("Replace the game's weapon panel (1-0 keys, wheel); off: a grid under it, keys 3-0", &cfg.replace_native);
                 changed |= nc::SliderFloat("Scale:", &cfg.hud_scale, 0.5f, 3.f, "%.2f");
