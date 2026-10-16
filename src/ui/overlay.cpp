@@ -292,8 +292,8 @@ namespace ui::overlay
             g_capture = capture;
             ImGui::EndFrame();
             ImGui::Render();
-            postfx::render(device, back_buffer); // the infection, over the game's frame and under the HUD
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            postfx::render(device, back_buffer); // the infection, over the game's frame and the mod's HUD and window
 
             if (g_state != nullptr)
                 g_state->Apply();

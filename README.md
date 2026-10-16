@@ -80,7 +80,7 @@ grabbed by a smoker, hunter, jockey or charger, or vomited on by a boomer is inf
 (`no_cure = false`: they do). When it runs out the survivor dies and a random
 special infected (`specials`) rises where they stood, and that survivor cannot come back before the next chapter: their
 body is removed (no defibrillator) and no rescue closet calls for them. There is no clock on the screen: the player
-sees it. A shader over the game's picture throbs with a heartbeat that speeds up as time runs out; the world sways,
+sees it. A shader over the game's picture (and the mod's own boxes, wheel and window) throbs with a heartbeat that speeds up as time runs out; the world sways,
 the edges blur and split into red and blue, the colour drains to a sick yellow green, dark veins creep in from the
 edges, the vignette closes in, then double vision and dimming near the end and a red beat in the last ten seconds.
 (It needs Windows' `d3dcompiler_47.dll`; without it a plain green tint and vignette.) `bots = true` infects the

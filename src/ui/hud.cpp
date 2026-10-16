@@ -767,6 +767,7 @@ namespace hud
             const ImVec2 display = ImGui::GetIO().DisplaySize;
             ImDrawList* dl = ImGui::GetForegroundDrawList();
             const float fade = t > k_screamer_seconds - 0.45f ? (k_screamer_seconds - t) / 0.45f : 1.f;
+            const float flash = t < 0.08f ? 220.f / 255.f * (1.f - t / 0.08f) : 0.f; // the first instant: a white flash
             float aspect = 1.f;
             void* texture = postfx::screamer_texture(&aspect);
             // with the screen effect: drawn into the frame under the infection shader, at its worst
@@ -795,7 +796,7 @@ namespace hud
                     const float rect[4] = {at.x, at.y, at.x + size.x, at.y + size.y};
                     const unsigned tint = (static_cast<unsigned>(255.f * fade) << 24) |
                                           (static_cast<unsigned>(light) * 0x010101u);
-                    postfx::set_screamer(texture, rect, tint, fade, 70.f / 255.f * sting * fade);
+                    postfx::set_screamer(texture, rect, tint, fade, 70.f / 255.f * sting * fade, flash);
                     // the effect at its worst, throbbing with the shake
                     postfx::set_infection(0.92f, 0.5f + 0.5f * std::sin(t * 40.f), 0.7f);
                 }
@@ -808,9 +809,8 @@ namespace hud
             }
             else
                 dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(170, 0, 0, static_cast<int>(200.f * fade * (0.6f + 0.4f * std::sin(t * 40.f)))));
-            // the first instant: a white flash
-            if (t < 0.08f)
-                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(255, 255, 255, static_cast<int>(220.f * (1.f - t / 0.08f))));
+            if (flash > 0.f && !(through_shader && texture != nullptr))
+                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(255, 255, 255, static_cast<int>(255.f * flash)));
         }
 
         // ---- the radial wheel (hold the middle mouse button) ---------------------------------------------------------

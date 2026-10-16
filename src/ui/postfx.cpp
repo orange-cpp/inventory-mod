@@ -150,7 +150,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             IDirect3DTexture9* texture = nullptr;
             float rect[4] = {};
             D3DCOLOR color = 0;
-            float backdrop = 0.f, red = 0.f;
+            float backdrop = 0.f, red = 0.f, flash = 0.f;
         };
         Screamer g_screamer_frame; // set_screamer this frame
         float g_severity = 0.f, g_beat = 0.f, g_last = 0.f;
@@ -305,6 +305,8 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             if (s.texture != nullptr)
                 draw_quad(device, s.texture, s.rect[0], s.rect[1], s.rect[2], s.rect[3], s.color);
             draw_quad(device, nullptr, 0.f, 0.f, w, h, alpha(s.red) | 0x00960000u);
+            if (s.flash > 0.f)
+                draw_quad(device, nullptr, 0.f, 0.f, w, h, alpha(s.flash) | 0x00FFFFFFu);
             device->SetTexture(0, nullptr);
             device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         }
@@ -387,7 +389,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         g_last = last;
     }
 
-    void set_screamer(void* texture, const float rect[4], unsigned color, float backdrop, float red)
+    void set_screamer(void* texture, const float rect[4], unsigned color, float backdrop, float red, float flash)
     {
         g_screamer_frame.wanted = true;
         g_screamer_frame.texture = static_cast<IDirect3DTexture9*>(texture);
@@ -395,6 +397,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         g_screamer_frame.color = color;
         g_screamer_frame.backdrop = backdrop;
         g_screamer_frame.red = red;
+        g_screamer_frame.flash = flash;
     }
 
     void render(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer)

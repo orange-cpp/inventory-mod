@@ -243,8 +243,8 @@ The clock reaches the player's game as `@inf@ <ms left> <ms in all>` (ClientPrin
 into the host's session. `pills_used` puts a running clock back to its full time (`no_cure`, the default) or ends it.
 
 The effect (`src/ui/postfx.cpp`) is a vs_3_0 / ps_3_0 pair compiled at run time with `d3dcompiler_47.dll`
-(`D3DCompile` through GetProcAddress, nothing linked). In the Present hook, after the HUD's ImGui frame is built and
-before it is rendered, the back buffer is copied with `StretchRect` into a render-target texture of the same size and
+(`D3DCompile` through GetProcAddress, nothing linked). In the Present hook, after the mod's ImGui frame is rendered
+(so the mod's HUD, wheel and window are infected too), the back buffer is copied with `StretchRect` into a render-target texture of the same size and
 format (default pool: released before Reset, made again on the next frame) and drawn back over the whole back buffer
 through the pixel shader (full-screen quad in clip space, half-pixel offset, sRGB reads and writes off: the game's back
 buffer already holds final colours). The overlay's D3DSBT_ALL state block puts the game's state back. Seen in the game:
@@ -274,7 +274,8 @@ game: 0.12, as in cfg/config.cfg. The scream goes over the game's mix (at 0.6) t
 The server's `turn` sends `@inf@ 0 0 1` (the third number: turned now; older clients read only two), or sets the
 host's `Session::infection_turned_at`. The HUD then shows the picture for 1.7 s (a managed-pool A8R8G8B8 texture read
 with WIC) and starts the scream. With the screen effect on, postfx draws it into the back buffer itself (fixed function,
-pre-transformed quads: black backdrop, the picture, a red wash) before its pass, and the pass runs at severity 0.92
+pre-transformed quads over the frame and the mod's UI: black backdrop, the picture, a red wash, the first instant's
+white flash) before its pass, and the pass runs at severity 0.92
 over it; with the effect off it goes on ImGui's foreground draw list.
 
 ## Ammo maxima
