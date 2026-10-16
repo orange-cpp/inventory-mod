@@ -416,6 +416,20 @@ namespace game
             return box;
         }
 
+        // A carried item (gas can, propane / oxygen tank, fireworks, gnome, cola: game slot 5) cannot stay with the
+        // player while the hands hold something else: the game drops it as soon as they switch.  Before the mod switches
+        // (wheel, keys, the item boxes), it goes back into its box instead, the way the store key puts it away; with no
+        // room for it the game drops it as before.
+        void put_away_carried(void* player, const char* switching_to)
+        {
+            void* active = entity_from_handle(handle_at(player, k_off_active_weapon));
+            const inv::ItemDef* def = item_of(active);
+            if (def == nullptr || def->game_slot != 5 || (switching_to != nullptr && std::strcmp(switching_to, def->classname) == 0))
+                return;
+            if (swap_out(player, active, *def))
+                INV_LOG("switching to %s: %s put away", switching_to != nullptr ? switching_to : "?", def->classname);
+        }
+
         bool g_giving = false; // main thread only: do_use is handing an item out
         bool g_switching = false; // main thread only: do_use is swapping / handing out (game events are muted)
         ULONGLONG g_switch_mute_until = 0; // main thread only: "weapon_pickup" is muted until then (see hk_create_event)
@@ -527,6 +541,7 @@ namespace game
                 notify("Not in a game");
                 return;
             }
+            put_away_carried(player, def->classname);
             if (def->weapon())
             {
                 do_use_weapon(player, slot);
@@ -1606,6 +1621,7 @@ namespace game
             void* player = local_player();
             if (player == nullptr)
                 return;
+            put_away_carried(player, classname.c_str());
             const auto select_item = reinterpret_cast<SelectItemFn>(mem::vslot(player, k_vt_select_item));
             if (select_item != nullptr)
             {

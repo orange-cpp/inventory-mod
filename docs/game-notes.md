@@ -223,6 +223,13 @@ when the player leaves). Verified: client connected to `srcds -insecure +sv_lan 
 inventory and the pistol in game slot 2. (The server binds to the LAN address, so `connect 192.168.1.2:27020`, not
 127.0.0.1.)
 
+## Carried items and switching
+
+A game-slot-5 item (gas can, tanks, fireworks, gnome, cola) is dropped by the game as soon as the hands switch to
+anything else. Every switch the mod makes (`do_select_weapon`, `do_use`) first calls `put_away_carried`, which, when
+the active weapon is such an item (and not the target), stores it the way `swap_out` does: into its box (or any),
+the quiet `Weapon_Drop`, then `UTIL_Remove`. The game's own slot keys are not the mod's, so they still drop it.
+
 ## The radial wheel (client side)
 
 Held middle mouse button (`WM_MBUTTONDOWN` / `WM_MBUTTONUP` in the mod's window procedure). While it is open the HUD

@@ -40,6 +40,9 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   (last weapon) still works to get back to the gun.
 - The column or hotbar shows only while you play a living survivor (not in menus, as a spectator or as infected).
 - Hotkeys are ignored while the console, the chat line or a menu has the keyboard.
+- A carried item (gas can, propane / oxygen tank, fireworks, gnome, cola) is put back into its box when you switch
+  with the mod (wheel, keys, boxes) instead of being dropped, as the game would; with no room it is dropped as before.
+  The game's own keys `1` / `2` still drop it.
 
 Supported items: first aid kit, defibrillator, pain pills, adrenaline, pipe bomb, molotov, bile jar, the two ammo
 upgrade packs, gas can, propane / oxygen tank, fireworks, gnome, cola bottles, and every gun and melee weapon (pistol,
