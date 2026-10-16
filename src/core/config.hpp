@@ -1,5 +1,5 @@
 #pragma once
-// The mod's settings, kept in inventory_mod.ini next to the DLL.
+// The mod's settings, kept in inventory_mod_settings.toml next to the DLL (an old inventory_mod.ini is moved into it).
 
 #include <string>
 
@@ -21,6 +21,12 @@ namespace core
         // On: the keys 1..9 and 0 select hotbar slots 1..10 and the mouse wheel steps through the items; the game's own
         // weapon panel is hidden and its slot keys / wheel no longer reach it.
         bool replace_native = false;
+        // How the inventory is shown and picked from (the window, I, is always there):
+        //   view_both:  the slots (grid, weapon boxes) and the radial wheel (middle mouse)
+        //   view_slots: the slots only; the middle mouse button is the game's
+        //   view_wheel: the wheel only; the game's own throwable / kit / pills boxes come back, and the number keys and
+        //               the mouse wheel are the game's
+        int inventory_view = 0;
 
         // The most boxes a player can have; the HUD shows only those in use (and one free item box), so the weight
         // limit is what really limits.
@@ -30,12 +36,22 @@ namespace core
         bool show_hotbar = true;
         bool auto_store = false; // +use on a catalogue item always stores it (otherwise only when the player's slot is full)
         float hud_scale = 1.f;
-        // inventory_mod.toml was read: its slots and max_weight win over the ini's (see rules_load)
+        // inventory_mod.toml (the rules) was read: its limits win over the settings' (see rules_load)
         bool rules_file = false;
     };
 
     Config& config();
-    // The ini, then the rules file.
+
+    constexpr int view_both = 0, view_slots = 1, view_wheel = 2;
+    inline bool shows_slots()
+    {
+        return config().inventory_view != view_wheel;
+    }
+    inline bool shows_wheel()
+    {
+        return config().inventory_view != view_slots;
+    }
+    // The settings (inventory_mod_settings.toml), then the rules file.
     void config_load();
     // inventory_mod.toml next to the DLL (inv/rules.hpp): the slots, the weight limit and the item weights / stacks.
     // On a dedicated server it is the rules for every player; their game clients show the server's limits.

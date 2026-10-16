@@ -200,7 +200,7 @@ Protocol (all text):
   table), so the client's weight bar shows the server's count; older clients read only the first two numbers.
 
 **Rules file:** `inventory_mod.toml` next to the DLL (`[limits] slots / max_weight`, `[weight]`, `[stack]`, read with
-toml++ in `inv::apply_rules`) is read after the ini, at load. The server's limits apply to every player's inventory
+toml++ in `inv::apply_rules`) is read after the settings (`inventory_mod_settings.toml`), at load. The server's limits apply to every player's inventory
 it creates; a refused store says why ("Too heavy: ..." when the weight limit is what stopped it). The weight includes
 the items in the game slots (`Stack::held`, the box each carried catalogue item gets), so the +use hook (slot 426)
 also answers false, before the original equips it, for an item that would go into a free game slot but is too heavy;

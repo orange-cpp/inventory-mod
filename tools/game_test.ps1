@@ -12,7 +12,7 @@
 #
 # A dedicated server (srcds.exe) with the mod, and the game connected to it:
 #   Start-Server         # srcds.exe -console -game left4dead2 -port 27015 -insecure +map c1m1_hotel
-#   Inject-Server        # copies the DLL (and the ini) to out\Server and loads it into that srcds.exe
+#   Inject-Server        # copies the DLL (and the settings) to out\Server and loads it into that srcds.exe
 #   Start-Game -Connect  # the game, connecting to it (then Inject-Mod)
 #   Server-Log / Unload-Server / Reload-Server / Stop-Server
 
@@ -165,8 +165,8 @@ function Inject-Server {
     $dir = "$script:Root\out\Server"
     New-Item -ItemType Directory -Force $dir | Out-Null
     Copy-Item "$script:Root\out\Release\inventory_mod.dll" $dir -Force
-    if (-not (Test-Path "$dir\inventory_mod.ini") -and (Test-Path "$script:Root\out\Release\inventory_mod.ini")) {
-        Copy-Item "$script:Root\out\Release\inventory_mod.ini" $dir
+    if (-not (Test-Path "$dir\inventory_mod_settings.toml") -and (Test-Path "$script:Root\out\Release\inventory_mod_settings.toml")) {
+        Copy-Item "$script:Root\out\Release\inventory_mod_settings.toml" $dir
     }
     # the server's rules (slots, weight limit, item weights): edit out\Server\inventory_mod.toml, then Reload-Server
     if (-not (Test-Path "$dir\inventory_mod.toml")) {

@@ -109,7 +109,7 @@ add_library(inventory_mod SHARED
     src/ui/icons.cpp
     src/ui/icons.hpp)
 target_include_directories(inventory_mod PRIVATE src)
-target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook::minhook)
+target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook::minhook tomlplusplus::tomlplusplus)
 inventory_options(inventory_mod)
 if(MSVC)
     target_link_options(inventory_mod PRIVATE /MAP /DEBUG /OPT:REF /OPT:ICF)

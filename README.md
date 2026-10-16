@@ -17,7 +17,7 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
 - **Use**: puts the selected item in your hands, if the player's slot for it is free.
 - **Drop**: puts the selected item on the ground in front of you, like `ent_create` does.
 - **Auto-store**: pressing +use (E) on a supported item while your slot for it is full puts it into the inventory
-  instead of leaving it on the floor. With `auto_store=1` in `inventory_mod.ini` (or "Store items on use" in Settings)
+  instead of leaving it on the floor. With `auto_store = true` (`[play]` in `inventory_mod_settings.toml`) (or "Store items on use" in Settings)
   every such +use stores the item, even when you could carry it.
 - Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory`.
 - **Rules file** `inventory_mod.toml` next to the DLL (start from [inventory_mod.example.toml](inventory_mod.example.toml)):
@@ -41,6 +41,9 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   (last weapon) still works to get back to the gun.
 - The column or hotbar shows only while you play a living survivor (not in menus, as a spectator or as infected).
 - Hotkeys are ignored while the console, the chat line or a menu has the keyboard.
+- **Inventory view** (Settings, `view` under `[hud]` in `inventory_mod_settings.toml`): slots and wheel ("both", the default), slots only ("slots": the
+  middle mouse button stays the game's), or wheel only ("wheel": no grid or weapon boxes; the game's own throwable / kit /
+  pills boxes come back, and the number keys and the mouse wheel are the game's again).
 - A carried item (gas can, propane / oxygen tank, fireworks, gnome, cola) is put back into its box when you switch
   with the mod (wheel, keys, boxes) instead of being dropped, as the game would; with no room it is dropped as before.
   The game's own keys `1` / `2` still drop it.
@@ -99,7 +102,7 @@ Outputs in `out\Release`: `inventory_mod.dll`, `injector.exe`, `inventory_tests.
 
 1. Start the game with `-insecure` (add `-windowed -w 1280 -h 720` for development) and load a map.
 2. `out\Release\injector.exe` loads `inventory_mod.dll` into the game (or use your own injector).
-3. `inventory_mod.log`, `inventory_mod.ini` and `inventory_mod.inventory` are written next to the DLL.
+3. `inventory_mod.log`, `inventory_mod_settings.toml` (settings and keys; an old `inventory_mod.ini` is moved into it once) and `inventory_mod.inventory` are written next to the DLL; `inventory_mod.toml` (the rules) is only read.
 
 The game access only turns on for game build 2.2.4.3 (`server.dll` timestamp `0x6A440E53`). On any other build the log
 says why and the inventory only edits its own list.

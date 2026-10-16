@@ -14,3 +14,6 @@ __pycache__/
 *.ini
 *.inventory
 *.unload
+
+# shareable builds for players (the zip and its folder)
+dist/

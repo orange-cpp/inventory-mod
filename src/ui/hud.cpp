@@ -91,6 +91,8 @@ namespace hud
         // 0..7 (the throwable, kit and pills live in their boxes, so the game's own 3..5 are not needed).
         int digit_slot(int vk)
         {
+            if (!core::shows_slots())
+                return -1; // wheel only: the number keys are the game's
             const bool replace = core::config().replace_native;
             if (vk == '0')
                 return replace ? 9 : 7;
@@ -625,7 +627,7 @@ namespace hud
                 }
             }
 
-            // the weight limit (inventory_mod.toml / the ini): a bar under the grid, red once nothing more fits.  On a
+            // the weight limit (inventory_mod.toml, or the settings file): a bar under the grid, red once nothing more fits.  On a
             // dedicated server the weight is the server's count (its rules may weigh the items differently).
             const float max_weight = inventory.limits().max_weight;
             if (max_weight > 0.f && n > 0)
@@ -987,6 +989,10 @@ namespace hud
             if (nc::BeginGroupBox("HUD", ImVec2(0, 0)))
             {
                 changed |= nc::Checkbox("Show hotbar", &cfg.show_hotbar);
+                static const char* k_views[] = {"Slots and wheel", "Slots only", "Wheel only"};
+                changed |= nc::Combo("Inventory view:", &cfg.inventory_view, k_views, 3);
+                nc::TextDisabled("Wheel: hold the middle mouse button. Wheel only gives the game back its own item boxes,");
+                nc::TextDisabled("its number keys and its mouse wheel.");
                 changed |= nc::Checkbox("Store items on use", &cfg.auto_store);
                 changed |= nc::Checkbox("Replace the game's weapon panel (1-0 keys, wheel); off: a grid under it, keys 3-0", &cfg.replace_native);
                 changed |= nc::SliderFloat("Scale:", &cfg.hud_scale, 0.5f, 3.f, "%.2f");
@@ -1076,7 +1082,7 @@ namespace hud
         {
             game::Session& session = game::local_session();
             std::lock_guard lock(session.mutex);
-            if (core::config().show_hotbar && session.playing)
+            if (core::config().show_hotbar && session.playing && core::shows_slots())
             {
                 if (core::config().replace_native)
                     draw_hotbar(session);
@@ -1210,7 +1216,7 @@ namespace hud
             }
         }
         // the radial wheel: open while the middle mouse button is held
-        if (msg == WM_MBUTTONDOWN && !g.open && !g.wheel && playing() && !game::backend().typing())
+        if (msg == WM_MBUTTONDOWN && core::shows_wheel() && !g.open && !g.wheel && playing() && !game::backend().typing())
         {
             open_wheel();
             return true;
@@ -1237,7 +1243,7 @@ namespace hud
         }
         // the wheel steps through the items (the open window takes the wheel itself, and the console keeps it)
         // (beside the game's panel: through the game's weapons and the grid, row by row)
-        if (msg == WM_MOUSEWHEEL && (core::config().replace_native || core::config().show_hotbar) && !g.open && playing() && !game::backend().typing())
+        if (msg == WM_MOUSEWHEEL && (core::config().replace_native || core::config().show_hotbar) && core::shows_slots() && !g.open && playing() && !game::backend().typing())
         {
             const int delta = static_cast<short>(HIWORD(wparam));
             if (delta != 0)
