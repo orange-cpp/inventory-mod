@@ -301,6 +301,18 @@ molotov = 1
         inv::set_item_weight("weapon_rifle_ak47", ak_weight);
         inv::set_item_weight("weapon_melee", 2.f);
 
+        // [infection]
+        CHECK(!inv::infection_rules().enabled); // the last rules had none
+        const inv::Rules infection = inv::apply_rules(
+            "[infection]\nseconds = 90\nhit_seconds = 15\nspecials = [\"hunter\", \"charger\", \"tank\"]\nbots = true\n");
+        CHECK(infection.errors.size() == 1); // "tank" is not one of them
+        CHECK(inv::infection_rules().enabled && inv::infection_rules().seconds == 90 && inv::infection_rules().hit_seconds == 15);
+        CHECK(inv::infection_rules().bots && inv::infection_rules().specials == std::vector<int>({3, 6}));
+        CHECK(inv::infection_rules().no_cure); // the default: pills only reset the clock
+        CHECK(inv::apply_rules("[infection]\nno_cure = false\n").errors.empty() && !inv::infection_rules().no_cure);
+        CHECK(!inv::apply_rules("[infection]\nenabled = false\n").errors.size() && !inv::infection_rules().enabled);
+        inv::apply_rules("");
+
         // [ammo]: the most reserve rounds per ammo type
         CHECK(std::string(inv::ammo_kind("weapon_rifle_desert")) == "assaultrifle" && inv::ammo_kind("weapon_melee") == nullptr);
         CHECK(inv::ammo_max("assaultrifle") == 360 && !inv::ammo_max_set("assaultrifle")); // the game's default

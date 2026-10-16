@@ -67,3 +67,15 @@ sniper_rifle = 180      # military sniper, AWP, Scout
 grenade_launcher = 30
 m60 = 0
 chainsaw = 20
+
+# The infection: knocked down by the infected, grabbed by a special (smoker, hunter, jockey, charger) or vomited on by
+# a boomer, a survivor is infected and a clock starts. A new hit takes time off; pain pills put the clock back to the
+# start. When the clock runs out the survivor dies and a random special infected rises where they stood, and they cannot
+# come back before the next chapter (no defibrillator, no rescue closet). Their sight sickens as time runs out.
+[infection]
+enabled = true
+seconds = 120          # the clock
+hit_seconds = 20       # what each new grab / vomit / knock-down takes off a running clock
+specials = ["smoker", "boomer", "hunter", "spitter", "jockey", "charger"]   # what may rise
+bots = false           # the survivor bots too
+no_cure = true         # pain pills only put the clock back to the start (false: they cure)

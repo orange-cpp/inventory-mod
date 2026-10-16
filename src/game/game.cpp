@@ -29,6 +29,7 @@
 #include "core/log.hpp"
 #include "game/backend.hpp"
 #include "game/mem.hpp"
+#include "inv/rules.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1342,6 +1343,8 @@ namespace game
             }
         }
 
+        void infect(void* player, const char* how); // see "the infection"
+
         struct ServerPlayer
         {
             std::string id;
@@ -1594,6 +1597,8 @@ namespace game
                     do_select_weapon(text);
                 else if (command == "inv_dropweapon" && weapon_name)
                     do_drop_weapon(text);
+                else if (command == "inv_infect")
+                    infect(player, "test");
                 else if (command == "inv_spawn")
                 {
                     if (const inv::ItemDef* def = inv::find_item(text))
@@ -1601,6 +1606,398 @@ namespace game
                 }
                 // inv_sync: nothing to do, the state goes out when `active` ends
             });
+        }
+
+        // ---- the infection ([infection] in the rules) -----------------------------------------------------------------
+        //
+        // A survivor knocked down by the infected, grabbed by a special or vomited on by a boomer is infected; a new hit
+        // takes time off the clock, pain pills reset it.  When it runs out the survivor dies (CommitSuicide) and a random
+        // special infected rises where they stood (the game's VScript ZSpawn); they cannot be revived before the next
+        // chapter: their body (survivor_death_model) is removed, so no defibrillator, and no rescue closet calls for them
+        // (CSurvivorRescue::SetSurvivor is told "nobody").  All of it runs on the server's main thread: game events
+        // through IGameEventManager2::FireEvent, the clock in IServerGameDLL::GameFrame.
+        //
+        //   engine.dll IGameEventManager2 slot 7 FireEvent(IGameEvent*, bool), 0x10180830: logs "Game Event Fired: %s"
+        //       with the event's GetName.  CGameEvent (vtable 0x103881E4): slot 1 GetName(), slot 6 GetInt(key, default)
+        //       (both forward to the event's KeyValues at +8).
+        //   engine.dll VEngineServer022 slot 16 GetPlayerUserId(edict), 0x10131FB0: the client of that edict's +0x38.
+        //   server.dll ServerGameDLL005 (CServerGameDLL, vtable 0x1060C904) slot 4 GameFrame(bool), 0x100EF4B0 (slot 3
+        //       takes three arguments, ServerActivate; 4 and 5 take one bool: GameFrame, PreClientUpdate).
+        //   CTerrorPlayer slot 476 CommitSuicide(bool explode, bool force), 0x10174210: what the `kill` command calls
+        //       (0x1008EAB0: `call [vtable + 0x770]`).
+        //   server.dll 0x1021CB90: the `script` command's handler (cdecl, const CCommand&; the command is FCVAR_CHEAT, its
+        //       handler is not): it runs what follows "script " in the command's text in the server's VScript VM.
+        //   server.dll 0x102CEAF0 CSurvivorRescue::SetSurvivor(CTerrorPlayer*): a rescue closet starts (or with nullptr
+        //       stops) calling for that dead survivor ("(RESCUE) Rescue spot at ... activated").
+        //   CBaseEntity m_iTeamNum +0x238 (2 survivors, 3 infected), CBasePlayer m_lifeState +0xF0 (0 alive).
+
+        constexpr std::uintptr_t k_off_team = 0x238;
+        constexpr std::uintptr_t k_off_life_state = 0xF0;
+        constexpr int k_vt_commit_suicide = 476;
+        constexpr std::uintptr_t k_rva_script_command = 0x21CB90;
+        constexpr std::uintptr_t k_rva_rescue_set_survivor = 0x2CEAF0;
+        constexpr char k_infection_marker[] = "@inf@";
+
+        using EventNameFn = const char*(__thiscall*)(void* event);
+        using EventIntFn = int(__thiscall*)(void* event, const char* key, int fallback);
+        using FireEventFn = bool(__fastcall*)(void* self, void* edx, void* event, bool dont_broadcast);
+        using GameFrameFn = void(__fastcall*)(void* self, void* edx, bool simulating);
+        using UserIdFn = int(__thiscall*)(void* engine, void* edict);
+        using CommitSuicideFn = void(__thiscall*)(void* player, bool explode, bool force);
+        using ScriptCommandFn = void(__cdecl*)(const void* command);
+        using SetRescueSurvivorFn = void(__fastcall*)(void* rescue, void* edx, void* survivor);
+
+        core::Hook<FireEventFn> g_fire_event;
+        core::Hook<GameFrameFn> g_game_frame;
+        core::Hook<SetRescueSurvivorFn> g_rescue_set_survivor;
+        UserIdFn g_user_id = nullptr;
+        ScriptCommandFn g_script_command = nullptr;
+
+        struct Infection
+        {
+            ULONGLONG until = 0;
+            int total_ms = 0;
+        };
+        std::map<int, Infection> g_infections; // by userid
+        std::vector<int> g_no_rescue; // userids that died of it: no defibrillator, no rescue closet before the next chapter
+        struct BodyRemoval
+        {
+            Vec3 at;
+            ULONGLONG when;
+            int tries;
+        };
+        std::vector<BodyRemoval> g_body_removals;
+
+        bool contains(const std::vector<int>& list, int value)
+        {
+            return std::find(list.begin(), list.end(), value) != list.end();
+        }
+
+        int user_id_of(void* player)
+        {
+            void* edict = player != nullptr ? edict_of(player) : nullptr;
+            int id = -1;
+            if (edict != nullptr && g_user_id != nullptr)
+                mem::guarded([&] { id = g_user_id(g_engine_server, edict); });
+            return id;
+        }
+
+        void* player_by_user_id(int user_id)
+        {
+            if (user_id <= 0)
+                return nullptr;
+            for (int index = 1; index <= 64; ++index)
+            {
+                // a player of any kind: the survivor bots (SurvivorBot) and the specials have vtables of their own, so
+                // the classname, not CTerrorPlayer's vtable
+                void* player = entity_at_index(index);
+                char name[16];
+                if (player != nullptr && classname_of(player, name, sizeof(name)) && std::strcmp(name, "player") == 0 &&
+                    user_id_of(player) == user_id)
+                    return player;
+            }
+            return nullptr;
+        }
+
+        int team_of(void* entity)
+        {
+            return mem::read_or<int>(reinterpret_cast<std::uintptr_t>(entity) + k_off_team, 0);
+        }
+
+        bool alive(void* player)
+        {
+            return mem::read_or<std::uint8_t>(reinterpret_cast<std::uintptr_t>(player) + k_off_life_state, 1) == 0;
+        }
+
+        bool is_bot(void* player)
+        {
+            const char* raw = nullptr;
+            void* edict = edict_of(player);
+            char id[16] = {};
+            if (edict == nullptr || g_network_id == nullptr || !mem::guarded([&] { raw = g_network_id(g_engine_server, edict); }) ||
+                raw == nullptr || !mem::safe_copy(id, raw, sizeof(id) - 1))
+                return false;
+            return std::strcmp(id, "BOT") == 0;
+        }
+
+        // Runs VScript in the server's VM through the `script` command's handler, with a CCommand made here: argc at +0,
+        // the whole line at +8 (the handler reads past "script "), argv[] at +0x408 (it checks argv[1]).
+        bool run_script(const std::string& code)
+        {
+            if (g_script_command == nullptr || code.size() > 480)
+                return false;
+            struct Command
+            {
+                int argc;
+                int argv0_size;
+                char args[512];
+                char argv_buffer[512];
+                const char* argv[64];
+            };
+            auto command = std::make_unique<Command>();
+            std::memset(command.get(), 0, sizeof(Command));
+            std::snprintf(command->args, sizeof(command->args), "script %s", code.c_str());
+            std::snprintf(command->argv_buffer, sizeof(command->argv_buffer), "script");
+            command->argc = 2;
+            command->argv0_size = 6;
+            command->argv[0] = command->argv_buffer;
+            command->argv[1] = command->args + 7;
+            return mem::guarded([&] { g_script_command(command.get()); });
+        }
+
+        // The infection clock to the player: the host's own session, or a line their client DLL reads.
+        void tell_infection(void* player, const Infection* infection)
+        {
+            const ULONGLONG now = GetTickCount64();
+            const int remaining = infection != nullptr && infection->until > now ? static_cast<int>(infection->until - now) : 0;
+            const int total = infection != nullptr ? infection->total_ms : 0;
+            if (player == host_player())
+            {
+                Session& s = local_session();
+                std::lock_guard lock(s.mutex);
+                s.infection_until = remaining > 0 ? now + static_cast<ULONGLONG>(remaining) : 0;
+                s.infection_total_ms = total;
+                return;
+            }
+            ServerPlayer* sp = server_player(player);
+            if (sp == nullptr || !sp->has_mod || g_client_printf == nullptr)
+                return;
+            char line[64];
+            std::snprintf(line, sizeof(line), "%s %d %d\n", k_infection_marker, remaining, total);
+            void* edict = edict_of(player);
+            if (edict != nullptr)
+                mem::guarded([&] { g_client_printf(g_engine_server, edict, line); });
+        }
+
+        void infect(void* player, const char* how)
+        {
+            const inv::InfectionRules& rules = inv::infection_rules();
+            if (!rules.enabled)
+                return;
+            const char* skip = player == nullptr ? "no such player"
+                               : team_of(player) != 2 ? "not a survivor"
+                               : !alive(player)       ? "dead"
+                               : !rules.bots && is_bot(player) ? "a bot (bots = false)"
+                                                                : nullptr;
+            const int user_id = player != nullptr ? user_id_of(player) : -1;
+            if (skip == nullptr && user_id <= 0)
+                skip = "no userid";
+            if (skip != nullptr)
+            {
+                INV_LOG("infection: %s not infected (%s): %s", how, skip, player != nullptr ? "" : "the event's victim was not found");
+                return;
+            }
+            const ULONGLONG now = GetTickCount64();
+            Infection& infection = g_infections[user_id];
+            if (infection.until == 0)
+            {
+                infection.total_ms = rules.seconds * 1000;
+                infection.until = now + static_cast<ULONGLONG>(infection.total_ms);
+                INV_LOG("infection: userid %d infected (%s), %d s", user_id, how, rules.seconds);
+            }
+            else
+            {
+                const ULONGLONG cut = static_cast<ULONGLONG>(rules.hit_seconds) * 1000;
+                infection.until = infection.until > now + cut + 1000 ? infection.until - cut : now + 1000;
+                INV_LOG("infection: userid %d hit again (%s), %llu s left", user_id, how, (infection.until - now) / 1000);
+            }
+            tell_infection(player, &infection);
+        }
+
+        // Pain pills: the clock back to its full time (no_cure, the default), or cured.
+        void cure(void* player, const char* how)
+        {
+            const int user_id = user_id_of(player);
+            const auto it = g_infections.find(user_id);
+            if (it == g_infections.end())
+                return;
+            if (inv::infection_rules().no_cure)
+            {
+                it->second.until = GetTickCount64() + static_cast<ULONGLONG>(it->second.total_ms);
+                INV_LOG("infection: userid %d took pills (%s): the clock is back to %d s", user_id, how, it->second.total_ms / 1000);
+                tell_infection(player, &it->second);
+                return;
+            }
+            g_infections.erase(it);
+            INV_LOG("infection: userid %d cured (%s)", user_id, how);
+            tell_infection(player, nullptr);
+        }
+
+        // The clock ran out: the survivor dies and a random special rises where they stood.
+        void turn(void* player, int user_id)
+        {
+            Vec3 at{};
+            mem::read(reinterpret_cast<std::uintptr_t>(player) + k_off_origin, at);
+            g_infections.erase(user_id);
+            tell_infection(player, nullptr);
+            const auto suicide = reinterpret_cast<CommitSuicideFn>(mem::vslot(player, k_vt_commit_suicide));
+            if (suicide != nullptr)
+                mem::guarded([&] { suicide(player, false, true); });
+            if (alive(player))
+            {
+                INV_LOG("infection: userid %d did not die (CommitSuicide refused)", user_id);
+                return;
+            }
+            if (!contains(g_no_rescue, user_id))
+                g_no_rescue.push_back(user_id);
+            g_body_removals.push_back({at, GetTickCount64() + 200, 0});
+            const std::vector<int>& specials = inv::infection_rules().specials;
+            const int type = specials.empty() ? 3 : specials[static_cast<std::size_t>(GetTickCount64() % specials.size())];
+            // (seen in the game: ZSpawn answered true, by a StringToFile of its result into left4dead2/ems)
+            char code[160];
+            std::snprintf(code, sizeof(code), "ZSpawn({type = %d, pos = Vector(%.1f, %.1f, %.1f)})", type, at.x, at.y, at.z + 4.f);
+            const bool spawned = run_script(code);
+            INV_LOG("infection: userid %d turned at %.0f %.0f %.0f: %s (%s)", user_id, at.x, at.y, at.z, code,
+                    spawned ? "run" : "failed");
+        }
+
+        // The body a defibrillator would use: survivor_death_model, the one nearest to where they died.
+        void remove_bodies(ULONGLONG now)
+        {
+            for (auto it = g_body_removals.begin(); it != g_body_removals.end();)
+            {
+                if (it->when > now)
+                {
+                    ++it;
+                    continue;
+                }
+                void* best = nullptr;
+                float best_distance = 250.f;
+                for (int index = 1; index < 0x1000; ++index)
+                {
+                    void* entity = entity_at_index(index);
+                    char name[32];
+                    if (entity == nullptr || !classname_of(entity, name, sizeof(name)) || std::strcmp(name, "survivor_death_model") != 0)
+                        continue;
+                    Vec3 origin{};
+                    if (!mem::read(reinterpret_cast<std::uintptr_t>(entity) + k_off_origin, origin))
+                        continue;
+                    const float dx = origin.x - it->at.x, dy = origin.y - it->at.y, dz = origin.z - it->at.z;
+                    const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    if (distance < best_distance)
+                    {
+                        best_distance = distance;
+                        best = entity;
+                    }
+                }
+                if (best != nullptr && mem::guarded([&] { g.util_remove(best); }))
+                {
+                    INV_LOG("infection: body removed (no defibrillator)");
+                    it = g_body_removals.erase(it);
+                }
+                else if (++it->tries >= 15)
+                {
+                    INV_LOG("infection: no body found to remove");
+                    it = g_body_removals.erase(it);
+                }
+                else
+                    (it++)->when = now + 200;
+            }
+        }
+
+        void on_game_event(void* event)
+        {
+            if (!inv::infection_rules().enabled)
+                return;
+            const auto name_fn = reinterpret_cast<EventNameFn>(mem::vslot(event, 1));
+            const auto int_fn = reinterpret_cast<EventIntFn>(mem::vslot(event, 6));
+            const char* name = name_fn != nullptr ? name_fn(event) : nullptr;
+            if (name == nullptr || int_fn == nullptr)
+                return;
+            const auto get = [&](const char* key) { return int_fn(event, key, 0); };
+            const std::string_view n(name);
+            if (n == "tongue_grab" || n == "lunge_pounce" || n == "jockey_ride" || n == "charger_carry_start" ||
+                n == "charger_pummel_start" || n == "player_now_it" || n == "player_incapacitated" || n == "pills_used")
+                INV_LOG("infection: event %s (userid %d, victim %d, subject %d, attacker %d)", name, get("userid"),
+                        get("victim"), get("subject"), get("attacker"));
+            if (n == "tongue_grab" || n == "lunge_pounce" || n == "jockey_ride" || n == "charger_carry_start" ||
+                n == "charger_pummel_start")
+                infect(player_by_user_id(get("victim")), name);
+            else if (n == "player_now_it" && (get("by_boomer") != 0 || get("exploded") != 0)) // a boomer's vomit or burst
+                infect(player_by_user_id(get("userid")), name);
+            else if (n == "player_incapacitated")
+            {
+                // by the infected: a special (a player on team 3), a common infected or a witch
+                bool by_infected = false;
+                if (void* attacker = player_by_user_id(get("attacker")))
+                    by_infected = team_of(attacker) == 3;
+                else if (void* entity = entity_at_index(get("attackerentid")))
+                {
+                    char cls[32];
+                    by_infected = classname_of(entity, cls, sizeof(cls)) &&
+                                  (std::strcmp(cls, "infected") == 0 || std::strcmp(cls, "witch") == 0);
+                }
+                if (by_infected)
+                    infect(player_by_user_id(get("userid")), name);
+            }
+            else if (n == "pills_used")
+            {
+                const int subject = get("subject");
+                cure(player_by_user_id(subject > 0 ? subject : get("userid")), name);
+            }
+            else if (n == "player_death")
+            {
+                const int user_id = get("userid");
+                if (g_infections.erase(user_id) != 0)
+                    if (void* player = player_by_user_id(user_id))
+                        tell_infection(player, nullptr);
+            }
+            else if (n == "round_start" || n == "map_transition" || n == "round_end")
+            {
+                if (!g_infections.empty() || !g_no_rescue.empty())
+                    INV_LOG("infection: %s, all clear", name);
+                for (const auto& [user_id, infection] : g_infections)
+                    if (void* player = player_by_user_id(user_id))
+                        tell_infection(player, nullptr);
+                g_infections.clear();
+                g_no_rescue.clear();
+                g_body_removals.clear();
+            }
+        }
+
+        bool __fastcall hk_fire_event(void* self, void* edx, void* event, bool dont_broadcast)
+        {
+            if (event != nullptr)
+                mem::guarded([&] { on_game_event(event); });
+            return g_fire_event.original()(self, edx, event, dont_broadcast);
+        }
+
+        void __fastcall hk_game_frame(void* self, void* edx, bool simulating)
+        {
+            g_game_frame.original()(self, edx, simulating);
+            if (g_infections.empty() && g_body_removals.empty())
+                return;
+            const ULONGLONG now = GetTickCount64();
+            mem::guarded([&] {
+                std::vector<int> due;
+                for (const auto& [user_id, infection] : g_infections)
+                    if (infection.until <= now)
+                        due.push_back(user_id);
+                for (const int user_id : due)
+                {
+                    void* player = player_by_user_id(user_id);
+                    if (player == nullptr || !alive(player))
+                        g_infections.erase(user_id);
+                    else
+                        turn(player, user_id);
+                }
+                remove_bodies(now);
+            });
+        }
+
+        void __fastcall hk_rescue_set_survivor(void* rescue, void* edx, void* survivor)
+        {
+            if (survivor != nullptr && !g_no_rescue.empty() && contains(g_no_rescue, user_id_of(survivor)))
+            {
+                static ULONGLONG logged = 0;
+                if (GetTickCount64() - logged > 10000)
+                {
+                    logged = GetTickCount64();
+                    INV_LOG("infection: a rescue closet was going to call for a survivor who died of it: nobody instead");
+                }
+                survivor = nullptr;
+            }
+            g_rescue_set_survivor.original()(rescue, edx, survivor);
         }
 
         // True while a vgui panel has the keyboard: the console, the chat line, a menu.  Slot 4 of vgui2.dll's
@@ -1923,6 +2320,19 @@ namespace game
                 mem::guarded([&] { apply_state(text); });
                 return true; // not printed
             }
+            // the infection clock: "@inf@ <ms left> <ms in all>" (0 0: none)
+            if (text != nullptr && std::strcmp(head, k_infection_marker) == 0)
+            {
+                mem::guarded([&] {
+                    int remaining = 0, total = 0;
+                    std::sscanf(text + sizeof(k_infection_marker) - 1, "%d %d", &remaining, &total);
+                    Session& s = local_session();
+                    std::lock_guard lock(s.mutex);
+                    s.infection_until = remaining > 0 ? GetTickCount64() + static_cast<ULONGLONG>(remaining) : 0;
+                    s.infection_total_ms = total;
+                });
+                return true;
+            }
             return g_process_print.original()(state, edx, msg);
         }
 
@@ -2035,6 +2445,10 @@ namespace game
             {
                 post({Command::DropWeapon, 0, 0, classname});
             }
+            void infect_self() override
+            {
+                post({Command::Infect, 0, 0, {}});
+            }
             void move(int from, int to) override
             {
                 post({Command::Move, from, to});
@@ -2097,6 +2511,7 @@ namespace game
                     Pickup,
                     Select,
                     DropWeapon,
+                    Infect, // development: infects the player
                     Move // slot: from, count: to (the HUD moved it locally already)
                 } kind;
                 int slot;
@@ -2135,6 +2550,10 @@ namespace game
                 case Command::DropWeapon:
                     do_drop_weapon(command.text);
                     break;
+                case Command::Infect:
+                    if (void* player = local_player())
+                        infect(player, "test");
+                    break;
                 case Command::Move:
                     break; // the local inventory was moved by the HUD itself
                 }
@@ -2166,6 +2585,9 @@ namespace game
                     break;
                 case Command::DropWeapon:
                     std::snprintf(text, sizeof(text), "inv_dropweapon %s", command.text.c_str());
+                    break;
+                case Command::Infect:
+                    std::snprintf(text, sizeof(text), "inv_infect");
                     break;
                 case Command::Move:
                     std::snprintf(text, sizeof(text), "inv_move %d %d", command.slot, command.count);
@@ -2309,6 +2731,14 @@ namespace game
                     else
                         INV_LOG("game: IGameEventManager2::CreateEvent (%p) does not look as expected: switches show icons",
                                 reinterpret_cast<void*>(create_event));
+                    // the infection's triggers: FireEvent (see "the infection")
+                    const std::uintptr_t fire_event = mem::vslot(events, 7);
+                    if (fire_event != 0 && mem::find_pattern(fire_event, 12, "55 8B EC A1 ?? ?? ?? ?? 83 78 30 00") == fire_event &&
+                        g_fire_event.create("FireEvent", reinterpret_cast<void*>(fire_event), hk_fire_event))
+                        g_fire_event.enable();
+                    else
+                        INV_LOG("game: IGameEventManager2::FireEvent (%p) does not look as expected: no infection",
+                                reinterpret_cast<void*>(fire_event));
                 }
 
         // the pickup hook (optional): the function must start the way it did when it was read
@@ -2420,6 +2850,34 @@ namespace game
                 g_server_command = reinterpret_cast<ServerCommandFn>(server_command);
             else
                 INV_LOG("game: the engine's ServerCommand does not look as expected: the [ammo] limits are not set in the game");
+
+            // the infection (see "the infection"): who a game event means, the clock, turning, the rescue closets
+            const std::uintptr_t user_id = g_engine_server != nullptr ? mem::vslot(g_engine_server, 16) : 0;
+            const std::uintptr_t script = g.server.base + k_rva_script_command;
+            const std::uintptr_t rescue = g.server.base + k_rva_rescue_set_survivor;
+            const std::uintptr_t suicide = mem::read_or<std::uintptr_t>(g.player_vtable + 4u * k_vt_commit_suicide);
+            const auto server_create = reinterpret_cast<CreateInterfaceFn>(
+                GetProcAddress(reinterpret_cast<HMODULE>(g.server.base), "CreateInterface"));
+            void* game_dll = server_create != nullptr ? server_create("ServerGameDLL005", nullptr) : nullptr;
+            const std::uintptr_t game_frame = game_dll != nullptr ? mem::vslot(game_dll, 4) : 0;
+            if (user_id != 0 && mem::find_pattern(user_id, 12, "55 8B EC 83 3D ?? ?? ?? ?? 02 56 7C") == user_id &&
+                mem::find_pattern(script, 12, "55 8B EC 56 8B 75 08 83 3E 01 7E 0B") == script &&
+                mem::find_pattern(rescue, 14, "55 8B EC 51 8B 15 ?? ?? ?? ?? 53 56 8B F1") == rescue &&
+                suicide == g.server.base + 0x174210 && mem::find_pattern(suicide, 6, "55 8B EC 83 EC 64") == suicide &&
+                game_frame == g.server.base + 0xEF4B0 && mem::find_pattern(game_frame, 6, "55 8B EC 83 EC 14") == game_frame &&
+                g_fire_event.installed())
+            {
+                g_user_id = reinterpret_cast<UserIdFn>(user_id);
+                g_script_command = reinterpret_cast<ScriptCommandFn>(script);
+                if (g_game_frame.create("GameFrame", reinterpret_cast<void*>(game_frame), hk_game_frame))
+                    g_game_frame.enable();
+                if (g_rescue_set_survivor.create("RescueSetSurvivor", reinterpret_cast<void*>(rescue), hk_rescue_set_survivor))
+                    g_rescue_set_survivor.enable();
+                INV_LOG("game: infection ready (GameFrame %p; on when inventory_mod.toml has [infection])",
+                        reinterpret_cast<void*>(game_frame));
+            }
+            else
+                INV_LOG("game: the infection's functions do not look as expected: no infection");
             if (network_id != 0 && mem::find_pattern(network_id, 10, "55 8B EC 83 3D ?? ?? ?? ?? 02") == network_id &&
                 printf_fn != 0 && mem::find_pattern(printf_fn, 8, "55 8B EC 8B 45 08 50 E8") == printf_fn &&
                 mem::find_pattern(command, 10, "55 8B EC 81 EC 18 01 00 00 A1") == command)

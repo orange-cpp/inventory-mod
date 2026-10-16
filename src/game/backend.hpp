@@ -50,6 +50,10 @@ namespace game
         // The player's reserve of every ammo type (m_iAmmo, by the game's index: inv::ammo_index), for what a stored
         // gun would have (the reserve is shared by the guns of a type).
         int ammo_pool[32] = {};
+        // The infection ([infection] in the rules): when the player turns (GetTickCount64), 0 when not infected, and the
+        // clock's full length, for how strong the effect is.
+        ULONGLONG infection_until = 0;
+        int infection_total_ms = 0;
     };
     // The active session: the local player's, or (while the game code serves another player: a dedicated server, or
     // a guest on this listen server) theirs.  The game code uses this one.
@@ -97,6 +101,9 @@ namespace game
         virtual void drop_weapon(const std::string& classname) // put a carried game weapon on the ground
         {
             (void)classname;
+        }
+        virtual void infect_self() // development: infects the player ([infection] in the rules must be on)
+        {
         }
 
         // On the game's main thread, when the window gets k_msg_pump.

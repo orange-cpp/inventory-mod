@@ -40,4 +40,28 @@ namespace inv
     // set_item_stack); the limits are returned for the caller to use.  A file that does not parse changes nothing.
     Rules apply_rules(std::string_view text);
 
+    // [infection]: a survivor knocked down by the infected, grabbed by a special (smoker, hunter, jockey, charger) or
+    // vomited on by a boomer is infected; when the clock runs out they die and a random special infected rises where
+    // they stood, and they cannot be revived (defibrillator, rescue closet) before the next chapter.  Pain pills put
+    // the clock back to its full time (no_cure, the default) or cure it.
+    //
+    //   [infection]
+    //   enabled = true
+    //   seconds = 120                # the clock
+    //   hit_seconds = 20             # what each new grab / vomit / knock-down takes off a running clock
+    //   specials = ["smoker", "boomer", "hunter", "spitter", "jockey", "charger"]   # what may rise
+    //   bots = false                 # the survivor bots too
+    //   no_cure = true               # pain pills only put the clock back to the start (false: they cure)
+    struct InfectionRules
+    {
+        bool enabled = false;
+        int seconds = 120;
+        int hit_seconds = 20;
+        std::vector<int> specials{1, 2, 3, 4, 5, 6}; // the game's zombie classes: 1 smoker ... 6 charger
+        bool bots = false;
+        bool no_cure = true;
+    };
+    // The last apply_rules' [infection] (the defaults, disabled, without one).
+    const InfectionRules& infection_rules();
+
 } // namespace inv

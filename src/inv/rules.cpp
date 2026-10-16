@@ -33,7 +33,74 @@ namespace inv
                 return f;
             return std::nullopt;
         }
+
+        InfectionRules g_infection;
+
+        // [infection] (see rules.hpp)
+        void read_infection(const toml::table& table, Rules& rules)
+        {
+            InfectionRules infection;
+            infection.enabled = true; // a table at all switches it on, unless it says otherwise
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled")
+                {
+                    if (const auto on = node.value<bool>())
+                        infection.enabled = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "infection.enabled must be true or false"));
+                }
+                else if (key == "seconds" || key == "hit_seconds")
+                {
+                    const auto n = node.value<std::int64_t>();
+                    if (!n || *n < 0 || *n > 3600)
+                        rules.errors.push_back(at_line(node, "infection." + std::string(key.str()) + " must be a whole number from 0 to 3600"));
+                    else if (key == "seconds")
+                        infection.seconds = std::max(1, static_cast<int>(*n));
+                    else
+                        infection.hit_seconds = static_cast<int>(*n);
+                }
+                else if (key == "bots" || key == "no_cure")
+                {
+                    if (const auto on = node.value<bool>())
+                        (key == "bots" ? infection.bots : infection.no_cure) = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "infection." + std::string(key.str()) + " must be true or false"));
+                }
+                else if (key == "specials")
+                {
+                    static constexpr const char* k_names[] = {"smoker", "boomer", "hunter", "spitter", "jockey", "charger"};
+                    std::vector<int> specials;
+                    if (const toml::array* list = node.as_array())
+                        for (const toml::node& item : *list)
+                        {
+                            const std::string name = item.value_or(std::string());
+                            int found = 0;
+                            for (int i = 0; i < 6; ++i)
+                                if (name == k_names[i])
+                                    found = i + 1;
+                            if (found != 0)
+                                specials.push_back(found);
+                            else
+                                rules.errors.push_back(at_line(item, "infection.specials: unknown special \"" + name +
+                                                                         "\" (smoker, boomer, hunter, spitter, jockey, charger)"));
+                        }
+                    else
+                        rules.errors.push_back(at_line(node, "infection.specials must be a list, like [\"hunter\", \"jockey\"]"));
+                    if (!specials.empty())
+                        infection.specials = specials;
+                }
+                else
+                    rules.errors.push_back(at_line(node, "unknown setting infection." + std::string(key.str())));
+            }
+            g_infection = infection;
+        }
     } // namespace
+
+    const InfectionRules& infection_rules()
+    {
+        return g_infection;
+    }
 
     Rules apply_rules(std::string_view text)
     {
@@ -131,8 +198,12 @@ namespace inv
             }
         }
 
+        g_infection = InfectionRules{};
+        if (const toml::table* infection = root["infection"].as_table())
+            read_infection(*infection, rules);
+
         for (const auto& [key, node] : root)
-            if (key != "limits" && key != "weight" && key != "stack" && key != "ammo")
+            if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
         return rules;
     }

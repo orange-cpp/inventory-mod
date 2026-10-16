@@ -223,6 +223,33 @@ when the player leaves). Verified: client connected to `srcds -insecure +sv_lan 
 inventory and the pistol in game slot 2. (The server binds to the LAN address, so `connect 192.168.1.2:27020`, not
 127.0.0.1.)
 
+## The infection
+
+Server side, on the main thread (see "the infection" in game.cpp):
+
+| What | Where / how |
+|---|---|
+| events | engine `IGameEventManager2` slot 7 `FireEvent(IGameEvent*, bool)` `0x10180830` (logs "Game Event Fired: %s"; prologue `55 8B EC A1 ?? ?? ?? ?? 83 78 30 00`), hooked. `CGameEvent` (vtable `0x103881E4`, KeyValues at +8): slot 1 `GetName`, slot 6 `GetInt(key, default)`, slot 9 `GetString`. Fields (resource/modevents.res): `tongue_grab`, `lunge_pounce`, `jockey_ride`, `charger_carry_start`, `charger_pummel_start` -> `victim`; `player_now_it` -> `userid`, `by_boomer`, `exploded`; `player_incapacitated` -> `userid`, `attacker`, `attackerentid`; `pills_used` -> `subject` (who swallowed) |
+| userid -> player | engine `VEngineServer022` slot 16 `GetPlayerUserId(edict)` `0x10131FB0` (the client of that edict's +0x38), over players 1..64 and their edict (+0x28) |
+| team, life | `m_iTeamNum` +0x238 (2 survivors, 3 infected), `m_lifeState` +0xF0 |
+| the clock | server `ServerGameDLL005` (`CServerGameDLL`, vtable `0x1060C904`) slot 4 `GameFrame(bool)` `0x100EF4B0`: slot 3 takes three arguments (ServerActivate), 4 and 5 one bool (GameFrame, PreClientUpdate); hooked, it ticks with the server |
+| dying | `CTerrorPlayer` slot 476 `CommitSuicide(bool explode, bool force)` `0x10174210`: what the `kill` command calls (`0x1008EAB0`: `call [vtable + 0x770]`) |
+| rising | the VScript `ZSpawn({type, pos})` (`Script_ZSpawn` `0x1035FA60`; the native spawn `0x1035AF70` passes registers its own way), run through the `script` command's handler `0x1021CB90` (cdecl `const CCommand&`; the command is FCVAR_CHEAT, the handler is not) with a CCommand built by the mod (argc +0, the line "script <code>" at +8, argv[] at +0x408). Seen in the game: ZSpawn answered true (its result written with `StringToFile` into left4dead2/ems) |
+| no defibrillator | the `survivor_death_model` nearest to where they died is removed (UTIL_Remove) a moment after |
+| no rescue closet | server `0x102CEAF0` `CSurvivorRescue::SetSurvivor(CTerrorPlayer*)` ("(RESCUE) Rescue spot at ... activated / deactivated"; `+0x192C` the survivor's handle), hooked: for a survivor who died of the infection it is given nullptr |
+| clearing | `round_start`, `round_end`, `map_transition`: every clock and every "no rescue" goes |
+
+The clock reaches the player's game as `@inf@ <ms left> <ms in all>` (ClientPrintf, caught like `@inv@`), or straight
+into the host's session. `pills_used` puts a running clock back to its full time (`no_cure`, the default) or ends it.
+
+The effect (`src/ui/postfx.cpp`) is a vs_3_0 / ps_3_0 pair compiled at run time with `d3dcompiler_47.dll`
+(`D3DCompile` through GetProcAddress, nothing linked). In the Present hook, after the HUD's ImGui frame is built and
+before it is rendered, the back buffer is copied with `StretchRect` into a render-target texture of the same size and
+format (default pool: released before Reset, made again on the next frame) and drawn back over the whole back buffer
+through the pixel shader (full-screen quad in clip space, half-pixel offset, sRGB reads and writes off: the game's back
+buffer already holds final colours). The overlay's D3DSBT_ALL state block puts the game's state back. Seen in the game:
+"postfx: infection shader ready (11552 bytes)", the frame intact with the effect at the start of the clock.
+
 ## Ammo maxima
 
 The most reserve rounds of each type are server.dll's ConVars `ammo_<type>_max` (assaultrifle 360, smg 650, shotgun 72,

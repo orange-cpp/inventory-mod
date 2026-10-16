@@ -4,6 +4,7 @@
 #include "core/log.hpp"
 #include "game/backend.hpp"
 #include "ui/icons.hpp"
+#include "ui/postfx.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -662,6 +663,63 @@ namespace hud
             // no item name or status line here: the boxes say it (the messages still go to inventory_mod.log)
         }
 
+        // ---- the infection's effect -----------------------------------------------------------------------------------
+        //
+        // While infected (Session::infection_until): the shader of postfx.cpp over the game's frame, beating like a
+        // heart that speeds up as the clock runs out; no clock, no text.  How bad it is grows from 0 (just infected) to
+        // 1 (turning).  Without the shader: a sickly green tint and a dark vignette that closes in.
+        bool g_infection_preview = false; // the Debug tab's preview: the effect without an infection
+        float g_infection_preview_severity = 0.5f;
+
+        void draw_infection(const game::Session& session)
+        {
+            const ULONGLONG now = GetTickCount64();
+            float remaining = 0.f, severity = 0.f;
+            if (g_infection_preview)
+            {
+                severity = g_infection_preview_severity;
+                remaining = (1.f - severity) * 120.f;
+            }
+            else
+            {
+                if (session.infection_until <= now || session.infection_total_ms <= 0)
+                    return;
+                remaining = static_cast<float>(session.infection_until - now) / 1000.f;
+                const float total = static_cast<float>(session.infection_total_ms) / 1000.f;
+                severity = std::clamp(1.f - remaining / total, 0.f, 1.f);
+            }
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            ImDrawList* dl = ImGui::GetBackgroundDrawList();
+
+            // the heartbeat: 50 to 150 a minute, a sharp beat and a softer one after it
+            const float bpm = 50.f + 100.f * severity;
+            const float phase = std::fmod(static_cast<float>(now % 600000) / 1000.f * bpm / 60.f, 1.f);
+            const float beat = std::exp(-phase * 14.f) + 0.6f * std::exp(-std::fabs(phase - 0.25f) * 18.f);
+            const float pulse = std::clamp(beat, 0.f, 1.2f);
+            const float last = remaining < 10.f ? 1.f - remaining / 10.f : 0.f;
+            if (postfx::ready())
+            {
+                postfx::set_infection(severity, std::min(pulse, 1.f), last);
+                return;
+            }
+
+            // the tint
+            const int tint = static_cast<int>(std::clamp(18.f + 70.f * severity + 25.f * severity * pulse, 0.f, 140.f));
+            dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(90, 125, 25, tint));
+
+            // the vignette: four edge gradients, deeper and darker as it gets worse
+            const float depth = (0.10f + 0.30f * severity + 0.05f * severity * pulse) * std::min(display.x, display.y);
+            const int edge = static_cast<int>(std::clamp(90.f + 150.f * severity + 30.f * pulse, 0.f, 245.f));
+            const ImU32 dark = IM_COL32(10, 30, 5, edge), clear = IM_COL32(10, 30, 5, 0);
+            dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(display.x, depth), dark, dark, clear, clear);
+            dl->AddRectFilledMultiColor(ImVec2(0.f, display.y - depth), display, clear, clear, dark, dark);
+            dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(depth, display.y), dark, clear, clear, dark);
+            dl->AddRectFilledMultiColor(ImVec2(display.x - depth, 0.f), display, clear, dark, dark, clear);
+            // the last seconds: red flashes on the beat
+            if (remaining < 10.f)
+                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 20, 10, static_cast<int>(60.f * pulse * last)));
+        }
+
         // ---- the radial wheel (hold the middle mouse button) ---------------------------------------------------------
         //
         // Like No More Room in Hell's inventory wheel: everything the player carries around the middle of the screen,
@@ -982,6 +1040,13 @@ namespace hud
                         inventory.add(def, 1);
                 if (nc::Button("Clear"))
                     inventory.clear();
+                if (nc::Button("Infect me (test)"))
+                    game::backend().infect_self();
+                nc::SetItemTooltip("Starts the infection clock, as a grab or a vomit would ([infection] in inventory_mod.toml\n"
+                                   "must be on). Pain pills put it back to the start (no_cure) or cure it.");
+                nc::Checkbox("Preview the infection effect", &g_infection_preview);
+                if (g_infection_preview)
+                    nc::SliderFloat("Infection:", &g_infection_preview_severity, 0.f, 1.f, "%.2f");
             }
             nc::EndGroupBox();
         }
@@ -1109,6 +1174,8 @@ namespace hud
                 else
                     draw_column(session);
             }
+            if (session.playing || g_infection_preview)
+                draw_infection(session);
             if (g.wheel && !session.playing)
                 g.wheel = false; // died, a menu opened ...
             if (g.wheel)

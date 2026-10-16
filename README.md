@@ -72,6 +72,20 @@ The weight is checked on every pickup and store. It can still end up over the li
 pills, or the rules file is changed to heavier weights): the bar then turns red and nothing more can be picked up or
 stored until you drop something.
 
+## The infection
+
+With `[infection]` in the host's `inventory_mod.toml` (on in the example): a survivor knocked down by the infected,
+grabbed by a smoker, hunter, jockey or charger, or vomited on by a boomer is infected and a clock starts (`seconds`,
+120). Each new hit takes `hit_seconds` (20) off it; pain pills put it back to the start, they do not cure it
+(`no_cure = false`: they do). When it runs out the survivor dies and a random
+special infected (`specials`) rises where they stood, and that survivor cannot come back before the next chapter: their
+body is removed (no defibrillator) and no rescue closet calls for them. There is no clock on the screen: the player
+sees it. A shader over the game's picture throbs with a heartbeat that speeds up as time runs out; the world sways,
+the edges blur and split into red and blue, the colour drains to a sick yellow green, dark veins creep in from the
+edges, the vignette closes in, then double vision and dimming near the end and a red beat in the last ten seconds.
+(It needs Windows' `d3dcompiler_47.dll`; without it a plain green tint and vignette.) `bots = true` infects the
+survivor bots too. The window's Debug tab has "Infect me" to try it and a preview slider for the effect alone. (In co-op the round is lost when every human player is dead, so playing alone, turning ends the round.)
+
 ## Keys (all can be rebound in the window's Settings tab)
 
 | Key | Action |

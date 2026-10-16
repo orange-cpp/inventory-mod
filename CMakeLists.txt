@@ -107,7 +107,9 @@ add_library(inventory_mod SHARED
     src/ui/hud.cpp
     src/ui/hud.hpp
     src/ui/icons.cpp
-    src/ui/icons.hpp)
+    src/ui/icons.hpp
+    src/ui/postfx.cpp
+    src/ui/postfx.hpp)
 target_include_directories(inventory_mod PRIVATE src)
 target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook::minhook tomlplusplus::tomlplusplus)
 inventory_options(inventory_mod)

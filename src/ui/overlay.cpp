@@ -5,6 +5,7 @@
 #include "game/backend.hpp"
 #include "ui/icons.hpp"
 #include "ui/hud.hpp"
+#include "ui/postfx.hpp"
 
 #include <atomic>
 #include <d3d9.h>
@@ -222,6 +223,7 @@ namespace ui::overlay
             hud::init();
             icons::start();
             icons::set_device(device);
+            postfx::init(device);
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
         }
@@ -234,6 +236,7 @@ namespace ui::overlay
                 SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_orig_wndproc));
             release_state_block();
             icons::set_device(nullptr); // the textures go with the device's owner, on the render thread
+            postfx::shutdown();
             if (g_ready)
             {
                 ImGui_ImplDX9_Shutdown();
@@ -287,6 +290,7 @@ namespace ui::overlay
             g_capture = capture;
             ImGui::EndFrame();
             ImGui::Render();
+            postfx::render(device, back_buffer); // the infection, over the game's frame and under the HUD
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
 
             if (g_state != nullptr)
@@ -351,6 +355,7 @@ namespace ui::overlay
             if (g_ready && device == g_device)
             {
                 release_state_block();
+                postfx::invalidate();
                 ImGui_ImplDX9_InvalidateDeviceObjects();
             }
             const HRESULT hr = g_reset.original()(device, params);
