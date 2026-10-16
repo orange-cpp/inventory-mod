@@ -1256,7 +1256,8 @@ namespace game
         // The player's reserve (m_iAmmo, per ammo type, shared by the guns of a type) weighs (inv::round_weight,
         // [round_weight] in the rules: refresh_native counts it in) and can be dropped, a magazine's worth at a time or
         // all of a type.  The rounds land as one of the game's own ammo piles, weapon_ammo_spawn (CWeaponAmmoSpawn, see
-        // below), with a model the map has loaded and a targetname that says what it holds: "inv_rounds_<kind>_<rounds>".
+        // below), as an incendiary ammo pack tinted the colour of its type, with a targetname that says what it holds:
+        // "inv_rounds_<kind>_<rounds>".
         // +use on it goes through the pile's own Use, hooked (hk_ammo_spawn_use): instead of the endless refill it gives
         // those rounds, as many as fit (the type's most, the weight limit); what does not fit stays in the pile.  The
         // bots do not take them.  Ammo piles and guns picked up fill a reserve as the game does; cap_reserve takes a rise
@@ -1267,34 +1268,17 @@ namespace game
         // weapon_ammo_spawn is CWeaponAmmoSpawn (vtable 0x10682CF4, set by its factory 0x102A22F0 over CWeaponSpawn's):
         // its Precache (slot 26, 0x1029F5A0) precaches models/props/terror/ammo_stack.mdl, its model (slot 239,
         // 0x1029F560) is the "model" keyvalue or that one, its Use (slot 106, 0x1029F5F0) is its own (the refill).
-        // A model precached in the middle of a round can show the clients the ERROR model, so the pile takes the
-        // first of these the map has loaded (VEngineServer022 slot 9 IsModelPrecached, what PrecacheModel asks
-        // first), else ammo_stack.mdl anyway.  (The first piles were ERROR models for another reason: their "model"
-        // went through the Vector SetKeyValue, see the top of this file.)
-        constexpr const char* k_pile_models[] = {"models/props/terror/ammo_stack.mdl",
-                                                 "models/props_unique/spawn_apartment/coffeeammo.mdl",
-                                                 "models/props/terror/exploding_ammo.mdl",
-                                                 "models/props/terror/incendiary_ammo.mdl"};
-        constexpr int k_vt_is_model_precached = 9;
+        // The pile looks like a closed incendiary ammo pack (the upgrade pack's world model, loaded with every map), tinted
+        // the colour of its round type (inv::ammo_color, the entity's "rendercolor" as "r g b 255": three numbers leave
+        // the alpha 0 and it is invisible); ammo_stack.mdl when it cannot be precached.
+        constexpr const char* k_pile_model = "models/w_models/weapons/w_eq_incendiary_ammopack.mdl";
+        constexpr int k_vt_is_model_precached = 9; // VEngineServer022 IsModelPrecached(name)
+        using IsModelPrecachedFn = bool(__thiscall*)(void* engine, const char* name);
+        constexpr const char* k_pile_model_fallback = "models/props/terror/ammo_stack.mdl";
         // server.dll CBaseEntity::PrecacheModel (0x1006B690, cdecl int (const char*): engine slot 5 PrecacheModel(name,
         // true), with a warning when it is late)
         constexpr std::uintptr_t k_rva_precache_model = 0x6B690;
         using PrecacheModelFn = int(__cdecl*)(const char* name);
-        using IsModelPrecachedFn = bool(__thiscall*)(void* engine, const char* name);
-
-        const char* pile_model()
-        {
-            const auto is_precached = g_engine_server != nullptr
-                                          ? reinterpret_cast<IsModelPrecachedFn>(mem::vslot(g_engine_server, k_vt_is_model_precached))
-                                          : nullptr;
-            for (const char* model : k_pile_models)
-            {
-                bool loaded = false;
-                if (is_precached != nullptr && mem::guarded([&] { loaded = is_precached(g_engine_server, model); }) && loaded)
-                    return model;
-            }
-            return k_pile_models[0];
-        }
 
         PrecacheModelFn precache_model_fn()
         {
@@ -1394,20 +1378,34 @@ namespace game
                 notify("Cannot drop rounds: the game's PrecacheModel does not look as expected");
                 return;
             }
-            const char* model = pile_model();
+            const char* model = k_pile_model;
+            bool loaded = false; // by the map already (else it is precached now, in the middle of the round)
+            if (const auto is_precached = g_engine_server != nullptr
+                                              ? reinterpret_cast<IsModelPrecachedFn>(mem::vslot(g_engine_server, k_vt_is_model_precached))
+                                              : nullptr)
+                mem::guarded([&] { loaded = is_precached(g_engine_server, model); });
             int model_index = -1;
             mem::guarded([&] { model_index = precache_model(model); });
+            if (model_index < 0)
+            {
+                model = k_pile_model_fallback;
+                mem::guarded([&] { model_index = precache_model(model); });
+            }
             if (model_index < 0)
             {
                 notify(std::string("Could not drop ") + title + ": no ammo pile model");
                 return;
             }
+            const unsigned color = inv::ammo_color(kind);
+            char tint[16];
+            std::snprintf(tint, sizeof(tint), "%u %u %u 255", (color >> 16) & 255u, (color >> 8) & 255u, color & 255u); // (a missing alpha is 0: invisible)
             void* pile = nullptr;
             mem::guarded([&] {
                 pile = g.create_entity(g.tools, "weapon_ammo_spawn");
                 if (pile == nullptr)
                     return;
                 g.set_key_value(g.tools, pile, "model", model);
+                g.set_key_value(g.tools, pile, "rendercolor", tint);
                 set_pile_contents(pile, kind, n);
                 if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(pile, k_vt_precache)))
                     precache(pile);
@@ -1424,8 +1422,8 @@ namespace game
             }
             mem::guarded([&] { *reserve_of(player, type) = have - n; });
             state_changed(player);
-            INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s) at %.1f %.1f %.1f", n, kind.c_str(), have - n, pile, model,
-                    position.x, position.y, position.z);
+            INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s, %s, tint %s) at %.1f %.1f %.1f", n, kind.c_str(), have - n,
+                    pile, model, loaded ? "loaded with the map" : "precached now", tint, position.x, position.y, position.z);
             notify("Dropped " + std::to_string(n) + " " + title);
         }
 

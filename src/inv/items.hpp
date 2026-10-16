@@ -68,6 +68,9 @@ namespace inv
     int ammo_magazine(std::string_view kind);
     // Its name in the HUD ("Rifle rounds"); nullptr for an unknown kind.
     const char* ammo_title(std::string_view kind);
+    // Its colour, 0xRRGGBB: a dropped pile of it is tinted so (rifle yellow, SMG blue, shotgun red ...); 0xFFFFFF for
+    // an unknown kind.
+    unsigned ammo_color(std::string_view kind);
     // The kind of the game's ammo type `index` (m_iAmmo[index]); nullptr for one the mod does not know (pistols ...).
     const char* ammo_kind_at(int index);
     // What a player's reserve weighs: `pool` is m_iAmmo, the rounds of each of the game's 32 ammo types.
