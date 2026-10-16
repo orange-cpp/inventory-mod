@@ -1,0 +1,101 @@
+#pragma once
+// The seam between the inventory and the game.  The HUD and the hotkeys only talk to this; what really happens in the
+// game (taking an item out of the world, putting one back, a use) lives behind it.
+
+#include "inv/inventory.hpp"
+
+#include <mutex>
+#include <string>
+#include <vector>
+#include <windows.h>
+
+namespace game
+{
+
+    constexpr int k_native_slots = 6; // primary, secondary, throwable, kit, pills, carried
+
+    // A weapon or item the player carries in the game's own slots (the ones the native weapon panel lists).
+    struct NativeWeapon
+    {
+        std::string classname; // "weapon_rifle_ak47"
+        std::string name; // "Rifle Ak47"
+        char tag[3] = {}; // two letters for the slot
+        bool active = false; // in the player's hands now
+    };
+
+    // A player's inventory: on a game client the local player's, shared by the HUD (render thread) and the game code (main
+    // thread); in a dedicated server one per connected player (see game.cpp, "Dedicated server").
+    struct Session
+    {
+        std::mutex mutex;
+        inv::Inventory inventory;
+        // The game's own slots, refreshed by the backend on the main thread and shown first on the hotbar: always
+        // k_native_slots entries, entry i is game slot i (primary, secondary, throwable, kit, pills, carried); an empty
+        // classname is an empty slot.  Fixed positions, so the inventory's slots after them never move on the hotbar.
+        std::vector<NativeWeapon> native;
+        std::string message; // a status line the HUD shows for a few seconds
+        ULONGLONG message_until = 0;
+        // Client only: the inventory mirrors the one a dedicated server keeps for this player (it is not saved here).
+        bool remote = false;
+    };
+    // The active session: the local player's, or (while the game code serves another player: a dedicated server, or
+    // a guest on this listen server) theirs.  The game code uses this one.
+    Session& session();
+    // The local player's session, always: what the HUD shows and saves.
+    Session& local_session();
+    // Main thread only: makes `s` the active session (nullptr: the local one again).
+    void set_active_session(Session* s);
+    // Rebuilds the inventory from the config's limits, keeping what fits.
+    void session_apply_limits();
+    // Shows a line in the HUD for a few seconds.  Locks the session itself.
+    void notify(const std::string& text);
+
+    class Backend
+    {
+    public:
+        virtual ~Backend() = default;
+        virtual const char* name() const = 0;
+        // True when this talks to the game itself (the stub only edits the list).
+        virtual bool connected() const = 0;
+        // True while the game is taking typed text (console, chat), so hotkeys must not fire.
+        virtual bool typing() const
+        {
+            return false;
+        }
+
+        // Requests.  They return at once; the backend changes the session when the game has done it.  Never call these
+        // with the session locked.
+        virtual void use(int slot) = 0; // put the item in the player's hands
+        virtual void drop(int slot, int count) = 0; // put it on the ground in front of the player
+        virtual void store_held() = 0; // take the item the player holds into the inventory
+        virtual void pickup_nearby() = 0; // take the item the player is looking at from the world into the inventory
+        // Drag and drop in the window: the HUD has moved it in the session already; a remote inventory moves it too.
+        virtual void move(int /*from*/, int /*to*/)
+        {
+        }
+        virtual void select_weapon(const std::string& classname) // switch to a weapon the player already carries
+        {
+            (void)classname;
+        }
+        virtual void drop_weapon(const std::string& classname) // put a carried game weapon on the ground
+        {
+            (void)classname;
+        }
+
+        // On the game's main thread, when the window gets k_msg_pump.
+        virtual void pump()
+        {
+        }
+    };
+
+    Backend& backend();
+    // Replaces the stub (done by game::init when the game's functions were found).
+    void set_backend(Backend* backend);
+
+    constexpr UINT k_msg_pump = WM_APP + 0x49;
+    constexpr UINT k_msg_unload = WM_APP + 0x4A; // development: asks the mod to unload itself
+    // The game's window: the backend posts k_msg_pump to it to get code run on the main thread.
+    void set_window(HWND window);
+    void wake_main_thread();
+
+} // namespace game

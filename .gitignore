@@ -1,0 +1,16 @@
+build/
+out/
+build_log.txt
+
+# CLion
+.idea/
+cmake-build-*/
+
+# Python
+__pycache__/
+
+# what the mod writes next to the DLL (logs, settings, saved inventories)
+*.log
+*.ini
+*.inventory
+*.unload
