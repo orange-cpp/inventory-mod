@@ -53,6 +53,8 @@ namespace game
         // client.dll: CHudWeaponSelection's CHudElement vtable and its ShouldDraw (slot 12)
         constexpr std::uintptr_t k_rva_weapon_select_vtable = 0x5D5A84;
         constexpr std::uintptr_t k_rva_weapon_select_should_draw = 0x2CE900;
+        constexpr std::uintptr_t k_rva_weapon_select_panel_vtable = 0x5D5734; // its vgui::Panel part
+        constexpr std::uintptr_t k_rva_weapon_select_paint = 0x2D11E0; // slot 128 of that vtable
         constexpr int k_vt_use_pickup = 426;
         // map item spawners (weapon_*_spawn): see "Map item spawners" in docs/game-notes.md
         constexpr std::uintptr_t k_rva_spawn_vtable = 0x6796E4; // CWeaponSpawn (CWeaponSpawnConfigurable shares its Use)
@@ -691,6 +693,30 @@ namespace game
             if (core::config().replace_native)
                 return false;
             return g_weapon_select.original()(self, edx);
+        }
+
+        // CHudWeaponSelection's Paint (panel vtable 0x105D5734 slot 128, client.dll + 0x2D11E0) draws its boxes one
+        // after the other, unrolled: the gun (slot 0), the melee / pistol (slot 1), a part that ends with the key label
+        // of box 5 and draws the throwable box too (seen in the game: skipping only the next three parts left it), then
+        // slots 2..4.  Beside the game's panel the mod draws the item boxes itself, in its grid, so the hook below sits
+        // on the first instruction after the melee part (after `push 1; mov ecx, ebx; call 0x102CE980`, its key) and,
+        // while g_hide_item_boxes is set, jumps to the code after the slot-4 part (the same stack depth: both are
+        // statement boundaries in the same function).
+        volatile bool g_hide_item_boxes = false;
+        std::uintptr_t g_item_boxes_end = 0;
+        using ItemBoxesFn = void (*)();
+        core::Hook<ItemBoxesFn> g_item_boxes;
+        std::uintptr_t g_item_boxes_original = 0;
+
+        __declspec(naked) void hk_item_boxes()
+        {
+            __asm {
+                cmp byte ptr [g_hide_item_boxes], 0
+                je draw
+                jmp dword ptr [g_item_boxes_end]
+            draw:
+                jmp dword ptr [g_item_boxes_original]
+            }
         }
 
         // Takes `weapon` (a catalogue item lying in the world) into the inventory.
@@ -1504,6 +1530,8 @@ namespace game
 
             void pump() override
             {
+                // beside the game's panel its item boxes are the mod's grid's (see hk_item_boxes)
+                g_hide_item_boxes = !core::config().replace_native && core::config().show_hotbar;
                 refresh_view();
                 for (;;)
                 {
@@ -1812,6 +1840,27 @@ namespace game
             else
                 INV_LOG("game: CHudWeaponSelection::ShouldDraw (%p) does not look as expected: the native panel stays",
                         reinterpret_cast<void*>(should_draw));
+
+            // its Paint: the part that draws the item boxes (see hk_item_boxes)
+            const std::uintptr_t paint = mem::read_or<std::uintptr_t>(client.base + k_rva_weapon_select_panel_vtable + 4u * 128);
+            const std::uintptr_t start =
+                paint == client.base + k_rva_weapon_select_paint
+                    ? mem::find_pattern(paint, 0xD80, "6A 01 8B CB E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 89 45 AC DB 45")
+                    : 0;
+            const std::uintptr_t end =
+                start != 0 ? mem::find_pattern(start, 0x500, "6A 04 8B CB E8 ?? ?? ?? ?? 83 BD 78 FF FF FF 00 7C") : 0;
+            if (start != 0 && end != 0 &&
+                g_item_boxes.create("WeaponSelectItemBoxes", reinterpret_cast<void*>(start + 9), hk_item_boxes))
+            {
+                g_item_boxes_end = end + 9;
+                g_item_boxes_original = reinterpret_cast<std::uintptr_t>(g_item_boxes.original());
+                g_item_boxes.enable();
+                INV_LOG("game: native item boxes from %p to %p", reinterpret_cast<void*>(start + 9),
+                        reinterpret_cast<void*>(g_item_boxes_end));
+            }
+            else
+                INV_LOG("game: CHudWeaponSelection::Paint (%p) does not look as expected: its item boxes stay",
+                        reinterpret_cast<void*>(paint));
         }
 
         // other players (a dedicated server's, a listen server's guests): their inventories, their requests and the

@@ -16,9 +16,11 @@ namespace core
         int key_drop = 'G'; // drop the selected item
         int key_store = 0xBA; // VK_OEM_1 ';'  store the item in your hands
         int key_pickup = 'H'; // take the item you are looking at into the inventory
-        // The keys 1..9 and 0 select hotbar slots 1..10 and the mouse wheel steps through the items; the game's own
+        // Off (the default): the game's own weapon panel stays, with its keys 1 and 2 for the gun and melee; the
+        // inventory is a grid under it (the throwable, kit and pills in their boxes), keys 3..9 and 0 take boxes 1..8.
+        // On: the keys 1..9 and 0 select hotbar slots 1..10 and the mouse wheel steps through the items; the game's own
         // weapon panel is hidden and its slot keys / wheel no longer reach it.
-        bool replace_native = true;
+        bool replace_native = false;
 
         int slots = 8;
         float max_weight = 0.f; // 0: unlimited

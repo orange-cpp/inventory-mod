@@ -117,10 +117,25 @@ slot shows it; with `auto_store=1` an incendiary pack with a free slot is stored
 |---|---|
 | `CHudWeaponSelection` | the game's own weapon panel (the list on the right of the screen). RTTI `.?AVCHudWeaponSelection@@` gives three vtables; the `CHudElement` one is `0x105D5A84` |
 | `ShouldDraw` | slot 10 of that vtable, `0x101DC2C0`, `bool __thiscall (this)`, prologue `56 57 6A FF 8B F9 E8`. Slots 4 / 5 (`0x101DBE80`, `0x101DBEE0`) are `LevelInit` / `Reset`-like, slot 3 is `SetActive`. The mod hooks it and returns false while `replace_native=1`, which hides the panel; `init()` checks the vtable slot and the prologue first |
+| `Paint` | slot 128 of the panel's `vgui::Panel` vtable `0x105D5734`: `0x102D11E0`. Unrolled, one part per box: `0x102CEB20(slot)` (thiscall on the `CHudElement` part, `esi - 0x48`) gets the weapon in a slot, then `0x102CE5B0` / `0x102CE4C0` draw the box and `0x102CE980` its key. The gun is slot 0 (ends with `push 0; ...; call 0x102CE980`), the melee / pistol slot 1 (ends with `push 1; mov ecx, ebx; call 0x102CE980` at `0x102D1B2D`), then a part that calls `0x102CDDF0` and ends with key label 5 (`0x102D1C16`), then slots 2, 3, 4 (`push 2/3/4` before `0x102CEB20` at `0x102D1C48` / `0x102D1D37` / `0x102D1E2D`) up to `0x102D1EFC` (after `push 4; ...; call 0x102CE980`, then `cmp [ebp-0x88], 0`). Skipping only slots 2-4 (from `0x102D1C1F`) still left the throwable box on screen, so the mod hooks `0x102D1B36` (MinHook, a naked detour) and jumps to `0x102D1EFC` while its grid is shown: the gun and melee boxes stay, the mod takes the keys `3`..`5` for its boxes |
+| `m_iMaxSlots` | `"MaxSlots"` (5) is a `CPanelAnimationVar` at `this + 0x22C` of the Panel part (getter `0x102CD600`), not used by Paint for the boxes |
 
-The game's slot keys (`1`..`5`) and the wheel (`invprev` / `invnext`) are not touched in the game: the mod's window
-procedure swallows `1`..`0` and `WM_MOUSEWHEEL` itself (unless the console, chat or a menu has the keyboard).
-`Q` (`lastinv`) is left alone, so the player can still go back to the gun.
+The game's slot keys (`1`..`5`) and the wheel (`invprev` / `invnext`) are not touched in the game: with
+`replace_native=1` the mod's window procedure swallows `1`..`0` and `WM_MOUSEWHEEL` itself (unless the console, chat or
+a menu has the keyboard). `Q` (`lastinv`) is left alone, so the player can still go back to the gun.
+
+With `replace_native=0` (the default) the panel draws and keeps its keys `1` and `2`; the mod takes `3`..`9`, `0` (inventory boxes 0-7), the
+wheel (its own order: gun, melee / pistol, then a 3-wide grid row by row, switching with slot 429 or the inventory's
+use) and its drop key (drops the active weapon through slot 283). The panel's own throwable / kit / pills boxes are
+skipped (see `Paint` above); the inventory is a grid of three boxes per row starting where the throwable box was, and a
+carried item is shown in its home box (`Stack::held`, which `refresh_native` gives every catalogue item the player
+carries, so an item picked up in the game gets one too). The panel's place is `HudWeaponSelection` in `scripts/hudlayout.res` (update
+VPK): `xpos r98`, `ypos c-90`, 100 x 200, boxes stacked upwards, in 480-line units. Measured in the game at 2560x1440
+(1 unit = 3 px): the small boxes (throwable, kit, pills) are 70 px (23.3 units) square, 80 px apart, right edge at
+x = 2535 (8.3 units in from the right), the last one ends at y = 882 (centre + 54 units); the melee and gun boxes start
+at x = 2375 (61.7 units in), and the gun icon sticks out of its box to x = 2355. Its colours: selected
+`142 214 57`, unselected white. The grid uses exactly those sizes (not `hud_scale`), so its boxes line up with the
+panel's. With more than about 12 slots the rows below reach the player's own health panel (about 425 units down).
 
 ## Map item spawners (weapon_*_spawn)
 

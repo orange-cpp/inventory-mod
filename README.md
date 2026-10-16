@@ -20,9 +20,16 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   instead of leaving it on the floor. With `auto_store=1` in `inventory_mod.ini` (or "Store items on use" in Settings)
   every such +use stores the item, even when you could carry it.
 - Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory`.
-- **Replaces the game's weapon panel** (`replace_native=1`, on by default): the native panel on the right is hidden
-  (hook on `CHudWeaponSelection::ShouldDraw`), and its slot keys and wheel are swallowed. `Q` (last weapon) still works
-  to get back to the gun.
+- **Beside the game's weapon panel** (`replace_native=0`, the default): the game's own panel on the right stays as it
+  is for the gun and the melee / pistol (ammo, slot keys `1`, `2`); its three item boxes are hidden and the inventory
+  is a grid under them, three boxes per row, drawn the same way. The throwable, kit and pills you carry live in their
+  own inventory box (counted in its number), green while in your hands, so every item has one place. The wheel (and
+  `[` / `]`) steps through everything: gun, melee / pistol, then the grid row by row, left to right. `3`..`9`, `0` take inventory boxes 1-8 in hand, and
+  the drop key drops what is in your hands (gun or item), like the game's own.
+- **Replaces the game's weapon panel** (`replace_native=1`): the native panel is hidden (hook on
+  `CHudWeaponSelection::ShouldDraw`) and the mod's bottom hotbar takes its place, with its slot keys and wheel. `Q`
+  (last weapon) still works to get back to the gun.
+- The column or hotbar shows only while you play a living survivor (not in menus, as a spectator or as infected).
 - Hotkeys are ignored while the console, the chat line or a menu has the keyboard.
 
 Supported items: first aid kit, defibrillator, pain pills, adrenaline, pipe bomb, molotov, bile jar, the two ammo
@@ -33,11 +40,13 @@ upgrade packs, gas can, propane / oxygen tank, fireworks, gnome, cola bottles.
 | Key | Action |
 |---|---|
 | `I` | open / close the inventory window |
-| `1`..`9`, `0` | select hotbar entry 1..10: first the game's two gun slots (primary, secondary; always shown, empty or not), then the inventory boxes. A throwable, kit, pills or carried item in your hands is shown in its own inventory box (green bar under it), so items never change boxes. Like the game's own panel, selecting any of them takes it in your hands; an inventory item whose game slot is occupied swaps with what is there (that one goes back into its own box) |
-| mouse wheel | previous / next entry through all of them (the game's wheel switching is swallowed) |
-| `[` / `]` | previous / next item on the hotbar |
+| `1`..`5` | the game's own slots (beside the game's panel) |
+| `3`..`9`, `0` | beside the game's panel: take inventory box 1..8 in your hands (an item whose game slot is taken swaps with it; that one goes back into its own box). `1` / `2` stay the game's gun and melee keys |
+| `1`..`9`, `0` | with `replace_native=1`: select hotbar entry 1..10: first the game's two gun slots (primary, secondary; always shown, empty or not), then the inventory boxes. A throwable, kit, pills or carried item in your hands is shown in its own inventory box (green bar under it), so items never change boxes. Like the game's own panel, selecting any of them takes it in your hands; an inventory item whose game slot is occupied swaps with what is there (that one goes back into its own box) |
+| mouse wheel | previous / next entry through all of them: beside the game's panel gun, melee / pistol, then the grid row by row; with `replace_native=1` the hotbar's entries (the game's wheel switching is swallowed either way) |
+| `[` / `]` | the same as the wheel |
 | `\` | use the selected item |
-| `G` | drop the selected entry: an inventory item or a weapon / item you carry in the game's own slots |
+| `G` | beside the game's panel: drop what is in your hands (stored items are dropped from the window). With `replace_native=1`: drop the selected entry, an inventory item or a weapon / item you carry in the game's own slots |
 | `;` | store the item in your hands |
 | `H` | pick up the item in front of you |
 | `Ctrl+End` | unload the DLL |

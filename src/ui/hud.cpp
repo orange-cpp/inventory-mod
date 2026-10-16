@@ -72,14 +72,19 @@ namespace hud
                     {"Pick up nearby:", &c.key_pickup}};
         }
 
-        // 1..9 -> slots 0..8, 0 -> slot 9 (the top row of the keyboard)
+        // The hotbar entry for a key of the keyboard's top row.  Replacing the game's panel: 1..9 -> entries 0..8 and
+        // 0 -> entry 9.  Beside it: 1 and 2 stay the game's (gun, melee / pistol), 3..9 and 0 -> the inventory's boxes
+        // 0..7 (the throwable, kit and pills live in their boxes, so the game's own 3..5 are not needed).
         int digit_slot(int vk)
         {
-            if (!core::config().replace_native)
+            const bool replace = core::config().replace_native;
+            if (vk == '0')
+                return replace ? 9 : 7;
+            if (vk < '1' || vk > '9')
                 return -1;
-            if (vk >= '1' && vk <= '9')
+            if (replace)
                 return vk - '1';
-            return vk == '0' ? 9 : -1;
+            return vk >= '3' ? vk - '3' : -1;
         }
 
         bool is_hotkey(int vk)
@@ -113,10 +118,13 @@ namespace hud
 
         // The hotbar shows only the game's two gun slots (primary, secondary) in front of the inventory: a throwable,
         // kit, pills or carried item in the player's hands is shown in its own inventory box (Stack::held), so items
-        // never move between boxes when the player switches.
+        // never move between boxes when the player switches.  Beside the game's own panel there are none: the entries
+        // are the inventory's boxes only.
         constexpr int k_hotbar_native = 2;
         int hotbar_native(const game::Session& session)
         {
+            if (!core::config().replace_native)
+                return 0;
             return std::min(k_hotbar_native, static_cast<int>(session.native.size()));
         }
 
@@ -194,7 +202,7 @@ namespace hud
 
         // One slot, in the toolkit's primitives: used by the hotbar and by the inventory window's grid.
         // The game's own icon for a classname, fitted (aspect kept) and centred in the box; false when it has none.
-        bool draw_icon(ImDrawList* dl, int x0, int y0, int x1, int y1, const char* classname)
+        bool draw_icon(ImDrawList* dl, int x0, int y0, int x1, int y1, const char* classname, ImU32 tint = IM_COL32_WHITE)
         {
             const icons::Icon* icon = icons::find(classname);
             if (icon == nullptr)
@@ -206,7 +214,7 @@ namespace hud
                 h = w / icon->aspect;
             const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
             dl->AddImage(reinterpret_cast<ImTextureID>(icon->texture), ImVec2(cx - w * 0.5f, cy - h * 0.5f),
-                         ImVec2(cx + w * 0.5f, cy + h * 0.5f), ImVec2(icon->u0, icon->v0), ImVec2(icon->u1, icon->v1));
+                         ImVec2(cx + w * 0.5f, cy + h * 0.5f), ImVec2(icon->u0, icon->v0), ImVec2(icon->u1, icon->v1), tint);
             return true;
         }
 
@@ -342,6 +350,181 @@ namespace hud
             {
                 const int tw = nc::CalcTextWidth(fonts.Normal, name);
                 nc::AddText(dl, fonts.Normal, x0 + (total - tw) / 2, y, pal.TextFocused, name);
+            }
+        }
+
+        // Beside the game's own weapon panel (replace_native=0) the panel shows only the gun and the melee / pistol (its
+        // throwable, kit and pills boxes are not drawn, see game.cpp hk_item_boxes); under them the mod draws the
+        // inventory, three boxes per row.  What the player carries in those game slots lives in its own inventory box
+        // (Stack::held: refresh_native gives an item picked up in the game a box), green while in the hands, so every
+        // item has one place.
+        struct Cell
+        {
+            int row, column;
+        };
+
+        Cell grid_cell(int slot)
+        {
+            return {slot / 3, slot % 3};
+        }
+
+        // One entry of the wheel's order: a game weapon (Session::native index) or an inventory box.
+        struct GridEntry
+        {
+            bool native;
+            int index;
+        };
+
+        // Whether `stack` is the item in the player's hands.
+        bool in_hands(const game::Session& session, const inv::Stack& stack)
+        {
+            return stack.held && std::any_of(session.native.begin(), session.native.end(), [&](const game::NativeWeapon& w) {
+                       return w.active && w.classname == stack.def->classname;
+                   });
+        }
+
+        // Everything the wheel steps through, in reading order: the gun, the melee / pistol, then the inventory row by
+        // row, left to right, empty boxes left out.  A carried item is its box; a carried thing that has no box (the
+        // inventory is full, or a gas can) comes after the melee.
+        std::vector<GridEntry> grid_entries(const game::Session& session)
+        {
+            std::vector<GridEntry> entries;
+            for (int index = 0; index < static_cast<int>(session.native.size()); ++index)
+            {
+                const game::NativeWeapon& weapon = session.native[static_cast<std::size_t>(index)];
+                const inv::ItemDef* def = weapon.classname.empty() ? nullptr : inv::find_item(weapon.classname);
+                if (!weapon.classname.empty() && (index < 2 || def == nullptr || session.inventory.held_slot(*def) < 0))
+                    entries.push_back({true, index});
+            }
+            for (int i = 0; i < session.inventory.slot_count(); ++i)
+                if (!session.inventory.slot(i).empty())
+                    entries.push_back({false, i});
+            return entries;
+        }
+
+        // The wheel beside the game's panel: from what is in the hands to the next / previous entry, wrapping.
+        void step_grid(int direction)
+        {
+            GridEntry target{};
+            std::string weapon;
+            {
+                game::Session& session = game::local_session();
+                std::lock_guard lock(session.mutex);
+                const std::vector<GridEntry> entries = grid_entries(session);
+                if (entries.empty())
+                    return;
+                int position = -1;
+                for (std::size_t e = 0; e < entries.size(); ++e)
+                    if (entries[e].native ? session.native[static_cast<std::size_t>(entries[e].index)].active
+                                          : in_hands(session, session.inventory.slot(entries[e].index)))
+                        position = static_cast<int>(e);
+                const int count = static_cast<int>(entries.size());
+                position = position < 0 ? (direction > 0 ? 0 : count - 1) : (position + direction + count) % count;
+                target = entries[static_cast<std::size_t>(position)];
+                if (target.native)
+                    weapon = session.native[static_cast<std::size_t>(target.index)].classname;
+                else
+                    session.inventory.select(target.index);
+            }
+            // the lock is released: the backend may take it
+            if (target.native)
+                game::backend().select_weapon(weapon);
+            else
+                game::backend().use(target.index);
+        }
+
+        void draw_column(const game::Session& session)
+        {
+            const inv::Inventory& inventory = session.inventory;
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            const nc::Fonts& fonts = nc::GetFonts();
+            const int line = static_cast<int>(fonts.Size);
+
+            // The panel's place comes from scripts/hudlayout.res (HudWeaponSelection: 480-line units, right-aligned)
+            // and was measured in the game: its item boxes are 23.3 units square, 26.7 apart, their right edge 8.3
+            // units from the screen's, the pills box ends 54 units below the centre.  The grid uses the same sizes
+            // (not hud_scale), so it lines up with the gun and melee boxes above it, and its first row is where the
+            // panel's throwable box would be.  (Not drawn as such: a carried throwable is shown in its own box.)
+            const float unit = display.y / 480.f;
+            const float size_f = 23.3f * unit, pitch_f = 26.7f * unit;
+            const int size = static_cast<int>(size_f);
+            const int gap = static_cast<int>(pitch_f - size_f);
+            const float right = display.x - 8.3f * unit;
+            const float first_bottom = display.y * 0.5f + 54.f * unit - 2.f * pitch_f; // the bottom of row 0
+            const float thickness = std::max(1.f, unit * 0.5f);
+
+            const ImU32 green = IM_COL32(142, 214, 57, 255);
+            const int n = inventory.slot_count();
+            const int first_row_top = static_cast<int>(first_bottom - size_f);
+            for (int i = 0; i < n; ++i)
+            {
+                const Cell cell = grid_cell(i);
+                const int x1 = static_cast<int>(right - (2 - cell.column) * pitch_f), x0 = x1 - size;
+                const int y1 = static_cast<int>(first_bottom + cell.row * pitch_f), y0 = y1 - size;
+                const inv::Stack& stack = inventory.slot(i);
+                const bool selected = i == inventory.selected();
+                if (stack.empty())
+                {
+                    // an empty box: only its place, faintly
+                    dl->AddRectFilled(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
+                                      ImVec2(static_cast<float>(x1), static_cast<float>(y1)), IM_COL32(0, 0, 0, 60));
+                    dl->AddRect(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
+                                ImVec2(static_cast<float>(x1), static_cast<float>(y1)),
+                                selected ? IM_COL32(255, 255, 255, 170) : IM_COL32(255, 255, 255, 50), 0.f, 0, thickness);
+                }
+                else
+                {
+                    // green, like the game's panel, for the one in the hands; the box counts the one carried too
+                    const bool hands = in_hands(session, stack);
+                    const ImU32 ink = hands ? green : IM_COL32_WHITE;
+                    dl->AddRectFilled(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
+                                      ImVec2(static_cast<float>(x1), static_cast<float>(y1)), IM_COL32(0, 0, 0, 120));
+                    const ImU32 outline = hands ? green : (selected ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120));
+                    dl->AddRect(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
+                                ImVec2(static_cast<float>(x1), static_cast<float>(y1)), outline, 0.f, 0,
+                                hands || selected ? thickness * 2.f : thickness);
+                    const int pad = size / 10;
+                    if (!draw_icon(dl, x0 + pad, y0 + pad, x1 - pad, y1 - pad, stack.def->classname, ink))
+                    {
+                        const int tw = nc::CalcTextWidth(fonts.Header, stack.def->tag);
+                        nc::AddText(dl, fonts.Header, x0 + (size - tw) / 2, y0 + (size - line) / 2,
+                                    ImGui::ColorConvertU32ToFloat4(ink), stack.def->tag);
+                    }
+                    const int shown = stack.count + (stack.held ? 1 : 0);
+                    if (shown > 1)
+                    {
+                        char text[16];
+                        std::snprintf(text, sizeof(text), "%d", shown);
+                        const int tx = x1 - nc::CalcTextWidth(fonts.Header, text) - 3, ty = y1 - line - 1;
+                        nc::AddText(dl, fonts.Header, tx + 1, ty + 1, ImVec4(0.f, 0.f, 0.f, 0.9f), text);
+                        nc::AddText(dl, fonts.Header, tx, ty, ImGui::ColorConvertU32ToFloat4(ink), text);
+                    }
+                }
+                // the key that takes it in hand: 3..9, 0
+                if (i < 8)
+                {
+                    const char key[2] = {static_cast<char>(i == 7 ? '0' : '3' + i), 0};
+                    nc::AddText(dl, fonts.Normal, x0 + 3, y0 + 1, ImVec4(1.f, 1.f, 1.f, 0.55f), key);
+                }
+            }
+
+            // the selected item's name, and a status line from the game side for a few seconds, left of the first row
+            const int text_right = static_cast<int>(right - 3.f * pitch_f) - gap;
+            int y = first_row_top;
+            const inv::Stack& selected = inventory.slot(inventory.selected());
+            if (!selected.empty())
+            {
+                const int tw = nc::CalcTextWidth(fonts.Normal, selected.def->name);
+                nc::AddText(dl, fonts.Normal, text_right - tw + 1, y + 1, ImVec4(0.f, 0.f, 0.f, 0.9f), selected.def->name);
+                nc::AddText(dl, fonts.Normal, text_right - tw, y, ImVec4(1.f, 1.f, 1.f, 0.9f), selected.def->name);
+                y += line + 2;
+            }
+            if (!session.message.empty() && GetTickCount64() < session.message_until)
+            {
+                const int tw = nc::CalcTextWidth(fonts.Header, session.message.c_str());
+                nc::AddText(dl, fonts.Header, text_right - tw + 1, y + 1, ImVec4(0.f, 0.f, 0.f, 0.9f), session.message.c_str());
+                nc::AddText(dl, fonts.Header, text_right - tw, y, ImVec4(0.56f, 0.84f, 0.22f, 1.f), session.message.c_str());
             }
         }
 
@@ -494,7 +677,7 @@ namespace hud
             {
                 changed |= nc::Checkbox("Show hotbar", &cfg.show_hotbar);
                 changed |= nc::Checkbox("Store items on use", &cfg.auto_store);
-                changed |= nc::Checkbox("Replace the game's weapon panel (1-0 keys, wheel)", &cfg.replace_native);
+                changed |= nc::Checkbox("Replace the game's weapon panel (1-0 keys, wheel); off: a grid under it, keys 3-0", &cfg.replace_native);
                 changed |= nc::SliderFloat("Scale:", &cfg.hud_scale, 0.5f, 3.f, "%.2f");
             }
             nc::EndGroupBox();
@@ -575,7 +758,12 @@ namespace hud
             game::Session& session = game::local_session();
             std::lock_guard lock(session.mutex);
             if (core::config().show_hotbar && session.playing)
-                draw_hotbar(session);
+            {
+                if (core::config().replace_native)
+                    draw_hotbar(session);
+                else
+                    draw_column(session);
+            }
             if (g.open)
                 inventory_window(session.inventory);
             // a dedicated server keeps (and saves) a remote inventory; the local file is left alone meanwhile
@@ -633,11 +821,17 @@ namespace hud
             }
         }
         // the wheel steps through the items (the open window takes the wheel itself, and the console keeps it)
-        if (msg == WM_MOUSEWHEEL && core::config().replace_native && !g.open && playing() && !game::backend().typing())
+        // (beside the game's panel: through the game's weapons and the grid, row by row)
+        if (msg == WM_MOUSEWHEEL && (core::config().replace_native || core::config().show_hotbar) && !g.open && playing() && !game::backend().typing())
         {
             const int delta = static_cast<short>(HIWORD(wparam));
             if (delta != 0)
-                step_entry(delta > 0 ? -1 : 1);
+            {
+                if (core::config().replace_native)
+                    step_entry(delta > 0 ? -1 : 1);
+                else
+                    step_grid(delta > 0 ? -1 : 1);
+            }
             return true;
         }
         const bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
@@ -712,7 +906,26 @@ namespace hud
 
         if (vk == cfg.key_prev || vk == cfg.key_next)
         {
-            step_entry(vk == cfg.key_prev ? -1 : 1);
+            if (cfg.replace_native)
+                step_entry(vk == cfg.key_prev ? -1 : 1);
+            else
+                step_grid(vk == cfg.key_prev ? -1 : 1);
+            return true;
+        }
+        if (vk == cfg.key_drop && !cfg.replace_native)
+        {
+            // beside the game's panel the drop key does what the game's own does: drops what is in the hands (a gun,
+            // or an inventory item taken in hand; its box lets go of it).  Stored items are dropped from the window.
+            std::string weapon;
+            {
+                game::Session& session = game::local_session();
+                std::lock_guard lock(session.mutex);
+                for (const game::NativeWeapon& w : session.native)
+                    if (w.active)
+                        weapon = w.classname;
+            }
+            if (!weapon.empty())
+                game::backend().drop_weapon(weapon);
             return true;
         }
         if (vk == cfg.key_use || vk == cfg.key_drop)
