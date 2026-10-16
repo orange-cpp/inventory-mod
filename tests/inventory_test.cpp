@@ -3,6 +3,7 @@
 #include "inv/inventory.hpp"
 #include "inv/rules.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -347,6 +348,23 @@ molotov = 1
         CHECK(inv::ammo_max("shotgun") == 72);
         inv::set_ammo_max("assaultrifle", -1);
         inv::set_ammo_max("smg", -1);
+
+        // [round_weight] and what the reserve weighs
+        CHECK(inv::round_weight("assaultrifle") == 0.01f && inv::round_weight("grenadelauncher") == 0.15f);
+        CHECK(inv::ammo_magazine("shotgun") == 8 && std::string(inv::ammo_title("smg")) == "SMG rounds");
+        CHECK(std::string(inv::ammo_kind_at(3)) == "assaultrifle" && inv::ammo_kind_at(1) == nullptr); // 1: the pistols
+        int pool[32] = {};
+        pool[3] = 360; // rifle
+        pool[7] = 50; // shotgun
+        pool[1] = 999; // the pistols' endless reserve weighs nothing
+        CHECK(std::fabs(inv::ammo_weight(pool) - (3.6f + 2.f)) < 1e-4f);
+        const inv::Rules rounds = inv::apply_rules("[round_weight]\nassault_rifle = 0.02\nlaser = 1\nsmg = -1\n");
+        CHECK(rounds.errors.size() == 2 && inv::round_weight("assaultrifle") == 0.02f && inv::round_weight("smg") == 0.006f);
+        inv::Inventory loaded({.slots = 2, .weapon_slots = 1});
+        loaded.set_ammo_weight(inv::ammo_weight(pool));
+        CHECK(std::fabs(loaded.weight() - (7.2f + 2.f)) < 1e-4f);
+        inv::apply_rules("");
+        CHECK(inv::round_weight("assaultrifle") == 0.01f); // back to the default
 
         inv::set_item_weight("weapon_first_aid_kit", medkit_weight);
         inv::set_item_weight("weapon_pain_pills", 1.f);

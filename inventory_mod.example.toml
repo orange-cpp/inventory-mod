@@ -68,6 +68,19 @@ grenade_launcher = 30
 m60 = 0
 chainsaw = 20
 
+# What one reserve round weighs: the rounds you carry count against max_weight (360 rifle rounds at 0.01 weigh 3.6).
+# An ammo pile then fills you only up to the weight limit. 0: that type weighs nothing. The Items tab of the window
+# lists your rounds and drops them, a magazine's worth or all, as an ammo pile anyone can pick up with E.
+[round_weight]
+assault_rifle = 0.01
+smg = 0.006
+shotgun = 0.04
+auto_shotgun = 0.04
+hunting_rifle = 0.02
+sniper_rifle = 0.02
+grenade_launcher = 0.15
+m60 = 0.01
+
 # The infection: knocked down by the infected, grabbed by a special (smoker, hunter, jockey, charger) or vomited on by
 # a boomer, a survivor is infected and a clock starts. A new hit takes time off; pain pills put the clock back to the
 # start. When the clock runs out the survivor dies and a random special infected rises where they stood, and they cannot

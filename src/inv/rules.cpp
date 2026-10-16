@@ -264,6 +264,24 @@ namespace inv
             }
         }
 
+        // [round_weight]: what one reserve round of each ammo type weighs (the same names as [ammo])
+        reset_round_weights();
+        if (const toml::table* rounds = root["round_weight"].as_table())
+        {
+            for (const auto& [key, node] : *rounds)
+            {
+                std::string kind(key.str());
+                kind.erase(std::remove(kind.begin(), kind.end(), '_'), kind.end());
+                const auto weight = node.is_boolean() ? std::nullopt : number(node);
+                if (!weight || *weight < 0.0 || *weight > 10.0)
+                    rules.errors.push_back(at_line(node, "round_weight: " + std::string(key.str()) + " must be a number from 0 to 10"));
+                else if (!set_round_weight(kind, static_cast<float>(*weight)))
+                    rules.errors.push_back(at_line(node, "round_weight: unknown ammo type " + std::string(key.str()) +
+                                                             " (assault_rifle, smg, shotgun, auto_shotgun, hunting_rifle, "
+                                                             "sniper_rifle, grenade_launcher, m60, chainsaw)"));
+            }
+        }
+
         g_infection = InfectionRules{};
         if (const toml::table* infection = root["infection"].as_table())
             read_infection(*infection, rules);
@@ -274,7 +292,7 @@ namespace inv
 
         for (const auto& [key, node] : root)
             if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection" &&
-                key != "stamina")
+                key != "stamina" && key != "round_weight")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
         return rules;
     }

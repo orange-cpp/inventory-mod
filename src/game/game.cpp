@@ -5,7 +5,11 @@
 //
 //   IServerTools ("VSERVERTOOLS001", server.dll's CreateInterface), vtable slots
 //       7 FirstEntity     (its body loads &gEntList: `6A 00 B9 <gEntList> E8`)
-//      10 GetKeyValue(ent, field, buf, len)     11 SetKeyValue(ent, field, const char*)
+//      10 GetKeyValue(ent, field, buf, len)     13 SetKeyValue(ent, field, const char*)
+//         (MSVC puts overloads in the vtable last first: 11 is SetKeyValue(ent, field, const Vector&), 0x104CF140,
+//         which calls the entity's KeyValue(field, Vector) (slot 32, 0x1006D4D0: sprintf "%f %f %f"); 12 the float
+//         one; 13, 0x104CF100, the entity's KeyValue(field, const char*) (slot 34, 0x10070670: "rendercolor" ...).
+//         Slot 11 was used until 2026-10-16: every key got a string's bytes as three floats, "1775...e19 ...")
 //      14 CreateEntityByName(classname)         15 DispatchSpawn(ent)
 //      16 DestroyEntityByHammerId, whose body is `... 50 E8 <UTIL_Remove> 83 C4 04 B0 01`
 //   gEntList: the entity list.  Entry i is at gEntList + 4 + 16 * i = {entity, serial, prev, next}; an EHANDLE is
@@ -64,6 +68,7 @@ namespace game
         constexpr int k_vt_spawn_weapon_id = 240; // the spawner's weapon ID
         constexpr std::uintptr_t k_rva_weapon_get_slot = 0x2C98F0; // CTerrorPlayer: the carried weapon of a weapon ID's slot
         constexpr std::uintptr_t k_rva_weapon_id_name = 0x24EB70; // cdecl: weapon ID -> "weapon_first_aid_kit"
+        constexpr int k_vt_tools_set_key_value = 13; // IServerTools::SetKeyValue(entity, field, const char*)
         constexpr int k_vt_precache = 26;
         constexpr int k_vt_teleport = 118;
         constexpr std::uintptr_t k_off_my_weapons = 0x18F4;
@@ -164,6 +169,7 @@ namespace game
         // another player (every player in a dedicated server, a guest on a listen server; see "Other players" below)
         // it is that player.  Main thread only.
         bool g_dedicated = false;
+        void* g_engine_server = nullptr; // engine.dll VEngineServer022 (see "other players")
         void* g_active_player = nullptr;
 
         // The listen server's host: entity 1, when it is a player; nullptr in a dedicated server or out of a game.
@@ -1245,6 +1251,212 @@ namespace game
             return g_bump_weapon.original()(player, edx, weapon);
         }
 
+        // ---- rounds: the reserve as a thing of its own -----------------------------------------------------------------
+        //
+        // The player's reserve (m_iAmmo, per ammo type, shared by the guns of a type) weighs (inv::round_weight,
+        // [round_weight] in the rules: refresh_native counts it in) and can be dropped, a magazine's worth at a time or
+        // all of a type.  The rounds land as one of the game's own ammo piles, weapon_ammo_spawn (CWeaponAmmoSpawn, see
+        // below), with a model the map has loaded and a targetname that says what it holds: "inv_rounds_<kind>_<rounds>".
+        // +use on it goes through the pile's own Use, hooked (hk_ammo_spawn_use): instead of the endless refill it gives
+        // those rounds, as many as fit (the type's most, the weight limit); what does not fit stays in the pile.  The
+        // bots do not take them.  Ammo piles and guns picked up fill a reserve as the game does; cap_reserve takes a rise
+        // past the weight limit back down to what fits.
+
+        constexpr char k_pile_prefix[] = "inv_rounds_";
+        constexpr std::uintptr_t k_off_entity_name = 0x140; // CBaseEntity::m_iName (targetname)
+        // weapon_ammo_spawn is CWeaponAmmoSpawn (vtable 0x10682CF4, set by its factory 0x102A22F0 over CWeaponSpawn's):
+        // its Precache (slot 26, 0x1029F5A0) precaches models/props/terror/ammo_stack.mdl, its model (slot 239,
+        // 0x1029F560) is the "model" keyvalue or that one, its Use (slot 106, 0x1029F5F0) is its own (the refill).
+        // A model precached in the middle of a round can show the clients the ERROR model, so the pile takes the
+        // first of these the map has loaded (VEngineServer022 slot 9 IsModelPrecached, what PrecacheModel asks
+        // first), else ammo_stack.mdl anyway.  (The first piles were ERROR models for another reason: their "model"
+        // went through the Vector SetKeyValue, see the top of this file.)
+        constexpr const char* k_pile_models[] = {"models/props/terror/ammo_stack.mdl",
+                                                 "models/props_unique/spawn_apartment/coffeeammo.mdl",
+                                                 "models/props/terror/exploding_ammo.mdl",
+                                                 "models/props/terror/incendiary_ammo.mdl"};
+        constexpr int k_vt_is_model_precached = 9;
+        // server.dll CBaseEntity::PrecacheModel (0x1006B690, cdecl int (const char*): engine slot 5 PrecacheModel(name,
+        // true), with a warning when it is late)
+        constexpr std::uintptr_t k_rva_precache_model = 0x6B690;
+        using PrecacheModelFn = int(__cdecl*)(const char* name);
+        using IsModelPrecachedFn = bool(__thiscall*)(void* engine, const char* name);
+
+        const char* pile_model()
+        {
+            const auto is_precached = g_engine_server != nullptr
+                                          ? reinterpret_cast<IsModelPrecachedFn>(mem::vslot(g_engine_server, k_vt_is_model_precached))
+                                          : nullptr;
+            for (const char* model : k_pile_models)
+            {
+                bool loaded = false;
+                if (is_precached != nullptr && mem::guarded([&] { loaded = is_precached(g_engine_server, model); }) && loaded)
+                    return model;
+            }
+            return k_pile_models[0];
+        }
+
+        PrecacheModelFn precache_model_fn()
+        {
+            static PrecacheModelFn fn = [] {
+                const std::uintptr_t at = g.server.base + k_rva_precache_model;
+                return mem::find_pattern(at, 11, "55 8B EC 56 8B 75 08 85 F6 74 ??") == at ? reinterpret_cast<PrecacheModelFn>(at)
+                                                                                         : nullptr;
+            }();
+            return fn;
+        }
+
+        int team_of(void* entity); // see "the infection"
+        bool is_bot(void* player);
+
+        // What a pile the mod dropped holds; false for any other entity.
+        bool pile_contents(void* entity, std::string& kind, int& rounds)
+        {
+            // CBaseEntity::m_iName +0x140 (datamap "m_iName": a pooled string; IServerTools GetKeyValue "targetname"
+            // gives the pointer's bytes, not the text, as for the model)
+            char name[96] = {};
+            const char* text = mem::read_or<const char*>(reinterpret_cast<std::uintptr_t>(entity) + k_off_entity_name);
+            if (text == nullptr || !mem::safe_copy(name, text, sizeof(name) - 1))
+                return false;
+            if (std::strncmp(name, k_pile_prefix, sizeof(k_pile_prefix) - 1) != 0)
+                return false;
+            const char* rest = name + sizeof(k_pile_prefix) - 1;
+            const char* separator = std::strrchr(rest, '_');
+            if (separator == nullptr)
+                return false;
+            kind.assign(rest, static_cast<std::size_t>(separator - rest));
+            rounds = std::atoi(separator + 1);
+            return inv::ammo_index(kind) >= 0 && rounds > 0;
+        }
+
+        void set_pile_contents(void* entity, const std::string& kind, int rounds)
+        {
+            const std::string name = k_pile_prefix + kind + "_" + std::to_string(rounds);
+            mem::guarded([&] { g.set_key_value(g.tools, entity, "targetname", name.c_str()); });
+        }
+
+        int* reserve_of(void* player, int type)
+        {
+            return reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo + 4u * static_cast<unsigned>(type));
+        }
+
+        // How many of `rounds` of `kind` the player can take: up to the type's most and, for the player whose inventory
+        // session() is, the weight limit.
+        int rounds_that_fit(void* player, const std::string& kind, int rounds, bool weigh)
+        {
+            const int type = inv::ammo_index(kind);
+            const AmmoPool pool = read_pool(player);
+            if (type < 0 || !pool.read)
+                return 0;
+            const int max = inv::ammo_max(kind);
+            int n = max >= 0 ? std::min(rounds, std::max(0, max - pool.count[type])) : rounds;
+            const float each = inv::round_weight(kind);
+            if (weigh && each > 0.f)
+            {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                const float max_weight = s.inventory.limits().max_weight;
+                const float load = s.inventory.weight() - s.inventory.ammo_weight() + inv::ammo_weight(pool.count);
+                if (max_weight > 0.f)
+                    n = std::min(n, max_weight <= load ? 0 : static_cast<int>(std::floor((max_weight - load) / each + 1e-4f)));
+            }
+            return std::max(0, n);
+        }
+
+        // Drops `count` (0: all) of the player's reserve of `kind` in front of them, as an ammo pile.
+        void do_drop_ammo(const std::string& kind, int count)
+        {
+            void* player = local_player();
+            const int type = inv::ammo_index(kind);
+            const char* title = inv::ammo_title(kind);
+            if (player == nullptr || type < 0 || title == nullptr)
+            {
+                notify("Not in a game");
+                return;
+            }
+            Vec3 eye{}, forward{};
+            if (!player_view(player, eye, forward))
+            {
+                notify("Cannot read where you are looking");
+                return;
+            }
+            const int have = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(reserve_of(player, type)), 0);
+            const int n = count <= 0 ? have : std::min(count, have);
+            if (n <= 0)
+            {
+                notify(std::string("No ") + title + " to drop");
+                return;
+            }
+            const Vec3 position{eye.x + forward.x * 48.f, eye.y + forward.y * 48.f, eye.z + forward.z * 48.f - 14.f};
+            const PrecacheModelFn precache_model = precache_model_fn();
+            if (precache_model == nullptr)
+            {
+                notify("Cannot drop rounds: the game's PrecacheModel does not look as expected");
+                return;
+            }
+            const char* model = pile_model();
+            int model_index = -1;
+            mem::guarded([&] { model_index = precache_model(model); });
+            if (model_index < 0)
+            {
+                notify(std::string("Could not drop ") + title + ": no ammo pile model");
+                return;
+            }
+            void* pile = nullptr;
+            mem::guarded([&] {
+                pile = g.create_entity(g.tools, "weapon_ammo_spawn");
+                if (pile == nullptr)
+                    return;
+                g.set_key_value(g.tools, pile, "model", model);
+                set_pile_contents(pile, kind, n);
+                if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(pile, k_vt_precache)))
+                    precache(pile);
+                g.dispatch_spawn(g.tools, pile);
+                if (const auto teleport = reinterpret_cast<TeleportFn>(mem::vslot(pile, k_vt_teleport)))
+                    teleport(pile, &position, nullptr, nullptr);
+                if (g.drop_to_floor != nullptr)
+                    g.drop_to_floor(pile, 0x200400Bu, nullptr);
+            });
+            if (pile == nullptr)
+            {
+                notify(std::string("Could not drop ") + title);
+                return;
+            }
+            mem::guarded([&] { *reserve_of(player, type) = have - n; });
+            state_changed(player);
+            INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s) at %.1f %.1f %.1f", n, kind.c_str(), have - n, pile, model,
+                    position.x, position.y, position.z);
+            notify("Dropped " + std::to_string(n) + " " + title);
+        }
+
+        // +use on a pile the mod dropped: its rounds, as many as fit.
+        void take_pile(void* pile, void* player, const std::string& kind, int rounds)
+        {
+            if (player == nullptr || team_of(player) != 2 || is_bot(player))
+                return;
+            const int type = inv::ammo_index(kind);
+            const char* title = inv::ammo_title(kind);
+            const bool own = player == local_player(); // the host, or the player being served: their weight counts
+            const int n = rounds_that_fit(player, kind, rounds, own);
+            if (n <= 0)
+            {
+                const int have = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(reserve_of(player, type)), 0);
+                if (own)
+                    notify(have >= inv::ammo_max(kind) ? std::string("You carry all the ") + title + " you can"
+                                                       : std::string("Too heavy for more ") + title);
+                return;
+            }
+            mem::guarded([&] { *reserve_of(player, type) += n; });
+            state_changed(player);
+            if (n >= rounds)
+                mem::guarded([&] { g.util_remove(pile); });
+            else
+                set_pile_contents(pile, kind, rounds - n);
+            INV_LOG("rounds: took %d of the %d %s in pile %p", n, rounds, kind.c_str(), pile);
+            if (own)
+                notify("Picked up " + std::to_string(n) + " " + title + (n < rounds ? " (the rest is too much)" : ""));
+        }
+
         // A map's item spawner refuses by itself when the player already carries the same item: CWeaponSpawn::Use
         // (0x1029DCB0) asks Weapon_GetSlot(player, weaponId) (0x102C98F0) and, finding that item, takes a branch that
         // gives nothing, so the +use pickup hook never runs.  While the spawner serves the local player an item the
@@ -1324,7 +1536,6 @@ namespace game
         using ClientPrintfFn = void(__thiscall*)(void* engine, void* edict, const char* text);
         using ClientCommandFn = void(__cdecl*)(void* player, const void* args);
 
-        void* g_engine_server = nullptr;
         NetworkIdFn g_network_id = nullptr;
         ClientPrintfFn g_client_printf = nullptr;
         core::Hook<ClientCommandFn> g_client_command;
@@ -1635,6 +1846,31 @@ namespace game
             gun_use(gun, edx, activator, caller, type, value);
         }
 
+        // +use on an ammo pile: CWeaponAmmoSpawn::Use (0x1029F5F0, slot 106 of its vtable 0x10682CF4; thiscall
+        // (activator, caller, type, value), ret 0x10) is its own, not CWeaponSpawn's.  A pile of rounds the mod dropped
+        // gives its rounds (take_pile), never the endless refill; any other pile is the game's.
+        constexpr std::uintptr_t k_rva_ammo_spawn_use = 0x29F5F0;
+        constexpr std::uintptr_t k_rva_ammo_spawn_vtable = 0x682CF4;
+        core::Hook<SpawnUseFn> g_ammo_spawn_use;
+
+        void __fastcall hk_ammo_spawn_use(void* pile, void* edx, void* activator, void* caller, int type, float value)
+        {
+            std::string kind;
+            int rounds = 0;
+            if (!pile_contents(pile, kind, rounds))
+            {
+                g_ammo_spawn_use.original()(pile, edx, activator, caller, type, value);
+                return;
+            }
+            if (served_remotely(activator))
+            {
+                Activation active(activator); // (their weight counts when it is theirs)
+                take_pile(pile, activator, kind, rounds);
+                return;
+            }
+            take_pile(pile, activator, kind, rounds);
+        }
+
         void do_drop_weapon(const std::string& classname);
 
         // The requests a client's HUD sends (forwarded console commands).  Anything else goes to the game.
@@ -1691,6 +1927,8 @@ namespace game
                     INV_LOG("server: a player asks to drop %s", text.c_str());
                     do_drop_weapon(text);
                 }
+                else if (command == "inv_dropammo" && inv::ammo_index(text) >= 0)
+                    do_drop_ammo(text, a2);
                 else if (command == "inv_infect")
                     infect(player, "test");
                 else if (command == "inv_spawn")
@@ -2573,11 +2811,97 @@ namespace game
             return g_fire_event.original()(self, edx, event, dont_broadcast);
         }
 
+        // Ammo piles (and guns picked up) fill the reserve as the game does, up to the type's most; with a weight limit
+        // only what fits by weight is kept (see "rounds"): ten times a second the reserves of the players who have an
+        // inventory here (the host, the served players) are compared with the last look, and a rise that takes the load
+        // past the limit is taken back down to what fits.
+        struct ReserveLook
+        {
+            void* player = nullptr;
+            int pool[32] = {};
+        };
+        std::map<int, ReserveLook> g_reserves; // by userid
+        ULONGLONG g_reserves_at = 0;
+
+        void cap_reserve(void* player, int user_id, Session& s, bool host)
+        {
+            AmmoPool pool = read_pool(player);
+            if (!pool.read)
+                return;
+            ReserveLook& look = g_reserves[user_id];
+            if (look.player != player)
+            {
+                look.player = player;
+                std::memcpy(look.pool, pool.count, sizeof(look.pool));
+                return;
+            }
+            float max_weight = 0.f, load = 0.f;
+            {
+                std::lock_guard lock(s.mutex);
+                max_weight = s.inventory.limits().max_weight;
+                load = s.inventory.weight() - s.inventory.ammo_weight() + inv::ammo_weight(pool.count);
+            }
+            bool changed = false;
+            if (max_weight > 0.f && load > max_weight + 1e-3f)
+                for (const char* kind : inv::ammo_kinds())
+                {
+                    const int type = inv::ammo_index(kind);
+                    const int rise = pool.count[type] - look.pool[type];
+                    const float each = inv::round_weight(kind);
+                    if (rise <= 0 || each <= 0.f)
+                        continue;
+                    const int back = std::min(rise, static_cast<int>(std::ceil((load - max_weight) / each - 1e-4f)));
+                    pool.count[type] -= back;
+                    load -= static_cast<float>(back) * each;
+                    changed = true;
+                    INV_LOG("rounds: userid %d got %d %s, %d fit by weight (%.1f of %.1f)", user_id, rise, kind, rise - back,
+                            load, max_weight);
+                    if (host)
+                        notify("Too heavy: only " + std::to_string(rise - back) + " " + inv::ammo_title(kind) + " fit");
+                    if (load <= max_weight + 1e-3f)
+                        break;
+                }
+            if (changed)
+            {
+                write_pool(player, pool);
+                state_changed(player);
+            }
+            std::memcpy(look.pool, pool.count, sizeof(look.pool));
+        }
+
+        void cap_reserves()
+        {
+            const ULONGLONG now = GetTickCount64();
+            if (now - g_reserves_at < 100)
+                return;
+            g_reserves_at = now;
+            void* host = host_player();
+            for (int index = 1; index <= 64; ++index)
+            {
+                void* player = entity_at_index(index);
+                char name[16];
+                if (player == nullptr || !classname_of(player, name, sizeof(name)) || std::strcmp(name, "player") != 0 ||
+                    team_of(player) != 2 || !alive(player))
+                    continue;
+                Session* s = nullptr;
+                if (player == host)
+                    s = &local_session();
+                else if (ServerPlayer* sp = server_player(player); sp != nullptr && sp->has_mod)
+                    s = &sp->session;
+                const int user_id = s != nullptr ? user_id_of(player) : -1;
+                if (user_id > 0)
+                    cap_reserve(player, user_id, *s, player == host);
+            }
+        }
+
         void __fastcall hk_game_frame(void* self, void* edx, bool simulating)
         {
             g_game_frame.original()(self, edx, simulating);
             if (simulating)
-                mem::guarded([] { stamina_frame(); });
+                mem::guarded([] {
+                    stamina_frame();
+                    cap_reserves();
+                });
             if (g_infections.empty() && g_body_removals.empty())
                 return;
             const ULONGLONG now = GetTickCount64();
@@ -2703,8 +3027,12 @@ namespace game
         void refresh_native()
         {
             std::vector<NativeWeapon> list(k_native_slots);
+            float rounds_weight = 0.f; // the reserve's (see "rounds")
             if (void* player = local_player())
             {
+                const AmmoPool pool = read_pool(player);
+                if (pool.read)
+                    rounds_weight = inv::ammo_weight(pool.count);
                 const std::uint32_t active = handle_at(player, k_off_active_weapon);
                 for (int i = 0; i < k_max_weapons; ++i)
                 {
@@ -2750,6 +3078,7 @@ namespace game
             for (const NativeWeapon& weapon : list)
                 weapons += inv::weapon_weight(weapon.classname);
             inventory.set_weapons_weight(weapons);
+            inventory.set_ammo_weight(rounds_weight);
             s.native = std::move(list);
         }
 
@@ -3111,6 +3440,10 @@ namespace game
             {
                 post({Command::DropWeapon, 0, 0, classname});
             }
+            void drop_ammo(const std::string& kind, int count) override
+            {
+                post({Command::DropAmmo, 0, count, kind});
+            }
             void infect_self() override
             {
                 post({Command::Infect, 0, 0, {}});
@@ -3177,6 +3510,7 @@ namespace game
                     Pickup,
                     Select,
                     DropWeapon,
+                    DropAmmo, // text: the ammo kind, count: how many (0: all)
                     Infect, // development: infects the player
                     Move // slot: from, count: to (the HUD moved it locally already)
                 } kind;
@@ -3216,6 +3550,9 @@ namespace game
                 case Command::DropWeapon:
                     do_drop_weapon(command.text);
                     break;
+                case Command::DropAmmo:
+                    do_drop_ammo(command.text, command.count);
+                    break;
                 case Command::Infect:
                     if (void* player = local_player())
                         infect(player, "test");
@@ -3251,6 +3588,9 @@ namespace game
                     break;
                 case Command::DropWeapon:
                     std::snprintf(text, sizeof(text), "inv_dropweapon %s", command.text.c_str());
+                    break;
+                case Command::DropAmmo:
+                    std::snprintf(text, sizeof(text), "inv_dropammo %s %d", command.text.c_str(), command.count);
                     break;
                 case Command::Infect:
                     std::snprintf(text, sizeof(text), "inv_infect");
@@ -3303,9 +3643,16 @@ namespace game
         const std::uintptr_t first_entity = mem::vslot(g.tools, 7);
         const std::uintptr_t destroy_by_hammer = mem::vslot(g.tools, 16);
         g.get_key_value = reinterpret_cast<GetKeyValueFn>(mem::vslot(g.tools, 10));
-        g.set_key_value = reinterpret_cast<SetKeyValueFn>(mem::vslot(g.tools, 11));
+        // (13, not 11: see the top of this file)
+        g.set_key_value = reinterpret_cast<SetKeyValueFn>(mem::vslot(g.tools, k_vt_tools_set_key_value));
         g.create_entity = reinterpret_cast<CreateEntityFn>(mem::vslot(g.tools, 14));
         g.dispatch_spawn = reinterpret_cast<DispatchSpawnFn>(mem::vslot(g.tools, 15));
+        const auto set_key = reinterpret_cast<std::uintptr_t>(g.set_key_value);
+        if (set_key == 0 || mem::find_pattern(set_key, 17, "55 8B EC 8B 55 10 8B 4D 08 8B 01 8B 80 88 00 00 00") != set_key)
+        {
+            INV_LOG("game: IServerTools::SetKeyValue(const char*) does not look as expected");
+            g.set_key_value = nullptr;
+        }
         if (first_entity == 0 || destroy_by_hammer == 0 || g.get_key_value == nullptr || g.set_key_value == nullptr ||
             g.create_entity == nullptr || g.dispatch_spawn == nullptr)
         {
@@ -3437,6 +3784,17 @@ namespace game
             }
             else
                 INV_LOG("game: the item spawner functions do not look as expected: a spawner refuses when the slot is full");
+        }
+
+        // an ammo pile's own Use (optional, see hk_ammo_spawn_use): what a pile of dropped rounds gives
+        {
+            const std::uintptr_t ammo_use = g.server.base + k_rva_ammo_spawn_use;
+            if (mem::read_or<std::uintptr_t>(g.server.base + k_rva_ammo_spawn_vtable + 4u * k_vt_entity_use) == ammo_use &&
+                mem::find_pattern(ammo_use, 12, "55 8B EC 51 53 8B 5D 08 85 DB 0F 84") == ammo_use &&
+                g_ammo_spawn_use.create("AmmoSpawnUse", reinterpret_cast<void*>(ammo_use), hk_ammo_spawn_use))
+                g_ammo_spawn_use.enable();
+            else
+                INV_LOG("game: CWeaponAmmoSpawn::Use does not look as expected: dropped rounds cannot be picked up");
         }
 
         // a gun's own Use (optional, see hk_gun_use): slot 106 of CTerrorGun's vtable (0x106D5544, RTTI)

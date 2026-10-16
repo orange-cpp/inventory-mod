@@ -17,6 +17,9 @@
 //
 //   [ammo]                     # the most reserve rounds of each ammo type (the game's ammo_<type>_max)
 //   assault_rifle = 360
+//
+//   [round_weight]             # what one reserve round weighs (360 rifle rounds at 0.01: 3.6)
+//   assault_rifle = 0.01
 
 #include <optional>
 #include <string>

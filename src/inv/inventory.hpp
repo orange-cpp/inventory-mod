@@ -114,8 +114,8 @@ namespace inv
 
         int count_of(const ItemDef& def) const;
         int used_slots() const;
-        // What the stored items, the held ones (Stack::held) and the weapons (set_weapons_weight) weigh: everything
-        // the player carries.
+        // What the stored items, the held ones (Stack::held), the weapons (set_weapons_weight) and the reserve rounds
+        // (set_ammo_weight) weigh: everything the player carries.
         float weight() const;
         // What the player's gun and melee / pistol weigh (weapon_weight); the game code keeps it up to date.
         void set_weapons_weight(float weight)
@@ -125,6 +125,15 @@ namespace inv
         float weapons_weight() const
         {
             return weapons_weight_;
+        }
+        // What the player's reserve rounds weigh (ammo_weight of m_iAmmo); the game code keeps it up to date.
+        void set_ammo_weight(float weight)
+        {
+            ammo_weight_ = weight;
+        }
+        float ammo_weight() const
+        {
+            return ammo_weight_;
         }
 
         // The slot the hotbar has selected.
@@ -163,6 +172,7 @@ namespace inv
         int selected_ = 0;
         std::uint32_t revision_ = 0;
         float weapons_weight_ = 0.f;
+        float ammo_weight_ = 0.f;
     };
 
 } // namespace inv

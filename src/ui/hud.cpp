@@ -1178,7 +1178,39 @@ namespace hud
             }
         }
 
-        void items_tab(inv::Inventory& inventory)
+        // The reserve rounds (see game.cpp "rounds"): each ammo type the player carries, what it weighs, and its drops
+        // (a magazine's worth, or all of it).  `pool` is the player's m_iAmmo, by the game's index.
+        void rounds_rows(const int (&pool)[32])
+        {
+            bool any = false;
+            for (const char* kind : inv::ammo_kinds())
+            {
+                const int rounds = pool[inv::ammo_index(kind)];
+                if (rounds <= 0)
+                    continue;
+                if (!any)
+                {
+                    ImGui::Dummy(ImVec2(0.f, 4.f));
+                    nc::Text("Rounds");
+                    any = true;
+                }
+                ImGui::PushID(kind);
+                const int magazine = std::min(inv::ammo_magazine(kind), rounds);
+                char label[24];
+                std::snprintf(label, sizeof(label), "Drop %d", magazine);
+                if (nc::Button(label, ImVec2(64.f, 0.f)))
+                    game::backend().drop_ammo(kind, magazine);
+                nc::SetItemTooltip("Puts %d on the ground as an ammo pile; anyone can pick it up with E.", magazine);
+                ImGui::SameLine();
+                if (nc::Button("Drop all", ImVec2(64.f, 0.f)))
+                    game::backend().drop_ammo(kind, 0);
+                ImGui::SameLine();
+                nc::Text("%s %d (%.1f)", inv::ammo_title(kind), rounds, static_cast<float>(rounds) * inv::round_weight(kind));
+                ImGui::PopID();
+            }
+        }
+
+        void items_tab(inv::Inventory& inventory, const int (&pool)[32])
         {
             slot_grid(inventory);
             ImGui::Dummy(ImVec2(0.f, 4.f));
@@ -1199,6 +1231,7 @@ namespace hud
             else
                 nc::Text("Slots %d/%d    Weight %.1f", inventory.used_slots(), inventory.slot_count(),
                          inventory.weight());
+            rounds_rows(pool);
             nc::TextDisabled("Game: %s", game::backend().connected() ? "connected" : "not connected (list only)");
             nc::TextDisabled("Click selects, double click uses, right click for more, drag to move.");
         }
@@ -1326,7 +1359,7 @@ namespace hud
                 core::config_save();
         }
 
-        void inventory_window(inv::Inventory& inventory)
+        void inventory_window(inv::Inventory& inventory, const int (&pool)[32])
         {
             const ImVec2 display = ImGui::GetIO().DisplaySize;
             ImGui::SetNextWindowSize(ImVec2(300.f, 360.f), ImGuiCond_FirstUseEver);
@@ -1337,7 +1370,7 @@ namespace hud
                 {
                     if (nc::BeginTabItem("Items"))
                     {
-                        items_tab(inventory);
+                        items_tab(inventory, pool);
                         nc::EndTabItem();
                     }
                     if (nc::BeginTabItem("Debug"))
@@ -1397,7 +1430,7 @@ namespace hud
             if (g.wheel)
                 draw_wheel(session);
             if (g.open)
-                inventory_window(session.inventory);
+                inventory_window(session.inventory, session.ammo_pool);
             // a dedicated server keeps (and saves) a remote inventory; the local file is left alone meanwhile
             if (!session.remote && session.inventory.revision() != g.saved_revision)
             {

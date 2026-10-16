@@ -42,7 +42,7 @@ two later, when the new weapon reaches the client. Found by logging every `Creat
 
 | What | Where / how |
 |---|---|
-| `VSERVERTOOLS001` | `CServerTools`, vtable `0x106fb31c`. Slots: 7 `FirstEntity`, 8 `NextEntity`, 10 `GetKeyValue`, 11 `SetKeyValue(const char*)`, 14 `CreateEntityByName`, 15 `DispatchSpawn`, 16 `DestroyEntityByHammerId` |
+| `VSERVERTOOLS001` | `CServerTools`, vtable `0x106fb31c`. Slots: 7 `FirstEntity`, 8 `NextEntity`, 10 `GetKeyValue`, 13 `SetKeyValue(const char*)` (11 is the Vector one: see "Rounds"), 14 `CreateEntityByName`, 15 `DispatchSpawn`, 16 `DestroyEntityByHammerId` |
 | `ServerGameEnts001` | `CServerGameEnts`, vtable `0x1060cab4`: 3 `BaseEntityToEdict`, 4 `EdictToBaseEntity` |
 | `gEntList` | `0x107e0760`. Entry *i* at `+4 + 16*i` = `{entity, serial, prev, next}`. EHANDLE = `index (12 bits) | serial << 12`. Found from `FirstEntity`'s body: `6A 00 B9 <gEntList> E8` |
 | `UTIL_Remove(CBaseEntity*)` | `0x102071E0`, cdecl. Found from `DestroyEntityByHammerId`'s body: `50 E8 <rel32> 83 C4 04 B0 01` |
@@ -352,6 +352,27 @@ taken off it (`m_nFlags` +0x14) and off its parent (`m_pParent` +0x1C; on a list
 the value: flags `0x2008`), then `VEngineServer022` slot 37 ServerCommand (engine `0x10130D40`, prologue
 `55 8B EC 56 8B 75 08 85 F6 75`; it queues the line, which must end in `\n` or `;`) runs `ammo_<type>_max <n>`. Seen in
 the game: the parent's `m_nValue` (+0x30) went from 360 to 200 with `assault_rifle = 200`.
+
+## Rounds (the reserve as a thing of its own)
+
+The reserve (`m_iAmmo[32]`, player +0x1874) weighs: `inv::ammo_weight` of it (`[round_weight]`, defaults rifle 0.01,
+SMG 0.006, shells 0.04, sniper / hunting 0.02, grenade 0.15) is the inventory's `ammo_weight`, set in `refresh_native`
+and sent to remote clients inside the total weight. The Items tab lists each type carried (the client's own
+`m_iAmmo`) with "Drop <magazine>" and "Drop all" (`inv_dropammo <kind> <count>` on a server).
+
+| What | Where / how |
+|---|---|
+| the pile | `weapon_ammo_spawn` is `CWeaponAmmoSpawn` (RTTI), vtable `0x10682CF4`, which its factory (`0x102A22F0`, registered for "weapon_ammo_spawn" at `0x10596370`) writes over `CWeaponSpawn`'s (`0x106796E4`). Slot 26 Precache `0x1029F5A0` (precaches `models/props/terror/ammo_stack.mdl`), 239 its model `0x1029F560` (the "model" keyvalue, else that one), 240 its weapon id (`0x36`), 106 Use `0x1029F5F0` (its own: the refill, or `ammo_pile_weapon_cant_use_ammo`) |
+| what it holds | its targetname, `inv_rounds_<kind>_<rounds>`, read from `CBaseEntity::m_iName` +0x140 (datamap "m_iName", a pooled string) |
+| picking it up | `CWeaponAmmoSpawn::Use` hooked (prologue `55 8B EC 51 53 8B 5D 08 85 DB 0F 84`, checked against the vtable): a pile of the mod's gives its rounds to a survivor (not a bot), as many as fit by the type's most and the weight limit; the rest stays in it. Any other pile is the game's refill. Seen: 50 rifle rounds and 10 auto shotgun shells dropped and taken back |
+| its model | the first of ammo_stack, coffeeammo, exploding_ammo, incendiary_ammo that the map has loaded (`VEngineServer022` slot 9 `IsModelPrecached`), precached with `CBaseEntity::PrecacheModel` `0x1006B690` (cdecl; engine slot 5 `PrecacheModel(name, true)`) |
+| the weight cap | ten times a second (GameFrame) each survivor with an inventory here (the host, the served players) has their reserve compared with the last look; a rise that takes the load past the limit is taken back down to what fits (an ammo pile, a gun picked up) |
+
+`IServerTools` slot 11 is `SetKeyValue(ent, key, const Vector&)` (`0x104CF140`, to the entity's KeyValue slot 32
+`0x1006D4D0`, which formats `"%f %f %f"`); the text one is slot 13 (`0x104CF100`, entity slot 34 `0x10070670`, which
+compares "rendercolor" ...). MSVC puts overloads in the vtable last first. The mod used 11 until 2026-10-16: the pile's
+model and targetname became numbers ("17757245829489361000.000000 ..."), so it was the ERROR model and was not
+recognised; a stored melee weapon dropped from a box got the same garbled `melee_script_name`.
 
 ## Boxes on demand
 

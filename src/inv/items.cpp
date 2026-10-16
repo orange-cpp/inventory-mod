@@ -90,13 +90,23 @@ namespace inv
             const char* kind; // ammo_<kind>_max
             int index; // the game's ammo type index
             int game_default; // that setting's default in server.dll (its ConVar registration)
+            const char* title;
+            float default_weight; // one round's
+            int magazine; // one drop of its rounds
             int max = -1; // the rules file's, -1: not set
+            float weight = -1.f; // the rules file's, -1: not set
         };
 
         AmmoKind k_ammo[] = {
-            {"assaultrifle", 3, 360}, {"smg", 5, 650}, {"shotgun", 7, 72}, {"autoshotgun", 8, 90},
-            {"huntingrifle", 9, 150}, {"sniperrifle", 10, 180}, {"grenadelauncher", 17, 30}, {"m60", 6, 0},
-            {"chainsaw", 19, 20},
+            {"assaultrifle", 3, 360, "Rifle rounds", 0.01f, 50},
+            {"smg", 5, 650, "SMG rounds", 0.006f, 50},
+            {"shotgun", 7, 72, "Shotgun shells", 0.04f, 8},
+            {"autoshotgun", 8, 90, "Auto shotgun shells", 0.04f, 10},
+            {"huntingrifle", 9, 150, "Hunting rifle rounds", 0.02f, 15},
+            {"sniperrifle", 10, 180, "Sniper rounds", 0.02f, 20},
+            {"grenadelauncher", 17, 30, "Grenades", 0.15f, 1},
+            {"m60", 6, 0, "M60 rounds", 0.01f, 150},
+            {"chainsaw", 19, 20, "Chainsaw fuel", 0.05f, 10},
         };
         constexpr const char* k_ammo_names[] = {"assaultrifle", "smg", "shotgun", "autoshotgun", "huntingrifle",
                                                 "sniperrifle", "grenadelauncher", "m60", "chainsaw"};
@@ -162,6 +172,56 @@ namespace inv
             return false;
         a->max = rounds;
         return true;
+    }
+
+    float round_weight(std::string_view kind)
+    {
+        const AmmoKind* a = find_ammo(kind);
+        return a == nullptr ? 0.f : (a->weight >= 0.f ? a->weight : a->default_weight);
+    }
+
+    bool set_round_weight(std::string_view kind, float weight)
+    {
+        AmmoKind* a = find_ammo(kind);
+        if (a == nullptr || weight < 0.f)
+            return false;
+        a->weight = weight;
+        return true;
+    }
+
+    void reset_round_weights()
+    {
+        for (AmmoKind& a : k_ammo)
+            a.weight = -1.f;
+    }
+
+    int ammo_magazine(std::string_view kind)
+    {
+        const AmmoKind* a = find_ammo(kind);
+        return a != nullptr ? a->magazine : 0;
+    }
+
+    const char* ammo_title(std::string_view kind)
+    {
+        const AmmoKind* a = find_ammo(kind);
+        return a != nullptr ? a->title : nullptr;
+    }
+
+    const char* ammo_kind_at(int index)
+    {
+        for (const AmmoKind& a : k_ammo)
+            if (a.index == index)
+                return a.kind;
+        return nullptr;
+    }
+
+    float ammo_weight(const int (&pool)[32])
+    {
+        float w = 0.f;
+        for (const AmmoKind& a : k_ammo)
+            if (pool[a.index] > 0)
+                w += static_cast<float>(pool[a.index]) * (a.weight >= 0.f ? a.weight : a.default_weight);
+        return w;
     }
 
     bool set_item_weight(std::string_view classname, float weight)

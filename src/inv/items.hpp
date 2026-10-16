@@ -59,4 +59,18 @@ namespace inv
     bool ammo_max_set(std::string_view kind);
     bool set_ammo_max(std::string_view kind, int rounds);
 
+    // What one round of `kind` weighs (the rules file's [round_weight], else the default: a rifle round 0.01, so 360 weigh
+    // 3.6; a shotgun shell 0.04; a grenade 0.15 ...); 0 for an unknown kind.
+    float round_weight(std::string_view kind);
+    bool set_round_weight(std::string_view kind, float weight);
+    void reset_round_weights(); // the defaults again
+    // A magazine's worth of `kind`: what one drop of its rounds takes (rifle 50, shotgun 8, grenade launcher 1 ...).
+    int ammo_magazine(std::string_view kind);
+    // Its name in the HUD ("Rifle rounds"); nullptr for an unknown kind.
+    const char* ammo_title(std::string_view kind);
+    // The kind of the game's ammo type `index` (m_iAmmo[index]); nullptr for one the mod does not know (pistols ...).
+    const char* ammo_kind_at(int index);
+    // What a player's reserve weighs: `pool` is m_iAmmo, the rounds of each of the game's 32 ammo types.
+    float ammo_weight(const int (&pool)[32]);
+
 } // namespace inv

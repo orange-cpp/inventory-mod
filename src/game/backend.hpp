@@ -106,6 +106,12 @@ namespace game
         {
             (void)classname;
         }
+        // Puts `count` (0: all) of the player's reserve rounds of ammo type `kind` ("assaultrifle" ...) on the ground.
+        virtual void drop_ammo(const std::string& kind, int count)
+        {
+            (void)kind;
+            (void)count;
+        }
         virtual void infect_self() // development: infects the player ([infection] in the rules must be on)
         {
         }

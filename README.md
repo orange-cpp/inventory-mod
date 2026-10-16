@@ -99,6 +99,15 @@ out: 0 never, 1 always, 0.3 about one time in three), and `screamer_image` (next
 `inventory_mod_screamer.jpg` by default, shipped with the mod) and `screamer_sound` (a 16-bit PCM .wav under the game's
 `left4dead2/sound`, next to the DLL or a full path; the witch's scream by default). The Debug tab has "Screamer (test)".
 
+## Rounds
+
+The reserve rounds you carry weigh, by `[round_weight]` in the host's `inventory_mod.toml` (one round: rifle 0.01, so
+360 weigh 3.6; SMG 0.006; shotgun shell 0.04; sniper and hunting rifle 0.02; grenade 0.15; 0 makes a type weightless).
+The window's Items tab lists each type you carry with what it weighs, and drops it a magazine's worth at a time
+("Drop 50") or all of it: the rounds land as an ammo pile that holds exactly those rounds, which anyone (not the bots)
+takes back with E, as many as fit; the rest stays in the pile. An ammo pile of the map, or a gun picked up, fills you
+only up to the weight limit.
+
 ## Stamina
 
 With `[stamina]` in the host's `inventory_mod.toml` (on in the example): running uses stamina (`run` a second), and so
