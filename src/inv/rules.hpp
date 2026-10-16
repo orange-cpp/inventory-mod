@@ -53,6 +53,8 @@ namespace inv
     //   bots = false                 # the survivor bots too
     //   no_cure = true               # pain pills only put the clock back to the start (false: they cure)
     //   cough = true                 # the infected cough now and then, more often as the clock runs out
+    //   insane = true                # near the end they go insane: laugh for no reason, scream
+    //   insane_at = 70               # from this much (%) of the clock gone
     struct InfectionRules
     {
         bool enabled = false;
@@ -62,6 +64,8 @@ namespace inv
         bool bots = false;
         bool no_cure = true;
         bool cough = true;
+        bool insane = true;
+        int insane_at = 70;
     };
     // The last apply_rules' [infection] (the defaults, disabled, without one).
     const InfectionRules& infection_rules();

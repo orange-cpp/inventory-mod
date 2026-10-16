@@ -85,13 +85,17 @@ the edges blur and split into red and blue, the colour drains to a sick yellow g
 edges, the vignette closes in, then double vision and dimming near the end and a red beat in the last ten seconds.
 (It needs Windows' `d3dcompiler_47.dll`; without it a plain green tint and vignette.) `bots = true` infects the
 survivor bots too. With `cough = true` (the default) an infected survivor coughs now and then with their own voice
-(the coughs they use in smoke), heard by everyone around: about every 26 s at first, every 4 s near the end. The window's Debug tab has "Infect me" to try it and a preview slider for the effect alone. (In co-op the round is lost when every human player is dead, so playing alone, turning ends the round.)
+(the coughs they use in smoke), heard by everyone around: about every 26 s at first, every 4 s near the end. With
+`insane = true` (the default), from `insane_at` (70) % of the clock gone they go insane: they laugh for no reason or
+scream (their own death screams, and "get it off!" at a special that is not there), every 18 s or so at first and
+every 5 s at the end, screaming more as it gets worse. The window's Debug tab has "Infect me" to try it and a preview slider for the effect alone. (In co-op the round is lost when every human player is dead, so playing alone, turning ends the round.)
 
 The sound goes too: the game's own mix gets more muffled and warped (its pitch bends up and down), a heartbeat thumps
 under it in time with the picture, the ears ring past a third of the way and the sound crushes near the end. When the
 clock runs out a screamer jumps at the player: a face over the whole screen, lunging and shaking, with a scream. Each
 player chooses for themselves in the Settings tab ("Infection") or under `[infection]` in `inventory_mod_settings.toml`:
-`effect`, `sound`, `screamer` (true / false), and `screamer_image` (next to the DLL or a full path; PNG, JPEG, BMP;
+`effect`, `sound`, `screamer` (true / false), `screamer_chance` (how likely the screamer is each time the clock runs
+out: 0 never, 1 always, 0.3 about one time in three), and `screamer_image` (next to the DLL or a full path; PNG, JPEG, BMP;
 `inventory_mod_screamer.jpg` by default, shipped with the mod) and `screamer_sound` (a 16-bit PCM .wav under the game's
 `left4dead2/sound`, next to the DLL or a full path; the witch's scream by default). The Debug tab has "Screamer (test)".
 

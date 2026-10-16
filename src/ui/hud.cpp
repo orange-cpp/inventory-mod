@@ -15,6 +15,7 @@
 #include <imgui.h>
 #include <imgui_nullcore/imgui_nullcore.hpp>
 #include <mutex>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -838,7 +839,15 @@ namespace hud
             {
                 g_screamer_seen = session.infection_turned_at;
                 if (core::config().infection_screamer && now - session.infection_turned_at < 3000)
-                    start_screamer();
+                {
+                    // rolled each time (settings: screamer_chance, 0 never .. 1 always)
+                    static std::minstd_rand random(static_cast<unsigned>(now * 2654435761u));
+                    const float roll = static_cast<float>(random() % 10000u) / 10000.f;
+                    const float chance = core::config().screamer_chance;
+                    INV_LOG("screamer: %s (rolled %.2f, chance %.2f)", roll < chance ? "shown" : "skipped", roll, chance);
+                    if (roll < chance)
+                        start_screamer();
+                }
             }
             if (g_screamer_at == 0)
                 return;
@@ -1274,6 +1283,8 @@ namespace hud
                 changed |= nc::Checkbox("Screen effect", &cfg.infection_effect);
                 changed |= nc::Checkbox("Sound distortion and heartbeat", &cfg.infection_sound);
                 changed |= nc::Checkbox("Screamer when the clock runs out", &cfg.infection_screamer);
+                if (cfg.infection_screamer)
+                    changed |= nc::SliderFloat("Screamer chance:", &cfg.screamer_chance, 0.f, 1.f, "%.2f");
                 nc::TextDisabled("The picture and the scream: screamer_image / screamer_sound in inventory_mod_settings.toml.");
             }
             nc::EndGroupBox();

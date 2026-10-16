@@ -285,10 +285,24 @@ mod calls the handler. A script line is at most 480 characters there (the mod's 
 function` defined by one line was missing ("the index 'InvCough' does not exist") for the next, so the cough is one
 line with a try / catch; an error goes to left4dead2/ems/inv_cough_error.txt.
 
+### Going insane
+
+From `insane_at` % of the clock gone (`[infection] insane`), the survivor laughs or screams now and then: a wait of 18 s
+down to 5 s over the rest of the clock (60 .. 140 % of that, at least 3 s), a scream 30 % of the time at first and 70 %
+at the end, never within 2.5 s of a cough. The server picks the soundscript itself (one script line has room for one
+name, not the lists): the survivor by `CBaseEntity::m_ModelName` +0x24C (datamap "m_ModelName", `FIELD_MODELNAME` 18,
+a pointer to "models/survivors/survivor_gambler.mdl"; IServerTools `GetKeyValue("model")` gives the pointer's bytes,
+not the text), then `PrecacheScriptSound` and `EmitSoundOn` as for the cough. The names are from
+scripts/game_sounds_<survivor>.txt: "<Hearty / Short / Nervous laugh>" (`Gambler_Laughter01`, `npc.Biker_Laughter01`
+...; the numbers have gaps), "[Loud painful / Short quick death scream]" (`Coach_DeathScream01`,
+`Player.TeenGirl_DeathScream05` ...) and `*_ScreamWhilePounced*` ("GET IT OFF!"). Seen on the dedicated server: Nick
+played `Gambler_ScreamWhilePounced03` and `Gambler_DeathScream02` / `03`, nothing in left4dead2/ems/inv_insane_error.txt.
+
 ### The screamer
 
 The server's `turn` sends `@inf@ 0 0 1` (the third number: turned now; older clients read only two), or sets the
-host's `Session::infection_turned_at`. The HUD then shows the picture for 1.7 s (a managed-pool A8R8G8B8 texture read
+host's `Session::infection_turned_at`. The HUD rolls the player's `screamer_chance` (0 .. 1; logged "screamer:
+shown / skipped (rolled .., chance ..)") and then shows the picture for 1.7 s (a managed-pool A8R8G8B8 texture read
 with WIC) and starts the scream. With the screen effect on, postfx draws it into the back buffer itself (fixed function,
 pre-transformed quads over the frame and the mod's UI: black backdrop, the picture, a red wash, the first instant's
 white flash) before its pass, and the pass runs at severity 0.92

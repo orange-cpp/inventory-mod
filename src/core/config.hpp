@@ -40,6 +40,7 @@ namespace core
         bool infection_effect = true; // the screen shader (postfx)
         bool infection_sound = true; // the game's sound muffled and warped, a heartbeat, ringing (audio)
         bool infection_screamer = true; // a face and a scream when the clock runs out
+        float screamer_chance = 1.f; // how likely the screamer is each time: 0 never .. 1 always
         std::string screamer_image = "inventory_mod_screamer.jpg"; // next to the DLL, or a full path (PNG, JPEG, BMP)
         // a 16-bit PCM .wav: under the game's left4dead2/sound folder, next to the DLL, or a full path
         std::string screamer_sound = "npc/witch/voice/mad/female_ls_d_madscream01.wav";

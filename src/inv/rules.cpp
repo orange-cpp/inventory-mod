@@ -60,10 +60,21 @@ namespace inv
                     else
                         infection.hit_seconds = static_cast<int>(*n);
                 }
-                else if (key == "bots" || key == "no_cure" || key == "cough")
+                else if (key == "insane_at")
+                {
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 0 || *n > 100)
+                        rules.errors.push_back(at_line(node, "infection.insane_at must be a whole number from 0 to 100 (% of the clock)"));
+                    else
+                        infection.insane_at = static_cast<int>(*n);
+                }
+                else if (key == "bots" || key == "no_cure" || key == "cough" || key == "insane")
                 {
                     if (const auto on = node.value_exact<bool>()) // (value<bool> would take 3 as true)
-                        (key == "bots" ? infection.bots : key == "no_cure" ? infection.no_cure : infection.cough) = *on;
+                        (key == "bots"      ? infection.bots
+                         : key == "no_cure" ? infection.no_cure
+                         : key == "cough"   ? infection.cough
+                                            : infection.insane) = *on;
                     else
                         rules.errors.push_back(at_line(node, "infection." + std::string(key.str()) + " must be true or false"));
                 }

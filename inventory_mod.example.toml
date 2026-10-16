@@ -80,6 +80,8 @@ specials = ["smoker", "boomer", "hunter", "spitter", "jockey", "charger"]   # wh
 bots = false           # the survivor bots too
 no_cure = true         # pain pills only put the clock back to the start (false: they cure)
 cough = true           # the infected cough now and then (everyone hears it), more often as the clock runs out
+insane = true          # near the end they go insane: laugh for no reason, scream (everyone hears it)
+insane_at = 70         # from this much (%) of the clock gone
 
 # Stamina: running, jumping, melee swings and shoves use it (0 .. 100); it comes back after a moment's rest. A survivor
 # who runs out is exhausted until it is back to `recover`: slower, slower to swing and shove, and their melee hits do

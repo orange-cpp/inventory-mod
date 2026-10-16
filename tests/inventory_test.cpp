@@ -313,6 +313,11 @@ molotov = 1
         CHECK(inv::infection_rules().cough); // the default
         CHECK(inv::apply_rules("[infection]\ncough = false\n").errors.empty() && !inv::infection_rules().cough);
         CHECK(!inv::apply_rules("[infection]\ncough = 3\n").errors.empty());
+        CHECK(inv::infection_rules().insane && inv::infection_rules().insane_at == 70); // the defaults
+        CHECK(inv::apply_rules("[infection]\ninsane = false\ninsane_at = 85\n").errors.empty() && !inv::infection_rules().insane &&
+              inv::infection_rules().insane_at == 85);
+        CHECK(!inv::apply_rules("[infection]\ninsane_at = 150\n").errors.empty() && inv::infection_rules().insane_at == 70);
+        CHECK(!inv::apply_rules("[infection]\ninsane_at = 50.5\n").errors.empty());
         CHECK(!inv::apply_rules("[infection]\nenabled = false\n").errors.size() && !inv::infection_rules().enabled);
         inv::apply_rules("");
 

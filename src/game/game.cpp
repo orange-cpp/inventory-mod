@@ -1659,6 +1659,7 @@ namespace game
             ULONGLONG until = 0;
             int total_ms = 0;
             ULONGLONG next_cough = 0; // [infection] cough
+            ULONGLONG next_insane = 0; // [infection] insane: the next laugh or scream (0: not that far gone yet)
         };
         std::map<int, Infection> g_infections; // by userid
         std::vector<int> g_no_rescue; // userids that died of it: no defibrillator, no rescue closet before the next chapter
@@ -1822,6 +1823,7 @@ namespace game
             if (inv::infection_rules().no_cure)
             {
                 it->second.until = GetTickCount64() + static_cast<ULONGLONG>(it->second.total_ms);
+                it->second.next_insane = 0;
                 INV_LOG("infection: userid %d took pills (%s): the clock is back to %d s", user_id, how, it->second.total_ms / 1000);
                 tell_infection(player, &it->second);
                 return;
@@ -1869,6 +1871,115 @@ namespace game
                 user_id);
             if (n <= 0 || n >= 480 || !run_script(code))
                 INV_LOG("infection: userid %d could not cough (the script failed)", user_id);
+        }
+
+        // The last stage ([infection] insane, from insane_at % of the clock gone): the survivor goes insane, laughing
+        // for no reason or screaming (their death screams, and "get it off!" at a special that is not there), about
+        // every 18 s at first and every 5 s at the end, screams more often as it gets worse.  The soundscripts are
+        // the survivors' own (scripts/game_sounds_<survivor>.txt: "<Hearty / Short / Nervous laugh>", "[Loud painful
+        // / Short quick death scream]", ScreamWhilePounced); the survivor is told apart by their model:
+        // CBaseEntity::m_ModelName +0x24C (datamap "m_ModelName", FIELD_MODELNAME 18: a pointer to
+        // "models/survivors/survivor_gambler.mdl" ...; IServerTools GetKeyValue "model" gives that pointer's bytes, not
+        // the text).  An error goes to left4dead2/ems/inv_insane_error.txt.
+        constexpr std::uintptr_t k_off_model_name = 0x24C;
+        struct InsaneVoice
+        {
+            const char* model; // a part of the model's name
+            std::vector<const char*> laughs, screams;
+        };
+        const std::vector<InsaneVoice>& insane_voices()
+        {
+            static const std::vector<InsaneVoice> voices = {
+                {"coach",
+                 {"Coach_Laughter01", "Coach_Laughter04", "Coach_Laughter06", "Coach_Laughter07", "Coach_Laughter13",
+                  "Coach_Laughter14", "Coach_Laughter22"},
+                 {"Coach_DeathScream01", "Coach_DeathScream02", "Coach_DeathScream03", "Coach_DeathScream04",
+                  "Coach_DeathScream05", "Coach_ScreamWhilePounced01", "Coach_ScreamWhilePounced03",
+                  "Coach_ScreamWhilePounced05"}},
+                {"gambler",
+                 {"Gambler_Laughter01", "Gambler_Laughter03", "Gambler_Laughter06", "Gambler_Laughter15",
+                  "Gambler_Laughter16", "Gambler_Laughter17"},
+                 {"Gambler_DeathScream01", "Gambler_DeathScream02", "Gambler_DeathScream03", "Gambler_DeathScream05",
+                  "Gambler_ScreamWhilePounced01", "Gambler_ScreamWhilePounced03", "Gambler_ScreamWhilePounced05"}},
+                {"mechanic",
+                 {"Mechanic_Laughter04", "Mechanic_Laughter05", "Mechanic_Laughter06", "Mechanic_Laughter09",
+                  "Mechanic_Laughter13b", "Mechanic_Laughter13c", "Mechanic_Laughter14"},
+                 {"Mechanic_DeathScream01", "Mechanic_DeathScream02", "Mechanic_DeathScream03", "Mechanic_DeathScream04",
+                  "Mechanic_ScreamWhilePounced01", "Mechanic_ScreamWhilePounced04", "Mechanic_ScreamWhilePounced04a"}},
+                {"producer",
+                 {"Producer_Laughter01", "Producer_Laughter04", "Producer_Laughter12", "Producer_Laughter13",
+                  "Producer_Laughter14", "Producer_Laughter17"},
+                 {"Producer_DeathScream01", "Producer_DeathScream02", "Producer_ScreamWhilePounced01",
+                  "Producer_ScreamWhilePounced02", "Producer_ScreamWhilePounced03", "Producer_ScreamWhilePounced05"}},
+                {"biker",
+                 {"npc.Biker_Laughter01", "npc.Biker_Laughter02", "npc.Biker_Laughter04", "npc.Biker_Laughter05",
+                  "npc.Biker_Laughter06", "npc.Biker_Laughter12", "npc.Biker_Laughter13"},
+                 {"Player.Biker_DeathScream06", "Player.Biker_DeathScream07", "Player.Biker_DeathScream08",
+                  "Player.Biker_DeathScream09", "Player.Biker_ScreamWhilePounced01", "Player.Biker_ScreamWhilePounced02",
+                  "Player.Biker_ScreamWhilePounced04"}},
+                {"manager",
+                 {"npc.Manager_Laughter01", "npc.Manager_Laughter02", "npc.Manager_Laughter04", "npc.Manager_Laughter05",
+                  "npc.Manager_Laughter13", "npc.Manager_Laughter14", "npc.Manager_Laughter20"},
+                 {"Player.Manager_DeathScream02", "Player.Manager_DeathScream03", "Player.Manager_DeathScream04",
+                  "Player.Manager_DeathScream06", "Player.Manager_ScreamWhilePounced01", "Player.Manager_ScreamWhilePounced02"}},
+                {"namvet",
+                 {"npc.NamVet_Laughter01", "npc.NamVet_Laughter02", "npc.NamVet_Laughter04", "npc.NamVet_Laughter05",
+                  "npc.NamVet_Laughter06", "npc.NamVet_Laughter07"},
+                 {"Player.NamVet_DeathScream01", "Player.NamVet_DeathScream03", "Player.NamVet_DeathScream04",
+                  "Player.NamVet_DeathScream05", "Player.NamVet_ScreamWhilePounced01", "Player.NamVet_ScreamWhilePounced03"}},
+                {"teenangst",
+                 {"npc.TeenGirl_Laughter02", "npc.TeenGirl_Laughter04", "npc.TeenGirl_Laughter05", "npc.TeenGirl_Laughter09",
+                  "npc.TeenGirl_Laughter10", "npc.TeenGirl_Laughter12", "npc.TeenGirl_Laughter13"},
+                 {"Player.TeenGirl_DeathScream05", "Player.TeenGirl_DeathScream07", "Player.TeenGirl_DeathScream09",
+                  "Player.TeenGirl_DeathScream10", "Player.TeenGirl_ScreamWhilePounced01",
+                  "Player.TeenGirl_ScreamWhilePounced02", "Player.TeenGirl_ScreamWhilePounced06"}},
+            };
+            return voices;
+        }
+
+        std::minstd_rand& insane_random()
+        {
+            static std::minstd_rand random(static_cast<unsigned>(GetTickCount64() * 2654435761u));
+            return random;
+        }
+
+        // stage: 0 when it starts (insane_at) .. 1 turning
+        ULONGLONG insane_delay(float stage)
+        {
+            const float mean = 18.f - 13.f * stage;
+            const float spread = 0.6f + 0.8f * static_cast<float>(insane_random()() % 1000u) / 1000.f;
+            return static_cast<ULONGLONG>(std::max(3.f, mean * spread) * 1000.f);
+        }
+
+        void go_insane(void* player, int user_id, float stage)
+        {
+            char model[128] = {};
+            const char* name = mem::read_or<const char*>(reinterpret_cast<std::uintptr_t>(player) + k_off_model_name);
+            if (name == nullptr || !mem::safe_copy(model, name, sizeof(model) - 1))
+                return;
+            for (char* c = model; *c != '\0'; ++c)
+                *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+            const InsaneVoice* voice = nullptr;
+            for (const InsaneVoice& v : insane_voices())
+                if (std::strstr(model, v.model) != nullptr)
+                    voice = &v;
+            if (voice == nullptr)
+            {
+                INV_LOG("infection: userid %d cannot go insane: no voice for the model \"%s\"", user_id, model);
+                return;
+            }
+            std::minstd_rand& random = insane_random();
+            const bool scream = static_cast<float>(random() % 1000u) / 1000.f < 0.3f + 0.4f * stage;
+            const std::vector<const char*>& list = scream ? voice->screams : voice->laughs;
+            const char* sound = list[random() % list.size()];
+            char code[256];
+            std::snprintf(code, sizeof(code),
+                          "try{local p=GetPlayerFromUserID(%d);if(p){p.PrecacheScriptSound(\"%s\");EmitSoundOn(\"%s\",p);}}"
+                          "catch(e){StringToFile(\"inv_insane_error.txt\",\"\"+e)}",
+                          user_id, sound, sound);
+            const bool ok = run_script(code);
+            INV_LOG("infection: userid %d goes insane: %s (%s, stage %.0f%%)", user_id, sound, ok ? "played" : "the script failed",
+                    stage * 100.f);
         }
 
         // The clock ran out: the survivor dies and a random special rises where they stood.
@@ -2386,15 +2497,35 @@ namespace game
                         due.push_back(user_id);
                         continue;
                     }
-                    if (!inv::infection_rules().cough || infection.next_cough > now)
-                        continue;
+                    const inv::InfectionRules& rules = inv::infection_rules();
                     const float severity = severity_of(infection, now);
-                    infection.next_cough = now + cough_delay(severity);
-                    if (void* player = player_by_user_id(user_id); player != nullptr && alive(player))
+                    if (rules.cough && infection.next_cough <= now)
                     {
-                        cough(user_id);
-                        INV_LOG("infection: userid %d coughs (%.0f%%, the next in %llu s)", user_id, severity * 100.f,
-                                (infection.next_cough - now) / 1000);
+                        infection.next_cough = now + cough_delay(severity);
+                        if (void* player = player_by_user_id(user_id); player != nullptr && alive(player))
+                        {
+                            cough(user_id);
+                            infection.next_insane = std::max(infection.next_insane, now + 2500); // not over each other
+                            INV_LOG("infection: userid %d coughs (%.0f%%, the next in %llu s)", user_id, severity * 100.f,
+                                    (infection.next_cough - now) / 1000);
+                        }
+                    }
+                    // the last stage: insane (see go_insane)
+                    if (!rules.insane || severity * 100.f < static_cast<float>(rules.insane_at))
+                        infection.next_insane = 0;
+                    else if (infection.next_insane == 0)
+                        infection.next_insane = now + 2000 + static_cast<ULONGLONG>(GetTickCount64() % 4000); // soon after
+                    else if (infection.next_insane <= now)
+                    {
+                        const float stage =
+                            rules.insane_at >= 100 ? 1.f
+                                                   : std::clamp((severity * 100.f - rules.insane_at) / (100.f - rules.insane_at), 0.f, 1.f);
+                        infection.next_insane = now + insane_delay(stage);
+                        if (void* player = player_by_user_id(user_id); player != nullptr && alive(player))
+                        {
+                            go_insane(player, user_id, stage);
+                            infection.next_cough = std::max(infection.next_cough, now + 3000);
+                        }
                     }
                 }
                 for (const int user_id : due)

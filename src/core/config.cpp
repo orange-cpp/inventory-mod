@@ -103,6 +103,8 @@ namespace core
             c.infection_effect = infection["effect"].value_or(c.infection_effect);
             c.infection_sound = infection["sound"].value_or(c.infection_sound);
             c.infection_screamer = infection["screamer"].value_or(c.infection_screamer);
+            c.screamer_chance = static_cast<float>(
+                std::clamp(infection["screamer_chance"].value_or(static_cast<double>(c.screamer_chance)), 0.0, 1.0));
             c.screamer_image = infection["screamer_image"].value_or(c.screamer_image);
             c.screamer_sound = infection["screamer_sound"].value_or(c.screamer_sound);
 
@@ -284,6 +286,7 @@ namespace core
         fprintf(f, "effect = %s     # the screen effect\n", c.infection_effect ? "true" : "false");
         fprintf(f, "sound = %s      # the sound muffled and warped, a heartbeat, ringing\n", c.infection_sound ? "true" : "false");
         fprintf(f, "screamer = %s   # a face and a scream when the clock runs out\n", c.infection_screamer ? "true" : "false");
+        fprintf(f, "screamer_chance = %.2f   # how likely it is each time: 0 never .. 1 always\n", c.screamer_chance);
         fprintf(f, "screamer_image = \"%s\"   # next to the DLL or a full path (PNG, JPEG, BMP)\n", toml_text(c.screamer_image).c_str());
         fprintf(f, "screamer_sound = \"%s\"   # 16-bit .wav: under left4dead2/sound, next to the DLL or a full path\n",
                 toml_text(c.screamer_sound).c_str());
