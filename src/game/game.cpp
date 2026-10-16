@@ -1266,7 +1266,7 @@ namespace game
         // The player's inventory, as the line their client DLL reads:
         //   @inv@ <slots> <max_weight> <weight> <weapon slots>|<index> <classname> <count> <held>,...|<game slot 0>,...,<game slot 5>|<message>
         // (<weight>: what the stored items weigh by the server's rules; a client that reads only two numbers still works)
-        // A game slot is "-" when empty, a leading '*' marks the weapon in the hands.  A stored weapon's entry goes on
+        // A game slot is "-" when empty, a leading '*' marks the weapon in the hands, a melee weapon has ":<kind>".  A stored weapon's entry goes on
         // with "<clip> <ammo> <melee script name or ->".
         void send_state(void* player, ServerPlayer& sp)
         {
@@ -1301,7 +1301,8 @@ namespace game
                     if (s.native[i].classname.empty())
                         line += '-';
                     else
-                        line += (s.native[i].active ? "*" : "") + s.native[i].classname;
+                        line += (s.native[i].active ? "*" : "") + s.native[i].classname +
+                                (s.native[i].melee.empty() ? std::string() : ":" + s.native[i].melee);
                 }
                 line += '|';
                 line += s.message; // sent once
@@ -1534,6 +1535,9 @@ namespace game
                         continue;
                     NativeWeapon entry = describe_weapon(name);
                     entry.active = handle == active;
+                    if (std::strcmp(name, "weapon_melee") == 0) // which melee weapon, for its icon
+                        if (const inv::ItemDef* melee = inv::find_item(name))
+                            entry.melee = weapon_state(player, weapon, *melee, true).melee;
                     list[static_cast<std::size_t>(slot)] = std::move(entry);
                 }
             }
@@ -1741,10 +1745,17 @@ namespace game
                 const bool active = !name.empty() && name[0] == '*';
                 if (active)
                     name.erase(0, 1);
+                std::string melee; // "weapon_melee:fireaxe"
+                if (const std::size_t colon = name.find(':'); colon != std::string::npos)
+                {
+                    melee = name.substr(colon + 1);
+                    name.erase(colon);
+                }
                 if (!name.empty() && name != "-")
                 {
                     native[slot] = describe_weapon(name.c_str());
                     native[slot].active = active;
+                    native[slot].melee = melee;
                 }
                 start = comma + 1;
             }

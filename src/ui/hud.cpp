@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <imgui.h>
@@ -58,7 +59,20 @@ namespace hud
             ULONGLONG swallow_until = 0;
             std::uint32_t saved_revision = 0; // the inventory revision last written to disk
             std::vector<Intent> intents;
+            bool wheel = false; // the radial wheel is open (middle mouse button held)
         } g;
+
+        // What the wheel's segment under the cursor is: written while drawing, read by the window procedure when the
+        // button is let go (they may run on different threads).
+        struct WheelPick
+        {
+            bool valid = false;
+            bool native = false; // a game weapon (Session::native index), else an inventory box
+            int index = -1;
+            std::string classname;
+        };
+        std::mutex g_wheel_mutex;
+        WheelPick g_wheel_pick;
 
         std::vector<KeyRow> key_rows()
         {
@@ -218,6 +232,27 @@ namespace hud
             return true;
         }
 
+        // A melee script name as a title: "frying_pan" -> "Frying Pan" ("fireaxe" stays "Fireaxe").
+        std::string melee_title(const std::string& script)
+        {
+            std::string out = script;
+            bool start = true;
+            for (char& ch : out)
+            {
+                if (ch == '_')
+                {
+                    ch = ' ';
+                    start = true;
+                }
+                else if (start)
+                {
+                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                    start = false;
+                }
+            }
+            return out;
+        }
+
         void draw_slot(ImDrawList* dl, int x, int y, int size, const inv::Stack& stack, bool selected, bool hovered,
                        int number)
         {
@@ -233,7 +268,8 @@ namespace hud
                 nc::FillRect(dl, x + pad, y + pad, x + size - pad, y + size - pad,
                              ImVec4(c.x * 0.4f, c.y * 0.4f, c.z * 0.4f, 1.f));
                 nc::OutlineRect(dl, x + pad, y + pad, x + size - pad, y + size - pad, c);
-                if (!draw_icon(dl, x + 2, y + 2, x + size - 2, y + size - 2, stack.def->classname))
+                if (!draw_icon(dl, x + 2, y + 2, x + size - 2, y + size - 2,
+                               stack.weapon.melee.empty() ? stack.def->classname : stack.weapon.melee.c_str()))
                 {
                     const int tw = nc::CalcTextWidth(fonts.Header, stack.def->tag);
                     nc::AddText(dl, fonts.Header, x + (size - tw) / 2, y + (size - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
@@ -296,7 +332,7 @@ namespace hud
                     const int pad = size / 6;
                     nc::FillRect(dl, x + pad, y0 + pad, x + wide - pad, y0 + size - pad, ImVec4(0.22f, 0.24f, 0.28f, 1.f));
                     nc::OutlineRect(dl, x + pad, y0 + pad, x + wide - pad, y0 + size - pad, ImVec4(0.6f, 0.64f, 0.7f, 1.f));
-                    if (!draw_icon(dl, x + 2, y0 + 2, x + wide - 2, y0 + size - 2, weapon.classname.c_str()))
+                    if (!draw_icon(dl, x + 2, y0 + 2, x + wide - 2, y0 + size - 2, (weapon.melee.empty() ? weapon.classname : weapon.melee).c_str()))
                     {
                         const int tw = nc::CalcTextWidth(fonts.Header, weapon.tag);
                         nc::AddText(dl, fonts.Header, x + (wide - tw) / 2, y0 + (size - static_cast<int>(fonts.Size)) / 2,
@@ -483,10 +519,10 @@ namespace hud
                 const int pad = static_cast<int>(unit * 2.f);
                 if (!stack.weapon.melee.empty())
                 {
-                    std::string label = stack.weapon.melee;
-                    std::replace(label.begin(), label.end(), '_', ' ');
-                    nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
-                                label.c_str());
+                    // a melee weapon: its kind's icon (scripts/melee/<kind>.txt), else its name
+                    if (!draw_icon(dl, x0 + pad, y0 + pad, x1 - pad, y1 - pad, stack.weapon.melee.c_str()))
+                        nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
+                                    melee_title(stack.weapon.melee).c_str());
                     continue;
                 }
                 // a gun: like the panel's gun box, its rounds on the left (magazine over reserve), its icon on the right
@@ -591,6 +627,183 @@ namespace hud
                             ImVec4(1.f, 1.f, 1.f, 0.9f), text);
             }
             // no item name or status line here: the boxes say it (the messages still go to inventory_mod.log)
+        }
+
+        // ---- the radial wheel (hold the middle mouse button) ---------------------------------------------------------
+        //
+        // Like No More Room in Hell's inventory wheel: everything the player carries around the middle of the screen,
+        // in the wheel's order (gun, melee / pistol, stored weapons, items); the segment the cursor points at (by its
+        // direction from the middle) is taken in hand when the button is let go or on a left click, dropped on a right
+        // click.  The outer ring is the weight: red for what is carried, grey for what is left.
+
+        struct WheelEntry
+        {
+            GridEntry entry;
+            std::string classname; // the weapon / item: what taking it asks the game for
+            std::string icon; // the icon's key: the classname, or a melee weapon's kind ("katana")
+            std::string label; // the name in the middle; a melee weapon's kind
+            std::string detail; // rounds, or how many
+            bool active = false; // in the hands
+        };
+
+        std::vector<WheelEntry> wheel_entries(const game::Session& session)
+        {
+            std::vector<WheelEntry> out;
+            for (const GridEntry& e : grid_entries(session))
+            {
+                WheelEntry w{e};
+                char text[48] = {};
+                if (e.native)
+                {
+                    const game::NativeWeapon& weapon = session.native[static_cast<std::size_t>(e.index)];
+                    w.classname = weapon.classname;
+                    w.icon = weapon.melee.empty() ? weapon.classname : weapon.melee; // a melee weapon's icon is its kind's
+                    w.label = weapon.melee.empty() ? weapon.name : melee_title(weapon.melee);
+                    w.active = weapon.active;
+                    if (weapon.active && session.ammo_clip >= 0 && session.ammo_reserve >= 0)
+                        std::snprintf(text, sizeof(text), "%d / %d", session.ammo_clip, session.ammo_reserve);
+                }
+                else
+                {
+                    const inv::Stack& stack = session.inventory.slot(e.index);
+                    w.classname = stack.def->classname;
+                    w.icon = w.classname;
+                    w.label = stack.def->name;
+                    w.active = in_hands(session, stack);
+                    if (!stack.weapon.melee.empty())
+                    {
+                        w.icon = stack.weapon.melee;
+                        w.label = melee_title(stack.weapon.melee);
+                    }
+                    else if (stack.def->weapon() && stack.weapon.clip >= 0)
+                        std::snprintf(text, sizeof(text), "%d / %d", stack.weapon.clip, std::max(0, stack.weapon.ammo));
+                    else if (const int n = stack.count + (stack.held ? 1 : 0); n > 1)
+                        std::snprintf(text, sizeof(text), "x%d", n);
+                }
+                w.detail = text;
+                out.push_back(std::move(w));
+            }
+            return out;
+        }
+
+        // A ring segment from angle a0 to a1 (radians, 0 = right, clockwise on screen), filled.
+        void ring_segment(ImDrawList* dl, ImVec2 c, float r0, float r1, float a0, float a1, ImU32 color)
+        {
+            const int steps = std::max(2, static_cast<int>((a1 - a0) * 24.f));
+            for (int i = 0; i < steps; ++i)
+            {
+                const float t0 = a0 + (a1 - a0) * static_cast<float>(i) / steps;
+                const float t1 = a0 + (a1 - a0) * static_cast<float>(i + 1) / steps;
+                dl->AddQuadFilled(ImVec2(c.x + std::cos(t0) * r0, c.y + std::sin(t0) * r0),
+                                  ImVec2(c.x + std::cos(t0) * r1, c.y + std::sin(t0) * r1),
+                                  ImVec2(c.x + std::cos(t1) * r1, c.y + std::sin(t1) * r1),
+                                  ImVec2(c.x + std::cos(t1) * r0, c.y + std::sin(t1) * r0), color);
+            }
+        }
+
+        void draw_wheel(const game::Session& session)
+        {
+            constexpr float k_pi = 3.14159265f;
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            const nc::Fonts& fonts = nc::GetFonts();
+            const ImVec2 c(display.x * 0.5f, display.y * 0.5f);
+            const float r_out = display.y * 0.27f, r_in = display.y * 0.10f;
+            const ImU32 green = IM_COL32(142, 214, 57, 255);
+            // the toolkit's fonts are drawn for 12 px cells: the wheel's text grows with the screen
+            const float text_size = fonts.Size * std::max(1.f, display.y / 720.f);
+            const int line = static_cast<int>(text_size);
+            const auto text_at = [&](ImFont* font, float size, float x_centre, float y_top, ImU32 colour, const std::string& text) {
+                const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.f, text.c_str());
+                dl->AddText(font, size, ImVec2(std::floor(x_centre - extent.x * 0.5f) + 1.f, std::floor(y_top) + 1.f),
+                            IM_COL32(0, 0, 0, 200), text.c_str());
+                dl->AddText(font, size, ImVec2(std::floor(x_centre - extent.x * 0.5f), std::floor(y_top)), colour, text.c_str());
+            };
+
+            const std::vector<WheelEntry> entries = wheel_entries(session);
+            const int n = static_cast<int>(entries.size());
+
+            // the segment the cursor points at: by direction, once it is off the middle
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const float dx = mouse.x - c.x, dy = mouse.y - c.y;
+            int hover = -1;
+            if (n > 0 && dx * dx + dy * dy > (r_in * 0.4f) * (r_in * 0.4f))
+            {
+                float angle = std::atan2(dy, dx) + k_pi * 0.5f; // 0 at the top, growing clockwise
+                if (angle < 0.f)
+                    angle += 2.f * k_pi;
+                hover = std::min(n - 1, static_cast<int>(angle / (2.f * k_pi / n)));
+            }
+            {
+                std::lock_guard lock(g_wheel_mutex);
+                g_wheel_pick = hover >= 0 ? WheelPick{true, entries[static_cast<std::size_t>(hover)].entry.native,
+                                                      entries[static_cast<std::size_t>(hover)].entry.index,
+                                                      entries[static_cast<std::size_t>(hover)].classname}
+                                          : WheelPick{};
+            }
+
+            // the segments
+            dl->AddCircleFilled(c, r_out + display.y * 0.004f, IM_COL32(0, 0, 0, 90), 96);
+            const float span = n > 0 ? 2.f * k_pi / n : 2.f * k_pi;
+            const float gap = n > 1 ? 0.012f : 0.f;
+            for (int i = 0; i < n; ++i)
+            {
+                const WheelEntry& w = entries[static_cast<std::size_t>(i)];
+                const float a0 = -k_pi * 0.5f + span * i + gap, a1 = a0 + span - 2.f * gap;
+                ring_segment(dl, c, r_in, r_out, a0, a1, i == hover ? IM_COL32(142, 214, 57, 90) : IM_COL32(0, 0, 0, 150));
+                // the icon (or a melee weapon's kind) in the middle of the segment
+                const float mid = (a0 + a1) * 0.5f, rm = (r_in + r_out) * 0.5f;
+                const ImVec2 p(c.x + std::cos(mid) * rm, c.y + std::sin(mid) * rm);
+                const float chord = std::min((r_out - r_in) * 0.8f, 2.f * rm * std::sin(std::min(span, k_pi) * 0.5f) * 0.8f);
+                const float half_w = chord * 0.5f, half_h = std::min(chord, (r_out - r_in) * 0.5f) * 0.45f;
+                const ImU32 ink = w.active ? green : IM_COL32_WHITE;
+                if (!draw_icon(dl, static_cast<int>(p.x - half_w), static_cast<int>(p.y - half_h),
+                                               static_cast<int>(p.x + half_w), static_cast<int>(p.y + half_h),
+                                               w.icon.c_str(), ink))
+                    text_at(fonts.Header, text_size * 1.2f, p.x, p.y - line * 0.6f, ink, w.label);
+                if (!w.detail.empty())
+                    text_at(fonts.Normal, text_size, p.x, p.y + half_h + 2.f, IM_COL32(230, 230, 230, 230), w.detail);
+            }
+
+            // the weight: a ring outside, red for what is carried, grey for what is left
+            const float max_weight = session.inventory.limits().max_weight;
+            const float weight = session.remote_weight >= 0.f ? session.remote_weight : session.inventory.weight();
+            if (max_weight > 0.f)
+            {
+                const float w0 = r_out + display.y * 0.008f, w1 = w0 + display.y * 0.012f;
+                const float fraction = std::clamp(weight / max_weight, 0.f, 1.f);
+                ring_segment(dl, c, w0, w1, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi, IM_COL32(110, 110, 110, 170));
+                if (fraction > 0.f)
+                    ring_segment(dl, c, w0, w1, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi * fraction, IM_COL32(200, 40, 35, 230));
+            }
+
+            // the middle: what is pointed at, and the weight
+            dl->AddCircleFilled(c, r_in * 0.95f, IM_COL32(0, 0, 0, 160), 64);
+            float y = c.y - line * 2.2f;
+            const auto centred = [&](ImFont* font, float size, const std::string& text, ImU32 colour) {
+                text_at(font, size, c.x, y, colour, text);
+                y += size + 4.f;
+            };
+            if (hover >= 0)
+            {
+                const WheelEntry& w = entries[static_cast<std::size_t>(hover)];
+                centred(fonts.Header, text_size * 1.3f, w.label, IM_COL32_WHITE);
+                centred(fonts.Normal, text_size, w.detail, IM_COL32(205, 205, 205, 255));
+            }
+            else
+            {
+                centred(fonts.Header, text_size * 1.3f, n == 0 ? std::string("Nothing carried") : std::string("Inventory"),
+                        IM_COL32_WHITE);
+                y += text_size + 4.f;
+            }
+            if (max_weight > 0.f)
+            {
+                char text[32];
+                std::snprintf(text, sizeof(text), "%.1f / %.1f", weight, max_weight);
+                centred(fonts.Normal, text_size, text,
+                        weight >= max_weight - 1e-3f ? IM_COL32(240, 90, 75, 255) : IM_COL32(190, 190, 190, 255));
+            }
+            centred(fonts.Normal, text_size * 0.85f, "release: take   right click: drop", IM_COL32(150, 150, 150, 255));
         }
 
         void slot_grid(inv::Inventory& inventory)
@@ -836,7 +1049,7 @@ namespace hud
 
     void draw()
     {
-        ImGui::GetIO().MouseDrawCursor = g.open;
+        ImGui::GetIO().MouseDrawCursor = g.open || g.wheel;
 
         std::string to_save;
         {
@@ -849,6 +1062,10 @@ namespace hud
                 else
                     draw_column(session);
             }
+            if (g.wheel && !session.playing)
+                g.wheel = false; // died, a menu opened ...
+            if (g.wheel)
+                draw_wheel(session);
             if (g.open)
                 inventory_window(session.inventory);
             // a dedicated server keeps (and saves) a remote inventory; the local file is left alone meanwhile
@@ -869,6 +1086,11 @@ namespace hud
     }
 
     bool wants_input()
+    {
+        return g.open || g.wheel;
+    }
+
+    bool wants_keyboard()
     {
         return g.open;
     }
@@ -891,6 +1113,67 @@ namespace hud
             std::lock_guard lock(session.mutex);
             return session.playing;
         }
+
+        // The wheel opens with the cursor in the middle of the window (SetCursorPos from this DLL passes the
+        // overlay's cursor hook), so the first move picks a direction.
+        void open_wheel()
+        {
+            {
+                std::lock_guard lock(g_wheel_mutex);
+                g_wheel_pick = WheelPick{};
+            }
+            if (HWND window = GetActiveWindow())
+            {
+                RECT rc{};
+                if (GetClientRect(window, &rc))
+                {
+                    POINT centre{(rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2};
+                    ClientToScreen(window, &centre);
+                    SetCursorPos(centre.x, centre.y);
+                }
+            }
+            g.wheel = true;
+        }
+
+        WheelPick take_wheel_pick()
+        {
+            std::lock_guard lock(g_wheel_mutex);
+            WheelPick pick = g_wheel_pick;
+            g_wheel_pick = WheelPick{};
+            return pick;
+        }
+
+        // Closes the wheel; `take`: what it points at goes into the hands, as the grid's wheel would.
+        void close_wheel(bool take)
+        {
+            g.wheel = false;
+            const WheelPick pick = take_wheel_pick();
+            if (!take || !pick.valid)
+                return;
+            if (pick.native)
+                game::backend().select_weapon(pick.classname);
+            else
+            {
+                {
+                    game::Session& session = game::local_session();
+                    std::lock_guard lock(session.mutex);
+                    session.inventory.select(pick.index);
+                }
+                game::backend().use(pick.index);
+            }
+        }
+
+        // Right click on the wheel: what it points at goes on the ground (the wheel stays open).
+        void drop_wheel_pick()
+        {
+            const WheelPick pick = take_wheel_pick();
+            if (!pick.valid)
+                return;
+            if (pick.native)
+                game::backend().drop_weapon(pick.classname);
+            else
+                game::backend().drop(pick.index, 1);
+        }
     } // namespace
 
     bool on_wnd_message(UINT msg, WPARAM wparam, LPARAM lparam)
@@ -904,6 +1187,32 @@ namespace hud
                 g.swallow_char = 0;
                 return true;
             }
+        }
+        // the radial wheel: open while the middle mouse button is held
+        if (msg == WM_MBUTTONDOWN && !g.open && !g.wheel && playing() && !game::backend().typing())
+        {
+            open_wheel();
+            return true;
+        }
+        if (g.wheel)
+        {
+            if (msg == WM_MBUTTONUP || msg == WM_LBUTTONDOWN)
+            {
+                close_wheel(true);
+                return true;
+            }
+            if (msg == WM_RBUTTONDOWN)
+            {
+                drop_wheel_pick();
+                return true;
+            }
+            if ((msg == WM_KEYDOWN && wparam == VK_ESCAPE) || msg == WM_KILLFOCUS)
+            {
+                close_wheel(false);
+                return msg != WM_KILLFOCUS;
+            }
+            if (msg == WM_MOUSEWHEEL || msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONDOWN)
+                return true;
         }
         // the wheel steps through the items (the open window takes the wheel itself, and the console keeps it)
         // (beside the game's panel: through the game's weapons and the grid, row by row)

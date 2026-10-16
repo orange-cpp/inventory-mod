@@ -21,6 +21,7 @@ namespace game
         std::string name; // "Rifle Ak47"
         char tag[3] = {}; // two letters for the slot
         bool active = false; // in the player's hands now
+        std::string melee; // weapon_melee: which one ("fireaxe" ...), for its icon
     };
 
     // A player's inventory: on a game client the local player's, shared by the HUD (render thread) and the game code (main

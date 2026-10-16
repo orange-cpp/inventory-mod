@@ -40,7 +40,8 @@ namespace icons
 
         bool wanted(const std::string& path)
         {
-            return path.rfind("scripts/weapon_", 0) == 0 || path.rfind("materials/vgui/hud/", 0) == 0;
+            return path.rfind("scripts/weapon_", 0) == 0 || path.rfind("scripts/melee/", 0) == 0 ||
+                   path.rfind("materials/vgui/hud/", 0) == 0;
         }
 
         // Adds the archive's wanted files that no earlier archive has (the first archive given wins, like the game's
@@ -184,8 +185,9 @@ namespace icons
             return _stricmp(a.c_str(), b) == 0;
         }
 
-        // TextureData { "weapon" { "file" .. "x" .. "y" .. "width" .. "height" .. } } of a weapon script.
-        bool texture_rect(const std::string& script, Rect& out)
+        // TextureData { "<block>" { "file" .. "x" .. "y" .. "width" .. "height" .. } } of a weapon script ("weapon") or
+        // of a melee script in the update archive ("sprite_active").
+        bool texture_rect(const std::string& script, Rect& out, const char* block = "weapon")
         {
             const std::vector<std::string> t = tokens(script);
             for (std::size_t i = 0; i + 2 < t.size(); ++i)
@@ -202,7 +204,7 @@ namespace icons
                         if (--depth == 0)
                             return false;
                     }
-                    else if (depth == 1 && iequals(t[j], "weapon") && j + 1 < t.size() && t[j + 1] == "{")
+                    else if (depth == 1 && iequals(t[j], block) && j + 1 < t.size() && t[j + 1] == "{")
                     {
                         for (std::size_t k = j + 2; k + 1 < t.size() && t[k] != "}"; k += 2)
                         {
@@ -221,6 +223,23 @@ namespace icons
                     }
                 }
             }
+            return false;
+        }
+
+        // A melee script's (scripts/melee/<name>.txt) icon.  The base game's says "sprite_active" "icon_fireaxe": a
+        // texture of its own, materials/vgui/hud/icon_fireaxe.vtf, the whole of it the icon (w / h 0: the image's
+        // size).  The update archive's has TextureData { "sprite_active" { "file" "vgui/hud/icon_fireaxe" "x" ... } }.
+        bool melee_rect(const std::string& script, Rect& out)
+        {
+            if (texture_rect(script, out, "sprite_active"))
+                return true;
+            const std::vector<std::string> t = tokens(script);
+            for (std::size_t i = 0; i + 1 < t.size(); ++i)
+                if (iequals(t[i], "sprite_active") && t[i + 1] != "{")
+                {
+                    out = Rect{"vgui/hud/" + t[i + 1], 0, 0, 0, 0};
+                    return true;
+                }
             return false;
         }
 
@@ -476,6 +495,37 @@ namespace icons
                 }
                 rects[classname] = rect;
             }
+            // the melee weapons: one texture each, keyed by the script name ("fireaxe", "katana" ...)
+            int melee = 0;
+            for (const auto& [path, entry] : files)
+            {
+                if (path.rfind("scripts/melee/", 0) != 0 || path.size() < 4 || path.compare(path.size() - 4, 4, ".txt") != 0)
+                    continue;
+                std::string script;
+                Rect rect;
+                if (!read_entry(entry, script) || !melee_rect(script, rect))
+                    continue;
+                for (char& c : rect.sheet)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                const std::string sheet_name = rect.sheet;
+                if (sheets.find(sheet_name) == sheets.end())
+                {
+                    Sheet sheet;
+                    std::string vtf;
+                    const auto it = files.find("materials/" + sheet_name + ".vtf");
+                    sheet.failed = it == files.end() || !read_entry(it->second, vtf) || !load_vtf(vtf, sheet.image);
+                    sheets.emplace(sheet_name, std::move(sheet));
+                }
+                const Sheet& sheet = sheets[sheet_name];
+                if (sheet.failed)
+                    continue;
+                const std::string name = path.substr(14, path.size() - 14 - 4); // "scripts/melee/" ... ".txt"
+                if (rect.w <= 0 || rect.h <= 0)
+                    rect = Rect{sheet_name, 0, 0, sheet.image.width, sheet.image.height};
+                rects[name] = rect;
+                ++melee;
+            }
+            INV_LOG("icons: %d melee icons", melee);
             int good = 0;
             for (const auto& [name, sheet] : sheets)
                 good += sheet.failed ? 0 : 1;

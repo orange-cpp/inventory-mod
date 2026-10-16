@@ -165,6 +165,10 @@ namespace ui::overlay
                 {
                     // The cursor is ours while the window is open: a leave (the pointer sits at the window's edge, or
                     // the cursor is elsewhere) must not make ImGui forget where it is.
+                    const bool keyboard = msg >= WM_KEYFIRST && msg <= WM_KEYLAST;
+                    // the radial wheel takes only the mouse: the player keeps walking with the keyboard
+                    if (keyboard && !hud::wants_keyboard())
+                        return CallWindowProcW(g_orig_wndproc, hwnd, msg, wparam, lparam);
                     if (msg != WM_MOUSELEAVE)
                         ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
                     if (is_input_message(msg))
@@ -266,7 +270,21 @@ namespace ui::overlay
                 ImGui::GetIO().AddMousePosEvent(static_cast<float>(g_mouse_x.load()), static_cast<float>(g_mouse_y.load()));
             ImGui::NewFrame();
             hud::draw();
-            g_capture = hud::wants_input();
+            // Letting go of the mouse: the real cursor goes back to the middle first.  While captured the game saw a
+            // cursor that never left the middle; without this its next read would be the whole way the pointer moved
+            // in the meantime, and the view would flick toward it.
+            const bool capture = hud::wants_input();
+            if (!capture && g_capture.load() && g_hwnd != nullptr)
+            {
+                RECT rc{};
+                if (GetClientRect(g_hwnd, &rc))
+                {
+                    POINT center{(rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2};
+                    ClientToScreen(g_hwnd, &center);
+                    SetCursorPos(center.x, center.y); // (from this DLL: the cursor hook lets it through)
+                }
+            }
+            g_capture = capture;
             ImGui::EndFrame();
             ImGui::Render();
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());

@@ -223,6 +223,20 @@ when the player leaves). Verified: client connected to `srcds -insecure +sv_lan 
 inventory and the pistol in game slot 2. (The server binds to the LAN address, so `connect 192.168.1.2:27020`, not
 127.0.0.1.)
 
+## The radial wheel (client side)
+
+Held middle mouse button (`WM_MBUTTONDOWN` / `WM_MBUTTONUP` in the mod's window procedure). While it is open the HUD
+asks for input like the inventory window does: the overlay swallows the input messages (`WM_INPUT` too, so the view
+stops), hooks `GetCursorPos` / `SetCursorPos` for the game and draws ImGui's cursor; the wheel puts the cursor in the
+middle of the window when it opens (SetCursorPos from the DLL passes the hook). Unlike the window it leaves the
+keyboard messages to the game (`hud::wants_keyboard()`), so the player keeps walking. When the HUD lets go of the mouse
+(wheel or window closed) the overlay puts the real cursor back in the middle first: the game saw a cursor pinned to the
+middle while captured, and its next read would otherwise be the whole way the pointer travelled, a flick of the view.
+The segment is picked by the cursor's
+direction from the middle. Its entries are the grid's wheel order; taking one sends the same requests as the grid
+(`select_weapon` / `use`, `drop_weapon` / `drop`), so it works on a dedicated server unchanged. The toolkit's fonts are
+for 12 px cells, so the wheel draws its text through `ImDrawList::AddText(font, size, ...)` scaled by height / 720.
+
 ## What the player sees (client side)
 
 The hotbar shows only while the local player is a living survivor in a game with no menu open, and it shows the ammo
@@ -247,8 +261,14 @@ wins, like the game's search path), parses each `scripts/weapon_<name>.txt` `Tex
 height } }`, and decodes `materials/<file>.vtf` (7.4, DXT5 here; DXT1/3/5 and 8888 are handled; the largest mip is
 the last). The `update` scripts use one texture per weapon (`vgui/hud/icon_smg`, 256x64; `icon_first_aid_kit`,
 128x64 with the icon in the left 64x64); the base game's use the sheets `iconsheet`, `iconsheet2`. Each rectangle is
-trimmed to its visible pixels (alpha > 24). The carryables (gas can, tanks, fireworks, gnome, cola) and melee have no
-icon there and keep their two-letter tag. `tools/re/vpk.py` lists and extracts VPK files for checking.
+trimmed to its visible pixels (alpha > 24). The carryables (gas can, tanks, fireworks, gnome, cola) have no icon there
+and keep their two-letter tag. `tools/re/vpk.py` lists and extracts VPK files for checking.
+
+Melee weapons: `scripts/melee/<kind>.txt` (13 of them: baseball_bat, cricket_bat, crowbar, electric_guitar, fireaxe,
+frying_pan, golfclub, katana, knife, machete, pitchfork, shovel, tonfa). The update archive's say `TextureData {
+"sprite_active" { "file" "vgui/hud/icon_fireaxe" "x" "0" "y" "0" "width" "128" ... } }`, the base game's only
+`"sprite_active" "icon_fireaxe"` (the whole of `materials/vgui/hud/icon_fireaxe.vtf`, 128x64 DXT5, VTF 7.2). The icons
+are keyed by the kind, so the HUD looks a melee weapon up by its `m_strMapSetScriptName`, not by `weapon_melee`.
 
 ## vgui2.dll
 
@@ -291,5 +311,5 @@ way into the box being emptied, then `GiveNamedItem` with the classname, or a me
 (slot-426 hook): with that game slot free the game's own pick-up (weight checked); with it taken, the weapon is stored
 in a free weapon box with its rounds (`store_world_item`, and `claim_for` writes the player into `m_hOwner` as for
 items, so a spawner counts it); with no free box, the game's own swap, refused when the swap is too heavy. The hook
-logs each weight check ("weight 25.0 - 3.0 (replaced) + 4.0 = 26.0 of 30.0"). The melee scripts have no `TextureData`
-(`sprite_active "icon_fireaxe"` points elsewhere), so the HUD writes a melee weapon's name in its box.
+logs each weight check ("weight 25.0 - 3.0 (replaced) + 4.0 = 26.0 of 30.0"). A melee weapon's icon is its kind's
+(see Icons); the game slot of the state line carries the kind of the melee weapon in the hands (`weapon_melee:crowbar`).
