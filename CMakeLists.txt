@@ -97,7 +97,9 @@ add_library(inventory_mod SHARED
     src/ui/overlay.cpp
     src/ui/overlay.hpp
     src/ui/hud.cpp
-    src/ui/hud.hpp)
+    src/ui/hud.hpp
+    src/ui/icons.cpp
+    src/ui/icons.hpp)
 target_include_directories(inventory_mod PRIVATE src)
 target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook)
 inventory_options(inventory_mod)

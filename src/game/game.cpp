@@ -1386,6 +1386,75 @@ namespace game
             return g_process_print.original()(state, edx, msg);
         }
 
+        // ---- what the player sees (client side) -----------------------------------------------------------------
+        //
+        // Whether the hotbar shows, and the ammo counter, come from the client's own entities, so they work the same
+        // on a listen server, as a guest and on a dedicated server.
+        //
+        //   client.dll VClientEntityList003 (CClientEntityList, vtable 0x10564B60) slot 3 GetClientEntity(index),
+        //       slot 4 GetClientEntityFromHandle(handle); both return the C_BaseEntity.
+        //   engine.dll VEngineClient013 slot 12 GetLocalPlayer() (local player slot + 1).
+        //   engine.dll VEngineVGui001 slot 2 IsGameUIVisible() (GameUI's IsGameUIActive: the main or pause menu).
+        //   client netprops (RecvProp definitions in client.dll: push offset / push "name"): m_iTeamNum +0xE4 (2: the
+        //   survivors), m_lifeState +0x147 (byte, 0: alive), m_iObserverMode +0x1450 (0: not spectating),
+        //   m_hActiveWeapon +0x1084, m_iAmmo +0xF24 (32 ints); weapon m_iPrimaryAmmoType +0x97C, m_iClip1 +0x984.
+
+        constexpr std::uintptr_t k_c_team = 0xE4;
+        constexpr std::uintptr_t k_c_life_state = 0x147;
+        constexpr std::uintptr_t k_c_observer_mode = 0x1450;
+        constexpr std::uintptr_t k_c_active_weapon = 0x1084;
+        constexpr std::uintptr_t k_c_ammo = 0xF24;
+        constexpr std::uintptr_t k_cw_ammo_type = 0x97C;
+        constexpr std::uintptr_t k_cw_clip = 0x984;
+        constexpr int k_team_survivors = 2;
+
+        using GetClientEntityFn = void*(__thiscall*)(void* list, int index);
+        using GetClientEntityFromHandleFn = void*(__thiscall*)(void* list, std::uint32_t handle);
+        using GetLocalPlayerFn = int(__thiscall*)(void* engine);
+        using GameUiVisibleFn = bool(__thiscall*)(void* vgui);
+
+        void* g_client_entities = nullptr;
+        GetClientEntityFn g_get_client_entity = nullptr;
+        GetClientEntityFromHandleFn g_get_client_entity_from_handle = nullptr;
+        GetLocalPlayerFn g_get_local_player = nullptr;
+        void* g_engine_vgui = nullptr;
+        GameUiVisibleFn g_game_ui_visible = nullptr;
+
+        // Main thread: is the player a living survivor in a game with no menu open, and the ammo of what they hold.
+        void refresh_view()
+        {
+            if (g_get_client_entity == nullptr || g_is_in_game == nullptr)
+                return; // not found: the hotbar always shows, as before
+            bool playing = false;
+            int clip = -1;
+            int reserve = -1;
+            mem::guarded([&] {
+                if (!g_is_in_game(g_engine_client) || g_game_ui_visible(g_engine_vgui))
+                    return;
+                void* player = g_get_client_entity(g_client_entities, g_get_local_player(g_engine_client));
+                if (player == nullptr)
+                    return;
+                const auto base = reinterpret_cast<std::uintptr_t>(player);
+                playing = mem::read_or<int>(base + k_c_team) == k_team_survivors &&
+                          mem::read_or<std::uint8_t>(base + k_c_life_state, 1) == 0 &&
+                          mem::read_or<int>(base + k_c_observer_mode, 1) == 0;
+                void* weapon = g_get_client_entity_from_handle(
+                    g_client_entities, mem::read_or<std::uint32_t>(base + k_c_active_weapon, k_invalid_handle));
+                if (weapon == nullptr)
+                    return;
+                const auto w = reinterpret_cast<std::uintptr_t>(weapon);
+                clip = mem::read_or<int>(w + k_cw_clip, -1);
+                const int type = mem::read_or<int>(w + k_cw_ammo_type, -1);
+                if (type >= 0 && type < 32)
+                    reserve = mem::read_or<int>(base + k_c_ammo + 4u * static_cast<unsigned>(type), -1);
+            });
+            Session& s = local_session();
+            std::lock_guard lock(s.mutex);
+            s.playing = playing;
+            s.ammo_clip = clip;
+            s.ammo_reserve = reserve;
+        }
+
         // ---- the backend --------------------------------------------------------------------------------------------
 
         class RealBackend final : public Backend
@@ -1435,6 +1504,7 @@ namespace game
 
             void pump() override
             {
+                refresh_view();
                 for (;;)
                 {
                     Command command{};
@@ -1789,6 +1859,30 @@ namespace game
                     g_client_cmd = reinterpret_cast<ClientCmdFn>(cmd);
                     if (g_process_print.create("ProcessPrint", reinterpret_cast<void*>(print), hk_process_print))
                         g_process_print.enable();
+
+                    // what the player sees (see "what the player sees")
+                    const std::uintptr_t local_player_fn = mem::vslot(g_engine_client, 12);
+                    g_engine_vgui = engine_create("VEngineVGui001", nullptr);
+                    const std::uintptr_t ui_visible = g_engine_vgui != nullptr ? mem::vslot(g_engine_vgui, 2) : 0;
+                    HMODULE client = GetModuleHandleW(L"client.dll");
+                    const auto client_create =
+                        client != nullptr ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(client, "CreateInterface")) : nullptr;
+                    g_client_entities = client_create != nullptr ? client_create("VClientEntityList003", nullptr) : nullptr;
+                    const std::uintptr_t get_entity = g_client_entities != nullptr ? mem::vslot(g_client_entities, 3) : 0;
+                    const std::uintptr_t from_handle = g_client_entities != nullptr ? mem::vslot(g_client_entities, 4) : 0;
+                    if (local_player_fn != 0 &&
+                        mem::find_pattern(local_player_fn, 18, "6A FF E8 ?? ?? ?? ?? 8B 80 D8 00 00 00 83 C4 04 40 C3") == local_player_fn &&
+                        ui_visible != 0 && mem::find_pattern(ui_visible, 8, "83 B9 84 00 00 00 00 74") == ui_visible &&
+                        get_entity != 0 && mem::find_pattern(get_entity, 15, "55 8B EC 8B 45 08 85 C0 78 ?? 3D 00 10 00 00") == get_entity &&
+                        from_handle != 0 && mem::find_pattern(from_handle, 16, "55 8B EC 8B 55 08 51 8B C4 89 10 8B 01 8B 50 08") == from_handle)
+                    {
+                        g_get_local_player = reinterpret_cast<GetLocalPlayerFn>(local_player_fn);
+                        g_game_ui_visible = reinterpret_cast<GameUiVisibleFn>(ui_visible);
+                        g_get_client_entity_from_handle = reinterpret_cast<GetClientEntityFromHandleFn>(from_handle);
+                        g_get_client_entity = reinterpret_cast<GetClientEntityFn>(get_entity);
+                    }
+                    else
+                        INV_LOG("game: the client's entity interfaces do not look as expected: the hotbar always shows, no ammo");
                 }
                 else
                 {

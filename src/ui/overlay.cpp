@@ -3,6 +3,7 @@
 #include "core/hook.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "ui/icons.hpp"
 #include "ui/hud.hpp"
 
 #include <atomic>
@@ -215,6 +216,8 @@ namespace ui::overlay
             g_device = device;
             game::set_window(g_hwnd);
             hud::init();
+            icons::start();
+            icons::set_device(device);
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
         }
@@ -226,6 +229,7 @@ namespace ui::overlay
                 reinterpret_cast<WNDPROC>(GetWindowLongPtrW(g_hwnd, GWLP_WNDPROC)) == hk_wndproc)
                 SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_orig_wndproc));
             release_state_block();
+            icons::set_device(nullptr); // the textures go with the device's owner, on the render thread
             if (g_ready)
             {
                 ImGui_ImplDX9_Shutdown();
@@ -380,6 +384,7 @@ namespace ui::overlay
         g_set_cursor_pos.remove();
         g_get_cursor_pos.remove();
         Sleep(200); // let a call that is inside a detour leave
+        icons::shutdown();
     }
 
 } // namespace ui::overlay

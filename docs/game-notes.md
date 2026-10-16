@@ -195,6 +195,33 @@ when the player leaves). Verified: client connected to `srcds -insecure +sv_lan 
 inventory and the pistol in game slot 2. (The server binds to the LAN address, so `connect 192.168.1.2:27020`, not
 127.0.0.1.)
 
+## What the player sees (client side)
+
+The hotbar shows only while the local player is a living survivor in a game with no menu open, and it shows the ammo
+of the weapon in the hands; both come from the client's own entities, so they work as host, guest and on a
+dedicated server (refreshed in the pump, 10 times a second).
+
+| What | Where / how |
+|---|---|
+| `VClientEntityList003` (client `CClientEntityList`, vtable `0x10564B60`) | slot 3 `GetClientEntity(index)` (`55 8B EC 8B 45 08 85 C0 78 ?? 3D 00 10 00 00`), slot 4 `GetClientEntityFromHandle(handle)` |
+| `VEngineClient013` slot 12 | `GetLocalPlayer()`: `GetBaseLocalClient()->m_nPlayerSlot + 1` |
+| `VEngineVGui001` slot 2 | `IsGameUIVisible()`: GameUI's `IsGameUIActive` (main menu, pause menu) |
+| client netprops (`push <offset> / push "<name>"` before `RecvPropInt`...) | `m_iTeamNum` `+0xE4` (2 = survivors), `m_lifeState` `+0x147` (byte), `m_iObserverMode` `+0x1450`, `m_hActiveWeapon` `+0x1084`, `m_hMyWeapons` `+0xFA4`, `m_iAmmo` `+0xF24` (32 ints); weapon `m_iPrimaryAmmoType` `+0x97C`, `m_iClip1` `+0x984` |
+
+Items in the hands report a clip too (adrenaline: 1), so the counter is not drawn when the active weapon is a
+catalogue item.
+
+## Icons
+
+`src/ui/icons.cpp` reads the game's own icons at run time (nothing is copied into the mod): it indexes
+`update/`, `left4dead2_dlc3..1/` and `left4dead2/` `pak01_dir.vpk` in that order (the first archive that has a file
+wins, like the game's search path), parses each `scripts/weapon_<name>.txt` `TextureData { "weapon" { file x y width
+height } }`, and decodes `materials/<file>.vtf` (7.4, DXT5 here; DXT1/3/5 and 8888 are handled; the largest mip is
+the last). The `update` scripts use one texture per weapon (`vgui/hud/icon_smg`, 256x64; `icon_first_aid_kit`,
+128x64 with the icon in the left 64x64); the base game's use the sheets `iconsheet`, `iconsheet2`. Each rectangle is
+trimmed to its visible pixels (alpha > 24). The carryables (gas can, tanks, fireworks, gnome, cola) and melee have no
+icon there and keep their two-letter tag. `tools/re/vpk.py` lists and extracts VPK files for checking.
+
 ## vgui2.dll
 
 `VGUI_Input005` is `vgui::CInputSystem` (vtable `0x100457EC`). Its slot 4 returns the panel that has the keyboard (0 in

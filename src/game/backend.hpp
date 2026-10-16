@@ -37,6 +37,12 @@ namespace game
         ULONGLONG message_until = 0;
         // Client only: the inventory mirrors the one a dedicated server keeps for this player (it is not saved here).
         bool remote = false;
+        // Client only, refreshed on the main thread: the player is a living survivor in a game with no menu open (the
+        // hotbar shows and its keys work only then), and the weapon in their hands: rounds in the clip and in reserve
+        // (-1: none, e.g. a melee weapon or an item).
+        bool playing = true;
+        int ammo_clip = -1;
+        int ammo_reserve = -1;
     };
     // The active session: the local player's, or (while the game code serves another player: a dedicated server, or
     // a guest on this listen server) theirs.  The game code uses this one.

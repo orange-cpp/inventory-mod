@@ -3,6 +3,7 @@
 #include "core/config.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "ui/icons.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -192,6 +193,23 @@ namespace hud
         // ---- drawing ------------------------------------------------------------------------------------------------
 
         // One slot, in the toolkit's primitives: used by the hotbar and by the inventory window's grid.
+        // The game's own icon for a classname, fitted (aspect kept) and centred in the box; false when it has none.
+        bool draw_icon(ImDrawList* dl, int x0, int y0, int x1, int y1, const char* classname)
+        {
+            const icons::Icon* icon = icons::find(classname);
+            if (icon == nullptr)
+                return false;
+            float w = static_cast<float>(x1 - x0), h = static_cast<float>(y1 - y0);
+            if (w / h > icon->aspect)
+                w = h * icon->aspect;
+            else
+                h = w / icon->aspect;
+            const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+            dl->AddImage(reinterpret_cast<ImTextureID>(icon->texture), ImVec2(cx - w * 0.5f, cy - h * 0.5f),
+                         ImVec2(cx + w * 0.5f, cy + h * 0.5f), ImVec2(icon->u0, icon->v0), ImVec2(icon->u1, icon->v1));
+            return true;
+        }
+
         void draw_slot(ImDrawList* dl, int x, int y, int size, const inv::Stack& stack, bool selected, bool hovered,
                        int number)
         {
@@ -207,9 +225,12 @@ namespace hud
                 nc::FillRect(dl, x + pad, y + pad, x + size - pad, y + size - pad,
                              ImVec4(c.x * 0.4f, c.y * 0.4f, c.z * 0.4f, 1.f));
                 nc::OutlineRect(dl, x + pad, y + pad, x + size - pad, y + size - pad, c);
-                const int tw = nc::CalcTextWidth(fonts.Header, stack.def->tag);
-                nc::AddText(dl, fonts.Header, x + (size - tw) / 2, y + (size - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
-                            stack.def->tag);
+                if (!draw_icon(dl, x + 2, y + 2, x + size - 2, y + size - 2, stack.def->classname))
+                {
+                    const int tw = nc::CalcTextWidth(fonts.Header, stack.def->tag);
+                    nc::AddText(dl, fonts.Header, x + (size - tw) / 2, y + (size - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
+                                stack.def->tag);
+                }
                 // the item in the player's hands lives in this box: a bar along the bottom, and it counts in the number
                 if (stack.held)
                     nc::FillRect(dl, x + 3, y + size - 4, x + size - 3, y + size - 2, ImVec4(0.45f, 0.85f, 0.35f, 1.f));
@@ -240,13 +261,17 @@ namespace hud
             const nc::Fonts& fonts = nc::GetFonts();
             const nc::Palette& pal = nc::GetPalette();
 
-            const int size = static_cast<int>(40.f * cfg.hud_scale);
-            const int gap = static_cast<int>(4.f * cfg.hud_scale);
+            // laid out for 900 lines, larger on taller screens (times the hud_scale setting)
+            const float scale = cfg.hud_scale * std::max(1.f, display.y / 900.f);
+            const int size = static_cast<int>(40.f * scale);
+            const int gap = static_cast<int>(4.f * scale);
             const int n = inventory.slot_count();
             const int m = hotbar_native(session);
-            const int total = (m + n) * size + (m + n - 1) * gap;
-            const int x0 = static_cast<int>(display.x * 0.58f) - total / 2; // clear of the game's survivor panels (left)
-            const int y0 = static_cast<int>(display.y) - size - static_cast<int>(10.f * cfg.hud_scale);
+            const int wide = 2 * size; // the gun boxes: the game's gun icons are 2:1 to 4:1
+            const int total = m * wide + n * size + (m + n - 1) * gap;
+            // centred between the teammates' panels (left) and the player's own (right)
+            const int x0 = static_cast<int>(display.x * 0.62f) - total / 2;
+            const int y0 = static_cast<int>(display.y) - size - static_cast<int>(10.f * scale);
             const bool native_valid = g.native_sel >= 0 && g.native_sel < m &&
                                       !session.native[static_cast<std::size_t>(g.native_sel)].classname.empty();
 
@@ -254,34 +279,52 @@ namespace hud
             for (int i = 0; i < m; ++i)
             {
                 const game::NativeWeapon& weapon = session.native[static_cast<std::size_t>(i)];
-                const int x = x0 + i * (size + gap);
+                const int x = x0 + i * (wide + gap);
                 const bool selected_here = native_valid && i == g.native_sel;
-                if (weapon.classname.empty())
+                // a gun or a melee weapon (the gun slots hold nothing of the catalogue): a neutral colour
+                nc::FillRect(dl, x, y0, x + wide, y0 + size, pal.BgAlt);
+                if (!weapon.classname.empty())
                 {
-                    draw_slot(dl, x, y0, size, inv::Stack{}, false, false, i + 1);
-                    continue;
+                    const int pad = size / 6;
+                    nc::FillRect(dl, x + pad, y0 + pad, x + wide - pad, y0 + size - pad, ImVec4(0.22f, 0.24f, 0.28f, 1.f));
+                    nc::OutlineRect(dl, x + pad, y0 + pad, x + wide - pad, y0 + size - pad, ImVec4(0.6f, 0.64f, 0.7f, 1.f));
+                    if (!draw_icon(dl, x + 2, y0 + 2, x + wide - 2, y0 + size - 2, weapon.classname.c_str()))
+                    {
+                        const int tw = nc::CalcTextWidth(fonts.Header, weapon.tag);
+                        nc::AddText(dl, fonts.Header, x + (wide - tw) / 2, y0 + (size - static_cast<int>(fonts.Size)) / 2,
+                                    ImVec4(1.f, 1.f, 1.f, 1.f), weapon.tag);
+                    }
                 }
-                if (const inv::ItemDef* def = inv::find_item(weapon.classname))
-                {
-                    draw_slot(dl, x, y0, size, inv::Stack{def, 1}, selected_here, false, i + 1);
-                    continue;
-                }
-                // a gun or a melee weapon: not in the catalogue, so a neutral colour
-                nc::FillRect(dl, x, y0, x + size, y0 + size, pal.BgAlt);
-                const int pad = size / 6;
-                nc::FillRect(dl, x + pad, y0 + pad, x + size - pad, y0 + size - pad, ImVec4(0.22f, 0.24f, 0.28f, 1.f));
-                nc::OutlineRect(dl, x + pad, y0 + pad, x + size - pad, y0 + size - pad, ImVec4(0.6f, 0.64f, 0.7f, 1.f));
-                const int tw = nc::CalcTextWidth(fonts.Header, weapon.tag);
-                nc::AddText(dl, fonts.Header, x + (size - tw) / 2, y0 + (size - static_cast<int>(fonts.Size)) / 2,
-                            ImVec4(1.f, 1.f, 1.f, 1.f), weapon.tag);
                 char number[8];
                 std::snprintf(number, sizeof(number), "%d", i + 1);
                 nc::AddText(dl, fonts.Normal, x + 3, y0 + 1, pal.TextAlt, number);
-                nc::OutlineRect(dl, x, y0, x + size, y0 + size, selected_here ? pal.BorderSelected : pal.Border);
+                nc::OutlineRect(dl, x, y0, x + wide, y0 + size, selected_here ? pal.BorderSelected : pal.Border);
             }
+            const int items_x = x0 + m * (wide + gap);
             for (int i = 0; i < n; ++i)
-                draw_slot(dl, x0 + (m + i) * (size + gap), y0, size, inventory.slot(i),
+                draw_slot(dl, items_x + i * (size + gap), y0, size, inventory.slot(i),
                           !native_valid && i == inventory.selected(), false, m + i + 1);
+
+            // the weapon in the hands: rounds in the clip / in reserve, right of the bar (the game's own counter is part
+            // of the weapon panel the mod hides)
+            // (an item in the hands also reports a "clip": not shown)
+            const bool item_in_hands = std::any_of(session.native.begin(), session.native.end(), [](const game::NativeWeapon& w) {
+                return w.active && inv::find_item(w.classname) != nullptr;
+            });
+            if (!item_in_hands && (session.ammo_clip >= 0 || session.ammo_reserve > 0))
+            {
+                char ammo[32];
+                if (session.ammo_clip >= 0 && session.ammo_reserve > 0)
+                    std::snprintf(ammo, sizeof(ammo), "%d / %d", session.ammo_clip, session.ammo_reserve);
+                else
+                    std::snprintf(ammo, sizeof(ammo), "%d", session.ammo_clip >= 0 ? session.ammo_clip : session.ammo_reserve);
+                const int line = static_cast<int>(fonts.Size);
+                const int ax = x0 + total + 3 * gap;
+                const int ay = y0 + (size - line) / 2;
+                nc::AddText(dl, fonts.Header, ax + 1, ay + 1, ImVec4(0.f, 0.f, 0.f, 0.8f), ammo);
+                nc::AddText(dl, fonts.Header, ax, ay,
+                            session.ammo_clip == 0 ? ImVec4(0.95f, 0.35f, 0.3f, 1.f) : ImVec4(1.f, 1.f, 1.f, 1.f), ammo);
+            }
 
             int y = y0 - static_cast<int>(fonts.Size) - 3;
             // a status line from the game side, for a few seconds
@@ -531,7 +574,7 @@ namespace hud
         {
             game::Session& session = game::local_session();
             std::lock_guard lock(session.mutex);
-            if (core::config().show_hotbar)
+            if (core::config().show_hotbar && session.playing)
                 draw_hotbar(session);
             if (g.open)
                 inventory_window(session.inventory);
@@ -567,6 +610,16 @@ namespace hud
         g.unload = true;
     }
 
+    namespace
+    {
+        bool playing()
+        {
+            game::Session& session = game::local_session();
+            std::lock_guard lock(session.mutex);
+            return session.playing;
+        }
+    } // namespace
+
     bool on_wnd_message(UINT msg, WPARAM wparam, LPARAM lparam)
     {
         // TranslateMessage turns the key press we swallow into a WM_CHAR the game's text boxes would still get.
@@ -580,7 +633,7 @@ namespace hud
             }
         }
         // the wheel steps through the items (the open window takes the wheel itself, and the console keeps it)
-        if (msg == WM_MOUSEWHEEL && core::config().replace_native && !g.open && !game::backend().typing())
+        if (msg == WM_MOUSEWHEEL && core::config().replace_native && !g.open && playing() && !game::backend().typing())
         {
             const int delta = static_cast<short>(HIWORD(wparam));
             if (delta != 0)
@@ -625,6 +678,9 @@ namespace hud
                 INV_LOG("hotkey %s ignored: the game has the keyboard (console, chat or a menu)", core::key_name(vk).c_str());
             return false;
         }
+        // in a menu, as a spectator or as infected the keys are the game's (the window can still be opened and closed)
+        if (!playing() && vk != core::config().key_toggle)
+            return false;
         if (up)
             return true; // the game never saw the press, so it must not see the rest
         g.swallow_char = std::tolower(static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_CHAR) & 0x7FFF));
