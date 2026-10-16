@@ -250,6 +250,33 @@ through the pixel shader (full-screen quad in clip space, half-pixel offset, sRG
 buffer already holds final colours). The overlay's D3DSBT_ALL state block puts the game's state back. Seen in the game:
 "postfx: infection shader ready (11552 bytes)", the frame intact with the effect at the start of the clock.
 
+### The sound
+
+| what | where |
+|---|---|
+| the device | `CAudioDirectSound` (vtable `0x103518EC`; engine.dll loads dsound.dll itself, "DirectSoundCreate" by GetProcAddress). The whole mix goes into one looping `IDirectSoundBuffer` kept in `0x1043F3A4` (seen in the game: 2 channels, 44100 Hz, 16 bits, 65536 bytes) |
+| the transfer | `TransferSamples` `0x1000A8E0`: Lock (vtable `+0x2C`, slot 11) at `0x1000A9C6`, the paint buffer copied in, Unlock (`+0x4C`, slot 19) at `0x1000AA54` (pattern `8B 75 FC 8B 0D ?? ?? ?? ?? 8B 11 56 50 8B 45 F8 50 8B 45 08 50 51 8B 4A 4C FF D1`, the global at +5, returns to `0x1000AA56`). The surround transfer `0x100091E0` Unlocks the same buffer from `0x10009409` (`8B 55 E8 A1 ?? ?? ?? ?? 8B 08 6A 00 6A 00 52 8B 55 F8 52 50 8B 41 4C FF D0`). Slot 14 `0x10009790` is ClearBuffer (Locks the whole buffer, memset, Unlock) |
+| the hook | dsound.dll's Unlock, read from that buffer's vtable, hooked (MinHook): only calls returning to those two places are processed, and never one covering the whole buffer (a clear). Seen in the game: "audio: engine buffer ..., Unlock ... hooked (from engine+0xAA56 and engine+0x9409)" and the buffer's format logged from the first call |
+
+What `src/ui/audio.cpp` does to it, by the severity: a delay line swept by two slow waves (the pitch bends), two
+one-pole low-passes (15 kHz down to about 500 Hz), the level ducked on each beat and a falling 52 Hz thump synthesized
+on it (lub, dub a quarter later; the beat count comes from the HUD so it falls on the screen's throbs), a 7.1 kHz ring
+past 0.35, a soft saturation past 0.75 (level-matched for quiet sounds; an earlier crusher that cut the levels was
+all hiss at the top); faded in and out over 0.6 s (out when the HUD
+stops reporting for 300 ms). The engine applies its master volume while it mixes, so what the mod adds (the scream, the
+thump, the ring) is scaled by the `volume` ConVar itself: `0x1044A560`, registered at `0x10338200` (`B9 [ConVar] 6A 01
+68 ["Sound volume"] 68 80 00 00 01 68 ["1.0"] 68 ["volume"] E8`), `m_fValue` at +0x2C of `m_pParent` (+0x1C). Seen in the
+game: 0.12, as in cfg/config.cfg. The scream goes over the game's mix (at 0.6) through a soft limiter above 0.8. The game's sounds are loose files:
+`left4dead2/sound/npc/witch/voice/mad/female_ls_d_madscream01.wav` is 16-bit mono 44100 Hz PCM.
+
+### The screamer
+
+The server's `turn` sends `@inf@ 0 0 1` (the third number: turned now; older clients read only two), or sets the
+host's `Session::infection_turned_at`. The HUD then shows the picture for 1.7 s (a managed-pool A8R8G8B8 texture read
+with WIC) and starts the scream. With the screen effect on, postfx draws it into the back buffer itself (fixed function,
+pre-transformed quads: black backdrop, the picture, a red wash) before its pass, and the pass runs at severity 0.92
+over it; with the effect off it goes on ImGui's foreground draw list.
+
 ## Ammo maxima
 
 The most reserve rounds of each type are server.dll's ConVars `ammo_<type>_max` (assaultrifle 360, smg 650, shotgun 72,

@@ -25,6 +25,19 @@ namespace core
 
         constexpr const char* k_views[] = {"both", "slots", "wheel"};
 
+        // A string for a TOML basic string ("..."): backslashes and quotes escaped.
+        std::string toml_text(const std::string& text)
+        {
+            std::string out;
+            for (const char ch : text)
+            {
+                if (ch == '\\' || ch == '"')
+                    out += '\\';
+                out += ch;
+            }
+            return out;
+        }
+
         std::wstring path_of(const wchar_t* name)
         {
             return std::wstring(module_dir()) + name;
@@ -85,6 +98,13 @@ namespace core
                     c.inventory_view = i;
 
             c.auto_store = root["play"]["auto_store"].value_or(c.auto_store);
+
+            const toml::node_view infection = root["infection"];
+            c.infection_effect = infection["effect"].value_or(c.infection_effect);
+            c.infection_sound = infection["sound"].value_or(c.infection_sound);
+            c.infection_screamer = infection["screamer"].value_or(c.infection_screamer);
+            c.screamer_image = infection["screamer_image"].value_or(c.screamer_image);
+            c.screamer_sound = infection["screamer_sound"].value_or(c.screamer_sound);
 
             const toml::node_view limits = root["limits"];
             c.slots = clamp_slots(limits["slots"].value_or(static_cast<std::int64_t>(c.slots)));
@@ -256,6 +276,13 @@ namespace core
         fprintf(f, "\n[play]\n");
         fprintf(f, "auto_store = %s   # E on an item always stores it (otherwise only when its game slot is full)\n",
                 c.auto_store ? "true" : "false");
+        fprintf(f, "\n[infection]   # how the infection looks and sounds to you (the host's inventory_mod.toml turns it on)\n");
+        fprintf(f, "effect = %s     # the screen effect\n", c.infection_effect ? "true" : "false");
+        fprintf(f, "sound = %s      # the sound muffled and warped, a heartbeat, ringing\n", c.infection_sound ? "true" : "false");
+        fprintf(f, "screamer = %s   # a face and a scream when the clock runs out\n", c.infection_screamer ? "true" : "false");
+        fprintf(f, "screamer_image = \"%s\"   # next to the DLL or a full path (PNG, JPEG, BMP)\n", toml_text(c.screamer_image).c_str());
+        fprintf(f, "screamer_sound = \"%s\"   # 16-bit .wav: under left4dead2/sound, next to the DLL or a full path\n",
+                toml_text(c.screamer_sound).c_str());
         fprintf(f, "\n[limits]   # when you play alone or host and there is no inventory_mod.toml\n");
         fprintf(f, "slots = %d          # the most item boxes\n", g_own_slots);
         fprintf(f, "weapon_slots = %d    # the most weapon boxes\n", g_own_weapon_slots);

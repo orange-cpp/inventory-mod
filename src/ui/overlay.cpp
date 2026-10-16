@@ -3,6 +3,7 @@
 #include "core/hook.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "ui/audio.hpp"
 #include "ui/icons.hpp"
 #include "ui/hud.hpp"
 #include "ui/postfx.hpp"
@@ -224,6 +225,7 @@ namespace ui::overlay
             icons::start();
             icons::set_device(device);
             postfx::init(device);
+            audio::install();
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
         }
@@ -402,6 +404,7 @@ namespace ui::overlay
             Sleep(50); // the render thread tears ImGui down in its next Present
         if (!g_shutdown_done.load())
             INV_LOG("no Present to tear down on: leaving the overlay's D3D objects to the process");
+        audio::uninstall();
         g_present.remove();
         g_reset.remove();
         g_set_cursor_pos.remove();

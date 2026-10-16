@@ -3,6 +3,7 @@
 #include "core/config.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "ui/audio.hpp"
 #include "ui/icons.hpp"
 #include "ui/postfx.hpp"
 
@@ -665,11 +666,14 @@ namespace hud
 
         // ---- the infection's effect -----------------------------------------------------------------------------------
         //
-        // While infected (Session::infection_until): the shader of postfx.cpp over the game's frame, beating like a
-        // heart that speeds up as the clock runs out; no clock, no text.  How bad it is grows from 0 (just infected) to
-        // 1 (turning).  Without the shader: a sickly green tint and a dark vignette that closes in.
+        // While infected (Session::infection_until): the shader of postfx.cpp over the game's frame and the sound of
+        // audio.cpp, beating like a heart that speeds up as the clock runs out; no clock, no text.  How bad it is grows
+        // from 0 (just infected) to 1 (turning).  Without the shader: a sickly green tint and a dark vignette that
+        // closes in.  The settings' [infection] turns the picture and the sound off.
         bool g_infection_preview = false; // the Debug tab's preview: the effect without an infection
         float g_infection_preview_severity = 0.5f;
+        double g_beats = 0.0; // heartbeats counted while infected (the picture's and the sound's)
+        ULONGLONG g_beat_tick = 0;
 
         void draw_infection(const game::Session& session)
         {
@@ -691,12 +695,21 @@ namespace hud
             const ImVec2 display = ImGui::GetIO().DisplaySize;
             ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
-            // the heartbeat: 50 to 150 a minute, a sharp beat and a softer one after it
+            // the heartbeat: 50 to 150 a minute, a sharp beat and a softer one after it (counted, so a faster heart
+            // does not jump the phase)
             const float bpm = 50.f + 100.f * severity;
-            const float phase = std::fmod(static_cast<float>(now % 600000) / 1000.f * bpm / 60.f, 1.f);
+            const ULONGLONG since = g_beat_tick != 0 && now - g_beat_tick < 500 ? now - g_beat_tick : 0;
+            g_beat_tick = now;
+            g_beats += static_cast<double>(since) / 1000.0 * bpm / 60.0;
+            const float phase = static_cast<float>(g_beats - std::floor(g_beats));
             const float beat = std::exp(-phase * 14.f) + 0.6f * std::exp(-std::fabs(phase - 0.25f) * 18.f);
             const float pulse = std::clamp(beat, 0.f, 1.2f);
             const float last = remaining < 10.f ? 1.f - remaining / 10.f : 0.f;
+            const core::Config& cfg = core::config();
+            if (cfg.infection_sound)
+                audio::set_infection(severity, g_beats);
+            if (!cfg.infection_effect)
+                return;
             if (postfx::ready())
             {
                 postfx::set_infection(severity, std::min(pulse, 1.f), last);
@@ -718,6 +731,86 @@ namespace hud
             // the last seconds: red flashes on the beat
             if (remaining < 10.f)
                 dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 20, 10, static_cast<int>(60.f * pulse * last)));
+        }
+
+        // ---- the screamer -------------------------------------------------------------------------------------------
+        //
+        // When the clock runs out (Session::infection_turned_at): the settings' picture over everything for a moment,
+        // lunging at the player and shaking, with the scream (audio.cpp).
+        constexpr float k_screamer_seconds = 1.7f;
+        ULONGLONG g_screamer_at = 0;
+        ULONGLONG g_screamer_seen = 0; // the last Session::infection_turned_at looked at
+
+        void start_screamer()
+        {
+            g_screamer_at = GetTickCount64();
+            audio::scream();
+        }
+
+        void draw_screamer(const game::Session& session)
+        {
+            const ULONGLONG now = GetTickCount64();
+            if (session.infection_turned_at != g_screamer_seen)
+            {
+                g_screamer_seen = session.infection_turned_at;
+                if (core::config().infection_screamer && now - session.infection_turned_at < 3000)
+                    start_screamer();
+            }
+            if (g_screamer_at == 0)
+                return;
+            const float t = static_cast<float>(now - g_screamer_at) / 1000.f;
+            if (t >= k_screamer_seconds)
+            {
+                g_screamer_at = 0;
+                return;
+            }
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            const float fade = t > k_screamer_seconds - 0.45f ? (k_screamer_seconds - t) / 0.45f : 1.f;
+            float aspect = 1.f;
+            void* texture = postfx::screamer_texture(&aspect);
+            // with the screen effect: drawn into the frame under the infection shader, at its worst
+            const bool through_shader = core::config().infection_effect && postfx::ready();
+            if (!through_shader)
+                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(0, 0, 0, static_cast<int>(255.f * fade)));
+
+            if (texture != nullptr)
+            {
+                // it lunges in, then keeps creeping closer; the shake dies down
+                const float zoom = 1.04f + 0.30f * (1.f - std::exp(-t * 9.f)) + 0.06f * t;
+                const float cover = std::max(display.x / aspect, display.y) * zoom;
+                const ImVec2 size(cover * aspect, cover);
+                const std::uint32_t r = static_cast<std::uint32_t>(now * 2654435761u);
+                const float shake = 34.f * std::max(0.f, 1.f - t / 1.2f) * (display.y / 1080.f);
+                const ImVec2 jitter(shake * (static_cast<float>(r & 255u) / 127.5f - 1.f),
+                                    shake * (static_cast<float>((r >> 8) & 255u) / 127.5f - 1.f));
+                const ImVec2 at((display.x - size.x) * 0.5f + jitter.x, (display.y - size.y) * 0.5f + jitter.y);
+                // flickers: a few dark frames, brighter on the hit
+                const bool dark_frame = ((r >> 16) & 7u) == 0 && t > 0.2f;
+                const int light = dark_frame ? 110 : 255;
+                // a red sting that pulses
+                const float sting = 0.25f + 0.2f * std::sin(t * 40.f);
+                if (through_shader)
+                {
+                    const float rect[4] = {at.x, at.y, at.x + size.x, at.y + size.y};
+                    const unsigned tint = (static_cast<unsigned>(255.f * fade) << 24) |
+                                          (static_cast<unsigned>(light) * 0x010101u);
+                    postfx::set_screamer(texture, rect, tint, fade, 70.f / 255.f * sting * fade);
+                    // the effect at its worst, throbbing with the shake
+                    postfx::set_infection(0.92f, 0.5f + 0.5f * std::sin(t * 40.f), 0.7f);
+                }
+                else
+                {
+                    dl->AddImage(reinterpret_cast<ImTextureID>(texture), at, ImVec2(at.x + size.x, at.y + size.y),
+                                 ImVec2(0.f, 0.f), ImVec2(1.f, 1.f), IM_COL32(light, light, light, static_cast<int>(255.f * fade)));
+                    dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 0, 0, static_cast<int>(70.f * sting * fade)));
+                }
+            }
+            else
+                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(170, 0, 0, static_cast<int>(200.f * fade * (0.6f + 0.4f * std::sin(t * 40.f)))));
+            // the first instant: a white flash
+            if (t < 0.08f)
+                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(255, 255, 255, static_cast<int>(220.f * (1.f - t / 0.08f))));
         }
 
         // ---- the radial wheel (hold the middle mouse button) ---------------------------------------------------------
@@ -1044,6 +1137,8 @@ namespace hud
                     game::backend().infect_self();
                 nc::SetItemTooltip("Starts the infection clock, as a grab or a vomit would ([infection] in inventory_mod.toml\n"
                                    "must be on). Pain pills put it back to the start (no_cure) or cure it.");
+                if (nc::Button("Screamer (test)"))
+                    start_screamer();
                 nc::Checkbox("Preview the infection effect", &g_infection_preview);
                 if (g_infection_preview)
                     nc::SliderFloat("Infection:", &g_infection_preview_severity, 0.f, 1.f, "%.2f");
@@ -1081,6 +1176,15 @@ namespace hud
                 changed |= nc::Checkbox("Store items on use", &cfg.auto_store);
                 changed |= nc::Checkbox("Replace the game's weapon panel (1-0 keys, wheel); off: a grid under it, keys 3-0", &cfg.replace_native);
                 changed |= nc::SliderFloat("Scale:", &cfg.hud_scale, 0.5f, 3.f, "%.2f");
+            }
+            nc::EndGroupBox();
+
+            if (nc::BeginGroupBox("Infection", ImVec2(0, 0)))
+            {
+                changed |= nc::Checkbox("Screen effect", &cfg.infection_effect);
+                changed |= nc::Checkbox("Sound distortion and heartbeat", &cfg.infection_sound);
+                changed |= nc::Checkbox("Screamer when the clock runs out", &cfg.infection_screamer);
+                nc::TextDisabled("The picture and the scream: screamer_image / screamer_sound in inventory_mod_settings.toml.");
             }
             nc::EndGroupBox();
 
@@ -1176,6 +1280,7 @@ namespace hud
             }
             if (session.playing || g_infection_preview)
                 draw_infection(session);
+            draw_screamer(session);
             if (g.wheel && !session.playing)
                 g.wheel = false; // died, a menu opened ...
             if (g.wheel)

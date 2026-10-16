@@ -36,6 +36,13 @@ namespace core
         bool show_hotbar = true;
         bool auto_store = false; // +use on a catalogue item always stores it (otherwise only when the player's slot is full)
         float hud_scale = 1.f;
+        // The infection as this player sees and hears it (whether there is one is the host's inventory_mod.toml).
+        bool infection_effect = true; // the screen shader (postfx)
+        bool infection_sound = true; // the game's sound muffled and warped, a heartbeat, ringing (audio)
+        bool infection_screamer = true; // a face and a scream when the clock runs out
+        std::string screamer_image = "inventory_mod_screamer.jpg"; // next to the DLL, or a full path (PNG, JPEG, BMP)
+        // a 16-bit PCM .wav: under the game's left4dead2/sound folder, next to the DLL, or a full path
+        std::string screamer_sound = "npc/witch/voice/mad/female_ls_d_madscream01.wav";
         // inventory_mod.toml (the rules) was read: its limits win over the settings' (see rules_load)
         bool rules_file = false;
     };

@@ -1,10 +1,15 @@
 #include "ui/postfx.hpp"
 
+#include "core/config.hpp"
 #include "core/log.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <d3d9.h>
 #include <d3dcommon.h>
+#include <string>
+#include <vector>
+#include <wincodec.h>
 
 namespace postfx
 {
@@ -105,7 +110,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
     // grain
     float2 px = uv / p1.xy + frac(t * 7.13) * float2(97.0, 57.0);
     float grain = frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
-    col += (grain - 0.5) * (0.025 + 0.07 * s);
+    col += (grain - 0.5) * (0.02 + 0.025 * s);
 
     // the sight dims now and then near the end
     col *= 1.0 - 0.55 * s2 * s * smoothstep(0.62, 0.9, noise(float2(t * 1.3, 5.0)));
@@ -129,12 +134,25 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         IDirect3DVertexShader9* g_vs = nullptr;
         IDirect3DPixelShader9* g_ps = nullptr;
         IDirect3DVertexDeclaration9* g_decl = nullptr;
+        IDirect3DDevice9* g_device = nullptr;
+        IDirect3DTexture9* g_screamer = nullptr; // managed pool: survives a Reset
+        float g_screamer_aspect = 1.f;
+        std::string g_screamer_path; // what g_screamer was read from (also when that failed)
         IDirect3DTexture9* g_copy = nullptr; // the frame
         UINT g_copy_w = 0, g_copy_h = 0;
         D3DFORMAT g_copy_format = D3DFMT_UNKNOWN;
         bool g_ready = false;
         bool g_failed_copy = false; // logged once
         bool g_wanted = false; // set_infection this frame
+        struct Screamer
+        {
+            bool wanted = false;
+            IDirect3DTexture9* texture = nullptr;
+            float rect[4] = {};
+            D3DCOLOR color = 0;
+            float backdrop = 0.f, red = 0.f;
+        };
+        Screamer g_screamer_frame; // set_screamer this frame
         float g_severity = 0.f, g_beat = 0.f, g_last = 0.f;
 
         template <class T> void release(T*& p)
@@ -160,6 +178,135 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             }
             release(errors);
             return code;
+        }
+
+        // A picture file into BGRA pixels (at most 2048 on a side).
+        bool decode(const std::wstring& path, std::vector<unsigned char>& pixels, UINT& width, UINT& height)
+        {
+            const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            bool ok = false;
+            IWICImagingFactory* factory = nullptr;
+            IWICBitmapDecoder* decoder = nullptr;
+            IWICBitmapFrameDecode* frame = nullptr;
+            IWICBitmapScaler* scaler = nullptr;
+            IWICFormatConverter* converter = nullptr;
+            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+                SUCCEEDED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                             WICDecodeMetadataCacheOnDemand, &decoder)) &&
+                SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&width, &height)) && width > 0 &&
+                height > 0)
+            {
+                IWICBitmapSource* source = frame;
+                const UINT longest = std::max(width, height);
+                if (longest > 2048 && SUCCEEDED(factory->CreateBitmapScaler(&scaler)))
+                {
+                    width = std::max(1u, width * 2048 / longest);
+                    height = std::max(1u, height * 2048 / longest);
+                    if (SUCCEEDED(scaler->Initialize(frame, width, height, WICBitmapInterpolationModeFant)))
+                        source = scaler;
+                }
+                if (SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+                    SUCCEEDED(converter->Initialize(source, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr,
+                                                    0.0, WICBitmapPaletteTypeCustom)))
+                {
+                    pixels.resize(static_cast<std::size_t>(width) * height * 4);
+                    ok = SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data()));
+                }
+            }
+            release(converter);
+            release(scaler);
+            release(frame);
+            release(decoder);
+            release(factory);
+            if (SUCCEEDED(co))
+                CoUninitialize();
+            return ok;
+        }
+
+        void load_screamer()
+        {
+            const std::string& name = core::config().screamer_image;
+            if (name == g_screamer_path)
+                return;
+            g_screamer_path = name;
+            release(g_screamer);
+            if (g_device == nullptr || name.empty())
+                return;
+            std::wstring wide(name.size(), L'\0');
+            wide.resize(static_cast<std::size_t>(std::max(0, MultiByteToWideChar(CP_UTF8, 0, name.data(), static_cast<int>(name.size()),
+                                                                                   wide.data(), static_cast<int>(wide.size())))));
+            std::replace(wide.begin(), wide.end(), L'/', L'\\');
+            if (wide.find(L':') == std::wstring::npos && wide.rfind(L"\\\\", 0) != 0)
+                wide = std::wstring(core::module_dir()) + wide;
+            std::vector<unsigned char> pixels;
+            UINT width = 0, height = 0;
+            if (!decode(wide, pixels, width, height))
+            {
+                INV_LOG("postfx: no screamer picture: %s cannot be read (PNG, JPEG, BMP)", name.c_str());
+                return;
+            }
+            D3DLOCKED_RECT locked{};
+            if (FAILED(g_device->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_screamer, nullptr)) ||
+                FAILED(g_screamer->LockRect(0, &locked, nullptr, 0)))
+            {
+                release(g_screamer);
+                INV_LOG("postfx: no %ux%u texture for the screamer", width, height);
+                return;
+            }
+            for (UINT y = 0; y < height; ++y)
+                std::memcpy(static_cast<unsigned char*>(locked.pBits) + static_cast<std::size_t>(y) * locked.Pitch,
+                            pixels.data() + static_cast<std::size_t>(y) * width * 4, static_cast<std::size_t>(width) * 4);
+            g_screamer->UnlockRect(0);
+            g_screamer_aspect = static_cast<float>(width) / static_cast<float>(height);
+            INV_LOG("postfx: the screamer is %s (%ux%u)", name.c_str(), width, height);
+        }
+
+        // A screen-space quad with the fixed-function pipeline (pre-transformed vertices, blended).
+        struct QuadVertex
+        {
+            float x, y, z, rhw;
+            D3DCOLOR color;
+            float u, v;
+        };
+
+        void draw_quad(IDirect3DDevice9* device, IDirect3DTexture9* texture, float x0, float y0, float x1, float y1, D3DCOLOR color)
+        {
+            device->SetTexture(0, texture);
+            device->SetTextureStageState(0, D3DTSS_COLOROP, texture != nullptr ? D3DTOP_MODULATE : D3DTOP_SELECTARG2);
+            device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            device->SetTextureStageState(0, D3DTSS_ALPHAOP, texture != nullptr ? D3DTOP_MODULATE : D3DTOP_SELECTARG2);
+            device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+            device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+            device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+            device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+            x0 -= 0.5f, y0 -= 0.5f, x1 -= 0.5f, y1 -= 0.5f; // D3D9 pixel centres
+            const QuadVertex quad[4] = {
+                {x0, y0, 0.f, 1.f, color, 0.f, 0.f},
+                {x1, y0, 0.f, 1.f, color, 1.f, 0.f},
+                {x0, y1, 0.f, 1.f, color, 0.f, 1.f},
+                {x1, y1, 0.f, 1.f, color, 1.f, 1.f},
+            };
+            device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVertex));
+        }
+
+        void draw_screamer(IDirect3DDevice9* device, const Screamer& s, float w, float h)
+        {
+            device->SetVertexShader(nullptr);
+            device->SetPixelShader(nullptr);
+            device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+            device->SetRenderState(D3DRS_LIGHTING, FALSE);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+            device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+            device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            const auto alpha = [](float a) { return static_cast<D3DCOLOR>(std::clamp(a, 0.f, 1.f) * 255.f) << 24; };
+            draw_quad(device, nullptr, 0.f, 0.f, w, h, alpha(s.backdrop));
+            if (s.texture != nullptr)
+                draw_quad(device, s.texture, s.rect[0], s.rect[1], s.rect[2], s.rect[3], s.color);
+            draw_quad(device, nullptr, 0.f, 0.f, w, h, alpha(s.red) | 0x00960000u);
+            device->SetTexture(0, nullptr);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         }
 
         bool make_copy(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer)
@@ -191,6 +338,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
     bool init(IDirect3DDevice9* device)
     {
         shutdown();
+        g_device = device;
         HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
         const auto d3d_compile =
             compiler != nullptr ? reinterpret_cast<D3DCompileFn>(GetProcAddress(compiler, "D3DCompile")) : nullptr;
@@ -239,11 +387,43 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         g_last = last;
     }
 
+    void set_screamer(void* texture, const float rect[4], unsigned color, float backdrop, float red)
+    {
+        g_screamer_frame.wanted = true;
+        g_screamer_frame.texture = static_cast<IDirect3DTexture9*>(texture);
+        std::memcpy(g_screamer_frame.rect, rect, sizeof(g_screamer_frame.rect));
+        g_screamer_frame.color = color;
+        g_screamer_frame.backdrop = backdrop;
+        g_screamer_frame.red = red;
+    }
+
     void render(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer)
     {
         const bool wanted = g_wanted;
         g_wanted = false;
-        if (!wanted || !g_ready || back_buffer == nullptr || !make_copy(device, back_buffer))
+        const Screamer screamer = g_screamer_frame;
+        g_screamer_frame.wanted = false;
+        if (!g_ready || back_buffer == nullptr || (!wanted && !screamer.wanted) || !make_copy(device, back_buffer))
+            return;
+        if (screamer.wanted)
+        {
+            // (the overlay's state block puts the game's state back afterwards)
+            D3DVIEWPORT9 full{0, 0, g_copy_w, g_copy_h, 0.f, 1.f};
+            device->SetViewport(&full);
+            device->SetRenderState(D3DRS_ZENABLE, FALSE);
+            device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+            device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+            device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+            device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+            device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+            device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+            draw_screamer(device, screamer, static_cast<float>(g_copy_w), static_cast<float>(g_copy_h));
+        }
+        if (!wanted)
             return;
         IDirect3DSurface9* copy = nullptr;
         if (FAILED(g_copy->GetSurfaceLevel(0, &copy)))
@@ -293,6 +473,14 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         device->SetPixelShader(nullptr);
     }
 
+    void* screamer_texture(float* aspect)
+    {
+        load_screamer();
+        if (aspect != nullptr)
+            *aspect = g_screamer_aspect;
+        return g_screamer;
+    }
+
     void invalidate()
     {
         release(g_copy);
@@ -305,6 +493,9 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         release(g_vs);
         release(g_ps);
         release(g_decl);
+        release(g_screamer);
+        g_screamer_path.clear();
+        g_device = nullptr;
         g_ready = false;
         g_wanted = false;
     }

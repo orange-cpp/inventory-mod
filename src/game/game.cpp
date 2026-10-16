@@ -1745,8 +1745,9 @@ namespace game
             return mem::guarded([&] { g_script_command(command.get()); });
         }
 
-        // The infection clock to the player: the host's own session, or a line their client DLL reads.
-        void tell_infection(void* player, const Infection* infection)
+        // The infection clock to the player: the host's own session, or a line their client DLL reads
+        // ("@inf@ <ms left> <ms in all> <1: turned now>").
+        void tell_infection(void* player, const Infection* infection, bool turned = false)
         {
             const ULONGLONG now = GetTickCount64();
             const int remaining = infection != nullptr && infection->until > now ? static_cast<int>(infection->until - now) : 0;
@@ -1757,13 +1758,15 @@ namespace game
                 std::lock_guard lock(s.mutex);
                 s.infection_until = remaining > 0 ? now + static_cast<ULONGLONG>(remaining) : 0;
                 s.infection_total_ms = total;
+                if (turned)
+                    s.infection_turned_at = now;
                 return;
             }
             ServerPlayer* sp = server_player(player);
             if (sp == nullptr || !sp->has_mod || g_client_printf == nullptr)
                 return;
             char line[64];
-            std::snprintf(line, sizeof(line), "%s %d %d\n", k_infection_marker, remaining, total);
+            std::snprintf(line, sizeof(line), "%s %d %d %d\n", k_infection_marker, remaining, total, turned ? 1 : 0);
             void* edict = edict_of(player);
             if (edict != nullptr)
                 mem::guarded([&] { g_client_printf(g_engine_server, edict, line); });
@@ -1829,7 +1832,7 @@ namespace game
             Vec3 at{};
             mem::read(reinterpret_cast<std::uintptr_t>(player) + k_off_origin, at);
             g_infections.erase(user_id);
-            tell_infection(player, nullptr);
+            tell_infection(player, nullptr, true);
             const auto suicide = reinterpret_cast<CommitSuicideFn>(mem::vslot(player, k_vt_commit_suicide));
             if (suicide != nullptr)
                 mem::guarded([&] { suicide(player, false, true); });
@@ -2320,16 +2323,18 @@ namespace game
                 mem::guarded([&] { apply_state(text); });
                 return true; // not printed
             }
-            // the infection clock: "@inf@ <ms left> <ms in all>" (0 0: none)
+            // the infection clock: "@inf@ <ms left> <ms in all> <turned>" (0 0: none; turned 1: the clock ran out)
             if (text != nullptr && std::strcmp(head, k_infection_marker) == 0)
             {
                 mem::guarded([&] {
-                    int remaining = 0, total = 0;
-                    std::sscanf(text + sizeof(k_infection_marker) - 1, "%d %d", &remaining, &total);
+                    int remaining = 0, total = 0, turned = 0;
+                    std::sscanf(text + sizeof(k_infection_marker) - 1, "%d %d %d", &remaining, &total, &turned);
                     Session& s = local_session();
                     std::lock_guard lock(s.mutex);
                     s.infection_until = remaining > 0 ? GetTickCount64() + static_cast<ULONGLONG>(remaining) : 0;
                     s.infection_total_ms = total;
+                    if (turned != 0)
+                        s.infection_turned_at = GetTickCount64();
                 });
                 return true;
             }
