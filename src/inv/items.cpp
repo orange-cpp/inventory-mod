@@ -83,6 +83,87 @@ namespace inv
         return def != nullptr && def->weapon() ? def->weight : 0.f;
     }
 
+    namespace
+    {
+        struct AmmoKind
+        {
+            const char* kind; // ammo_<kind>_max
+            int index; // the game's ammo type index
+            int game_default; // that setting's default in server.dll (its ConVar registration)
+            int max = -1; // the rules file's, -1: not set
+        };
+
+        AmmoKind k_ammo[] = {
+            {"assaultrifle", 3, 360}, {"smg", 5, 650}, {"shotgun", 7, 72}, {"autoshotgun", 8, 90},
+            {"huntingrifle", 9, 150}, {"sniperrifle", 10, 180}, {"grenadelauncher", 17, 30}, {"m60", 6, 0},
+            {"chainsaw", 19, 20},
+        };
+        constexpr const char* k_ammo_names[] = {"assaultrifle", "smg", "shotgun", "autoshotgun", "huntingrifle",
+                                                "sniperrifle", "grenadelauncher", "m60", "chainsaw"};
+
+        AmmoKind* find_ammo(std::string_view kind)
+        {
+            for (AmmoKind& a : k_ammo)
+                if (kind == a.kind)
+                    return &a;
+            return nullptr;
+        }
+    } // namespace
+
+    const char* ammo_kind(std::string_view classname)
+    {
+        struct Gun
+        {
+            const char* classname;
+            const char* kind;
+        };
+        static constexpr Gun k_guns[] = {
+            {"weapon_rifle", "assaultrifle"}, {"weapon_rifle_ak47", "assaultrifle"}, {"weapon_rifle_desert", "assaultrifle"},
+            {"weapon_rifle_sg552", "assaultrifle"}, {"weapon_smg", "smg"}, {"weapon_smg_silenced", "smg"},
+            {"weapon_smg_mp5", "smg"}, {"weapon_pumpshotgun", "shotgun"}, {"weapon_shotgun_chrome", "shotgun"},
+            {"weapon_autoshotgun", "autoshotgun"}, {"weapon_shotgun_spas", "autoshotgun"},
+            {"weapon_hunting_rifle", "huntingrifle"}, {"weapon_sniper_military", "sniperrifle"},
+            {"weapon_sniper_awp", "sniperrifle"}, {"weapon_sniper_scout", "sniperrifle"},
+            {"weapon_grenade_launcher", "grenadelauncher"}, {"weapon_rifle_m60", "m60"}, {"weapon_chainsaw", "chainsaw"},
+        };
+        for (const Gun& g : k_guns)
+            if (classname == g.classname)
+                return g.kind;
+        return nullptr;
+    }
+
+    std::span<const char* const> ammo_kinds()
+    {
+        return k_ammo_names;
+    }
+
+    int ammo_max(std::string_view kind)
+    {
+        const AmmoKind* a = find_ammo(kind);
+        return a == nullptr ? -1 : (a->max >= 0 ? a->max : a->game_default);
+    }
+
+    int ammo_index(std::string_view kind)
+    {
+        const AmmoKind* a = find_ammo(kind);
+        return a != nullptr ? a->index : -1;
+    }
+
+    bool ammo_max_set(std::string_view kind)
+    {
+        const AmmoKind* a = find_ammo(kind);
+        return a != nullptr && a->max >= 0;
+    }
+
+    bool set_ammo_max(std::string_view kind, int rounds)
+    {
+        AmmoKind* a = find_ammo(kind);
+        if (a == nullptr || rounds < 0)
+            return false;
+        a->max = rounds;
+        return true;
+    }
+
     bool set_item_weight(std::string_view classname, float weight)
     {
         ItemDef* def = find_mutable(classname);

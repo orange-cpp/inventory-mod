@@ -301,6 +301,16 @@ molotov = 1
         inv::set_item_weight("weapon_rifle_ak47", ak_weight);
         inv::set_item_weight("weapon_melee", 2.f);
 
+        // [ammo]: the most reserve rounds per ammo type
+        CHECK(std::string(inv::ammo_kind("weapon_rifle_desert")) == "assaultrifle" && inv::ammo_kind("weapon_melee") == nullptr);
+        CHECK(inv::ammo_max("assaultrifle") == 360 && !inv::ammo_max_set("assaultrifle")); // the game's default
+        const inv::Rules ammo = inv::apply_rules("[ammo]\nassault_rifle = 500\nsmg = 300\nlaser = 5\n");
+        CHECK(ammo.ammo_changed == 2 && ammo.errors.size() == 1);
+        CHECK(inv::ammo_max("assaultrifle") == 500 && inv::ammo_max_set("assaultrifle") && inv::ammo_max("smg") == 300);
+        CHECK(inv::ammo_max("shotgun") == 72);
+        inv::set_ammo_max("assaultrifle", -1);
+        inv::set_ammo_max("smg", -1);
+
         inv::set_item_weight("weapon_first_aid_kit", medkit_weight);
         inv::set_item_weight("weapon_pain_pills", 1.f);
         inv::set_item_stack("weapon_molotov", molotov_stack);

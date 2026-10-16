@@ -54,3 +54,16 @@ grenade_launcher = 6.0
 first_aid_kit = 2
 pain_pills = 4
 molotov = 3
+
+# The most reserve rounds you can carry of each ammo type (the game's own ammo_<type>_max settings: ammo piles stop
+# there too). Guns of one type share the reserve. Leave a line out to keep the game's default (the values below).
+[ammo]
+assault_rifle = 360     # M16, AK-47, SCAR, SG552
+smg = 650               # SMG, silenced SMG, MP5
+shotgun = 72            # pump and chrome shotgun
+auto_shotgun = 90       # auto and combat shotgun
+hunting_rifle = 150
+sniper_rifle = 180      # military sniper, AWP, Scout
+grenade_launcher = 30
+m60 = 0
+chainsaw = 20

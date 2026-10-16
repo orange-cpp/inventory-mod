@@ -254,26 +254,25 @@ namespace game
 
         // ---- guns and melee weapons --------------------------------------------------------------------------------
         //
-        // A stored weapon keeps its rounds.  A carried gun's reserve is the player's m_iAmmo of its ammo type (a gun
-        // lying in the world keeps it in m_iExtraPrimaryAmmo); a melee weapon is told apart by its script name.
+        // A stored weapon keeps its magazine (a melee weapon: which one it is).  The reserve is the player's: m_iAmmo of
+        // each ammo type, shared by every gun that takes it (M16, AK-47, SCAR and SG552 share rifle rounds ...), the way
+        // the game shares it between the guns a player picks up.  So a stored gun leaves its reserve with the player, a
+        // gun taken out uses what the player has of its type, and a gun picked up off the ground into a box adds what it
+        // carried (m_iExtraPrimaryAmmo) to the player's.
 
+        // What `weapon` is in: its magazine, and for a gun lying in the world the reserve it carries (-1: none, or a
+        // fresh gun from the map, which has 0 there).  A carried gun's reserve is the player's, so not part of it.
         inv::WeaponState weapon_state(void* player, void* weapon, const inv::ItemDef& def, bool carried)
         {
+            (void)player;
             const bool is_melee = std::strcmp(def.classname, "weapon_melee") == 0;
             inv::WeaponState state;
             const auto w = reinterpret_cast<std::uintptr_t>(weapon);
             mem::guarded([&] {
                 state.clip = mem::read_or<int>(w + k_off_clip, -1);
-                if (carried)
-                {
-                    const int type = mem::read_or<int>(w + k_off_ammo_type, -1);
-                    if (type >= 0 && type < 32)
-                        state.ammo = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
-                                                           4u * static_cast<unsigned>(type),
-                                                       -1);
-                }
-                else if (const int extra = mem::read_or<int>(w + k_off_extra_ammo, 0); extra > 0)
-                    state.ammo = extra; // 0 on a fresh gun from the map: the game's own amount on pick-up (-1)
+                if (!carried && !is_melee)
+                    if (const int extra = mem::read_or<int>(w + k_off_extra_ammo, 0); extra > 0)
+                        state.ammo = extra;
                 char name[64] = {};
                 if (const char* melee = is_melee ? mem::read_or<const char*>(w + k_off_melee_name) : nullptr;
                     melee != nullptr && mem::safe_copy(name, melee, sizeof(name) - 1) && name[0] != '\0')
@@ -282,29 +281,67 @@ namespace game
             return state;
         }
 
-        // The rounds of a stored weapon onto the one the player was just given.
-        void apply_weapon_state(void* player, void* weapon, const inv::WeaponState& state)
+        int ammo_type_of(void* weapon)
         {
-            const auto w = reinterpret_cast<std::uintptr_t>(weapon);
+            const int type = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_ammo_type, -1);
+            return type >= 0 && type < 32 ? type : -1;
+        }
+
+        // The player's reserve of every ammo type.
+        struct AmmoPool
+        {
+            int count[32] = {};
+            bool read = false;
+        };
+
+        AmmoPool read_pool(void* player)
+        {
+            AmmoPool pool;
+            pool.read = mem::safe_copy(pool.count, reinterpret_cast<const void*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo),
+                                       sizeof(pool.count));
+            return pool;
+        }
+
+        // Puts the reserve back as it was: whatever the game did to it while weapons were dropped and given (a given
+        // gun would come with the game's own amount, a dropped one may take the reserve along).
+        void write_pool(void* player, const AmmoPool& pool)
+        {
+            if (!pool.read)
+                return;
             mem::guarded([&] {
-                if (state.clip >= 0)
-                    *reinterpret_cast<int*>(w + k_off_clip) = state.clip;
-                const int type = mem::read_or<int>(w + k_off_ammo_type, -1);
-                if (state.ammo >= 0 && type >= 0 && type < 32)
-                    *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
-                                            4u * static_cast<unsigned>(type)) = state.ammo;
+                std::memcpy(reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo), pool.count,
+                            sizeof(pool.count));
             });
         }
 
-        // The reserve goes with a stored gun: the player keeps none of that ammo type.
-        void clear_reserve(void* player, void* weapon)
+        // `rounds` of ammo type `type` (the ammo of gun `classname`) into the player's reserve, up to the most a player
+        // can carry of it (inv::ammo_max: the rules file's [ammo], else the game's ammo_<type>_max default).
+        void add_to_pool(void* player, const char* classname, int type, int rounds)
+        {
+            if (player == nullptr || type < 0 || type >= 32 || rounds <= 0)
+                return;
+            const char* kind = classname != nullptr ? inv::ammo_kind(classname) : nullptr;
+            const int max = kind != nullptr ? inv::ammo_max(kind) : -1;
+            mem::guarded([&] {
+                int& reserve = *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
+                                                       4u * static_cast<unsigned>(type));
+                const int before = reserve;
+                reserve = max >= 0 ? std::min(before + rounds, std::max(before, max)) : before + rounds;
+                if (reserve - before < rounds)
+                    INV_LOG("ammo: %d of %d %s rounds taken (the most is %d)", reserve - before, rounds, kind, max);
+            });
+        }
+
+        // A stored weapon's state onto the one the player was just given: its magazine; a reserve of its own (a gun
+        // stored before the reserves were shared) joins the player's.
+        void apply_weapon_state(void* player, void* weapon, const inv::WeaponState& state)
         {
             mem::guarded([&] {
-                const int type = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_ammo_type, -1);
-                if (type >= 0 && type < 32)
-                    *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
-                                            4u * static_cast<unsigned>(type)) = 0;
+                if (state.clip >= 0)
+                    *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_clip) = state.clip;
             });
+            char name[64];
+            add_to_pool(player, classname_of(weapon, name, sizeof(name)) ? name : nullptr, ammo_type_of(weapon), state.ammo);
         }
 
         // What GiveNamedItem gets for a stored weapon: a melee weapon by its script name (as `give fireaxe` does).
@@ -401,18 +438,20 @@ namespace game
                 notify(index >= 0 ? std::string("No room for your ") + def.name : refusal(def));
                 return -1;
             }
-            clear_reserve(player, weapon);
-            if (!mem::guarded([&] { drop(player, weapon, nullptr, nullptr); }) || player_has_slot(player, def.game_slot))
+            // the reserve stays the player's (shared by the guns of its ammo type), whatever the drop does with it
+            const AmmoPool pool = read_pool(player);
+            const bool dropped = mem::guarded([&] { drop(player, weapon, nullptr, nullptr); }) && !player_has_slot(player, def.game_slot);
+            write_pool(player, pool);
+            if (!dropped)
             {
-                apply_weapon_state(player, weapon, state); // the reserve back
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
                 s.inventory.remove_from_slot(box, 1);
                 return -1;
             }
             mem::guarded([&] { g.util_remove(weapon); });
-            INV_LOG("stored %s (%s) into box %d: clip %d, reserve %d", def.classname, state.melee.c_str(), box, state.clip,
-                    state.ammo);
+            INV_LOG("stored %s (%s) into box %d: magazine %d (the reserve stays with the player)", def.classname,
+                    state.melee.c_str(), box, state.clip);
             return box;
         }
 
@@ -502,9 +541,12 @@ namespace game
             }
             const auto give = reinterpret_cast<GiveFn>(mem::vslot(player, k_vt_give_named_item));
             const std::string name = give_name(*def, state);
+            // the gun takes what the player has of its ammo type: not the game's own amount for a given gun
+            const AmmoPool pool = read_pool(player);
             g_giving = true;
             const bool gave = give != nullptr && mem::guarded([&] { give(player, name.c_str(), 0, 0, 0); });
             g_giving = false;
+            write_pool(player, pool);
             const inv::ItemDef* given_def = nullptr;
             void* given = carried_in_slot(player, def->game_slot, &given_def);
             if (!gave || given == nullptr)
@@ -679,13 +721,17 @@ namespace game
 
             int stored = 0;
             int weapon_box = -1;
+            int reserve = -1, reserve_type = -1; // a gun's own reserve: into the player's (shared by its ammo type)
             {
-                const inv::WeaponState state = best_def->weapon() ? weapon_state(player, best, *best_def, false) : inv::WeaponState{};
+                inv::WeaponState state = best_def->weapon() ? weapon_state(player, best, *best_def, false) : inv::WeaponState{};
+                reserve = state.ammo;
+                reserve_type = ammo_type_of(best);
+                state.ammo = -1;
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
                 if (best_def->weapon())
                 {
-                    weapon_box = s.inventory.add_weapon(*best_def, state); // a gun keeps what is left in it
+                    weapon_box = s.inventory.add_weapon(*best_def, state); // its magazine stays with it
                     stored = weapon_box >= 0 ? 1 : 0;
                 }
                 else
@@ -709,6 +755,8 @@ namespace game
                 notify("The game refused to take the item away");
                 return;
             }
+            if (weapon_box >= 0)
+                add_to_pool(player, best_def->classname, reserve_type, reserve);
             notify(std::string("Picked up ") + best_def->name);
         }
 
@@ -979,9 +1027,13 @@ namespace game
         {
             int stored = 0;
             int weapon_box = -1;
+            int reserve = -1, reserve_type = -1; // a gun's own reserve: into the player's (shared by its ammo type)
             {
-                // a gun keeps what is in it, a melee weapon which one it is
-                const inv::WeaponState state = def.weapon() ? weapon_state(nullptr, weapon, def, false) : inv::WeaponState{};
+                // a gun keeps its magazine, a melee weapon which one it is
+                inv::WeaponState state = def.weapon() ? weapon_state(nullptr, weapon, def, false) : inv::WeaponState{};
+                reserve = state.ammo;
+                reserve_type = ammo_type_of(weapon);
+                state.ammo = -1;
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
                 if (def.weapon())
@@ -1010,6 +1062,8 @@ namespace game
                 notify("The game refused to take the item away");
                 return false;
             }
+            if (weapon_box >= 0)
+                add_to_pool(local_player(), def.classname, reserve_type, reserve);
             notify(std::string("Stored ") + def.name);
             return true;
         }
@@ -1219,6 +1273,74 @@ namespace game
         NetworkIdFn g_network_id = nullptr;
         ClientPrintfFn g_client_printf = nullptr;
         core::Hook<ClientCommandFn> g_client_command;
+        using ServerCommandFn = void(__thiscall*)(void* engine, const char* command);
+        ServerCommandFn g_server_command = nullptr;
+        bool g_ammo_limits_set = false;
+
+        // The rules file's [ammo] maxima into the game's own settings (ammo_<type>_max, FCVAR_REPLICATED, not a cheat:
+        // server.dll registers them with flags 0x2000), so ammo piles stop there too.  Once, on the main thread, by
+        // whoever runs the server: the dedicated server, or the host (a client of someone else's server must not).
+        // The ConVar `name` of server.dll, found by its registration (a static initializer: `push 0x2000; push
+        // "<default>"; push "<name>"; mov ecx, <ConVar>; call ConVar::ConVar`).  nullptr when not found.
+        std::uintptr_t find_server_convar(const char* name)
+        {
+            std::string text_pattern;
+            char hex[4];
+            for (const char* c = name;; ++c)
+            {
+                std::snprintf(hex, sizeof(hex), "%02X ", static_cast<unsigned char>(*c));
+                text_pattern += hex;
+                if (*c == '\0')
+                    break;
+            }
+            const std::uintptr_t text = mem::find_pattern(g.server.base, g.server.size, text_pattern.c_str());
+            if (text == 0)
+                return 0;
+            char code[64];
+            std::snprintf(code, sizeof(code), "68 %02X %02X %02X %02X B9", static_cast<unsigned>(text & 0xFF),
+                          static_cast<unsigned>((text >> 8) & 0xFF), static_cast<unsigned>((text >> 16) & 0xFF),
+                          static_cast<unsigned>((text >> 24) & 0xFF));
+            const std::uintptr_t push = mem::find_pattern(g.server.base, g.server.size, code);
+            return push != 0 ? mem::read_or<std::uintptr_t>(push + 6) : 0;
+        }
+
+        // L4D2 marks the ammo maxima FCVAR_DEVELOPMENTONLY (flags 0x2006 seen in the game: development only, game DLL,
+        // replicated), and the console refuses those as an "Unknown command".  ConCommandBase::m_nFlags is at +0x14 and
+        // ConVar::m_pParent at +0x1C (the value lives in the parent: on a listen server the client's copy); the flag is
+        // taken off both so the command below can set it.
+        void unlock_convar(std::uintptr_t convar)
+        {
+            mem::guarded([&] {
+                *reinterpret_cast<int*>(convar + 0x14) &= ~0x2;
+                if (const auto parent = mem::read_or<std::uintptr_t>(convar + 0x1C); parent != 0 && parent != convar)
+                    *reinterpret_cast<int*>(parent + 0x14) &= ~0x2;
+            });
+        }
+
+        void set_ammo_limits()
+        {
+            if (g_ammo_limits_set || g_server_command == nullptr)
+                return;
+            g_ammo_limits_set = true;
+            for (const char* kind : inv::ammo_kinds())
+            {
+                if (!inv::ammo_max_set(kind))
+                    continue;
+                char name[48];
+                std::snprintf(name, sizeof(name), "ammo_%s_max", kind);
+                const std::uintptr_t convar = find_server_convar(name);
+                if (convar == 0)
+                {
+                    INV_LOG("ammo: %s not found in server.dll: not set", name);
+                    continue;
+                }
+                unlock_convar(convar);
+                char command[64];
+                std::snprintf(command, sizeof(command), "ammo_%s_max %d\n", kind, inv::ammo_max(kind));
+                mem::guarded([&] { g_server_command(g_engine_server, command); });
+                INV_LOG("ammo: %s", command);
+            }
+        }
 
         struct ServerPlayer
         {
@@ -1424,6 +1546,7 @@ namespace game
         // The requests a client's HUD sends (forwarded console commands).  Anything else goes to the game.
         void __cdecl hk_client_command(void* player, const void* args)
         {
+            set_ammo_limits(); // (the main thread of the server: a player's command is a good time)
             const auto base = reinterpret_cast<std::uintptr_t>(args);
             const int argc = mem::read_or<int>(base);
             const auto arg = [&](int i) -> std::string {
@@ -1845,6 +1968,7 @@ namespace game
             bool playing = false;
             int clip = -1;
             int reserve = -1;
+            int pool[32] = {};
             mem::guarded([&] {
                 if (!g_is_in_game(g_engine_client) || g_game_ui_visible(g_engine_vgui))
                     return;
@@ -1852,6 +1976,7 @@ namespace game
                 if (player == nullptr)
                     return;
                 const auto base = reinterpret_cast<std::uintptr_t>(player);
+                mem::safe_copy(pool, reinterpret_cast<const void*>(base + k_c_ammo), sizeof(pool));
                 playing = mem::read_or<int>(base + k_c_team) == k_team_survivors &&
                           mem::read_or<std::uint8_t>(base + k_c_life_state, 1) == 0 &&
                           mem::read_or<int>(base + k_c_observer_mode, 1) == 0;
@@ -1870,6 +1995,7 @@ namespace game
             s.playing = playing;
             s.ammo_clip = clip;
             s.ammo_reserve = reserve;
+            std::memcpy(s.ammo_pool, pool, sizeof(pool));
         }
 
         // ---- the backend --------------------------------------------------------------------------------------------
@@ -1955,6 +2081,8 @@ namespace game
                     return;
                 }
                 leave_remote();
+                if (host_player() != nullptr)
+                    set_ammo_limits(); // this game is the server (a listen server, or playing alone)
                 mem::guarded([] { refresh_native(); });
             }
 
@@ -2285,6 +2413,13 @@ namespace game
             const std::uintptr_t network_id = g_engine_server != nullptr ? mem::vslot(g_engine_server, 17) : 0;
             const std::uintptr_t printf_fn = g_engine_server != nullptr ? mem::vslot(g_engine_server, 46) : 0;
             const std::uintptr_t command = g.server.base + k_rva_client_command;
+            // slot 37 ServerCommand(const char*) (engine 0x10130D40, `ServerCommand with NULL string`): queues a console
+            // command for the server; it has to end with '\n' or ';'
+            const std::uintptr_t server_command = g_engine_server != nullptr ? mem::vslot(g_engine_server, 37) : 0;
+            if (server_command != 0 && mem::find_pattern(server_command, 10, "55 8B EC 56 8B 75 08 85 F6 75") == server_command)
+                g_server_command = reinterpret_cast<ServerCommandFn>(server_command);
+            else
+                INV_LOG("game: the engine's ServerCommand does not look as expected: the [ammo] limits are not set in the game");
             if (network_id != 0 && mem::find_pattern(network_id, 10, "55 8B EC 83 3D ?? ?? ?? ?? 02") == network_id &&
                 printf_fn != 0 && mem::find_pattern(printf_fn, 8, "55 8B EC 8B 45 08 50 E8") == printf_fn &&
                 mem::find_pattern(command, 10, "55 8B EC 81 EC 18 01 00 00 A1") == command)

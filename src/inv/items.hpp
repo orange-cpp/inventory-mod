@@ -41,4 +41,22 @@ namespace inv
     // limit too); 0 for a classname that is not one of them.
     float weapon_weight(std::string_view classname);
 
+    // The reserve ammo types the guns share, by the game's names: the setting ammo_<kind>_max (server.dll) is the most a
+    // player can carry of it.  M16, AK-47, SCAR and SG552 take "assaultrifle", the SMGs "smg", the pump shotguns
+    // "shotgun", the auto shotguns "autoshotgun", the hunting rifle "huntingrifle", the other sniper rifles
+    // "sniperrifle", then "grenadelauncher", "m60", "chainsaw".  nullptr for a weapon with none (melee, pistols).
+    const char* ammo_kind(std::string_view classname);
+    // Every kind ammo_kind returns, in a fixed order.
+    std::span<const char* const> ammo_kinds();
+    // The most rounds of `kind` a player can carry: the rules file's [ammo] value, else the game's default (360 for
+    // "assaultrifle" ...).  -1 for an unknown kind.
+    int ammo_max(std::string_view kind);
+    // The game's index of ammo type `kind` (m_iAmmo[index], m_iPrimaryAmmoType): the order server.dll registers them in
+    // (0x102CFEE0, CAmmoDef counting from 1): pistol 1, magnum 2, assaultrifle 3, minigun 4, smg 5, m60 6, shotgun 7,
+    // autoshotgun 8, huntingrifle 9, sniperrifle 10, ..., grenadelauncher 17, ..., chainsaw 19.  -1 for an unknown kind.
+    int ammo_index(std::string_view kind);
+    // Whether the rules file set `kind` (so the game's setting is to be changed to it).
+    bool ammo_max_set(std::string_view kind);
+    bool set_ammo_max(std::string_view kind, int rounds);
+
 } // namespace inv

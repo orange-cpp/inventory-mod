@@ -47,6 +47,9 @@ namespace game
         bool playing = true;
         int ammo_clip = -1;
         int ammo_reserve = -1;
+        // The player's reserve of every ammo type (m_iAmmo, by the game's index: inv::ammo_index), for what a stored
+        // gun would have (the reserve is shared by the guns of a type).
+        int ammo_pool[32] = {};
     };
     // The active session: the local player's, or (while the game code serves another player: a dedicated server, or
     // a guest on this listen server) theirs.  The game code uses this one.

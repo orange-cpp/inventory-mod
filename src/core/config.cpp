@@ -209,8 +209,9 @@ namespace core
         if (rules.weapon_slots)
             g_config.weapon_slots = *rules.weapon_slots;
         g_config.rules_file = true;
-        INV_LOG("inventory_mod.toml: %d slots, %d weapon slots, max weight %.1f, %d item settings, %d problems",
-                g_config.slots, g_config.weapon_slots, g_config.max_weight, rules.items_changed,
+        INV_LOG("inventory_mod.toml: %d slots, %d weapon slots, max weight %.1f, %d item settings, %d ammo maxima, "
+                "%d problems",
+                g_config.slots, g_config.weapon_slots, g_config.max_weight, rules.items_changed, rules.ammo_changed,
                 static_cast<int>(rules.errors.size()));
     }
 

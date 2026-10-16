@@ -234,6 +234,15 @@ namespace hud
             return true;
         }
 
+        // The player's reserve of the ammo gun `classname` takes (shared by every gun of that type), -1: none (a melee
+        // weapon, a pistol: endless).
+        int shared_reserve(const game::Session& session, const char* classname)
+        {
+            const char* kind = inv::ammo_kind(classname);
+            const int index = kind != nullptr ? inv::ammo_index(kind) : -1;
+            return index >= 0 && index < 32 ? session.ammo_pool[index] : -1;
+        }
+
         // Boxes on demand: the weight is what limits, so the HUD shows the item boxes up to the last one in use and one
         // free box after it (where the next item can go), and the weapon boxes up to the last one in use.  A box emptied
         // in the middle stays (items keep their boxes); the grid shrinks again when the last ones empty.
@@ -561,9 +570,10 @@ namespace hud
                     char clip[16], reserve[16];
                     std::snprintf(clip, sizeof(clip), "%d", stack.weapon.clip);
                     nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + pad, ImVec4(1.f, 1.f, 1.f, 1.f), clip);
-                    if (stack.weapon.ammo >= 0)
+                    // under it, like the game's gun box: the reserve it would use (the player's, shared by its type)
+                    if (const int shared = shared_reserve(session, stack.def->classname); shared >= 0)
                     {
-                        std::snprintf(reserve, sizeof(reserve), "%d", stack.weapon.ammo);
+                        std::snprintf(reserve, sizeof(reserve), "%d", shared);
                         nc::AddText(dl, fonts.Normal, x0 + pad * 2, y1 - line - pad, ImVec4(0.66f, 0.66f, 0.66f, 1.f), reserve);
                     }
                 }
@@ -699,7 +709,17 @@ namespace hud
                         w.label = melee_title(stack.weapon.melee);
                     }
                     else if (stack.def->weapon() && stack.weapon.clip >= 0)
-                        std::snprintf(text, sizeof(text), "%d / %d", stack.weapon.clip, std::max(0, stack.weapon.ammo));
+                    {
+                        // its magazine / the player's reserve of its ammo type (shared by the guns of that type); a gun
+                        // stored before the reserves were shared also shows what it still brings
+                        const int reserve = shared_reserve(session, stack.def->classname);
+                        if (reserve < 0)
+                            std::snprintf(text, sizeof(text), "%d", stack.weapon.clip);
+                        else if (stack.weapon.ammo > 0)
+                            std::snprintf(text, sizeof(text), "%d / %d +%d", stack.weapon.clip, reserve, stack.weapon.ammo);
+                        else
+                            std::snprintf(text, sizeof(text), "%d / %d", stack.weapon.clip, reserve);
+                    }
                     else if (const int n = stack.count + (stack.held ? 1 : 0); n > 1)
                         std::snprintf(text, sizeof(text), "x%d", n);
                 }
@@ -887,8 +907,8 @@ namespace hud
                     if (!stack.weapon.melee.empty())
                         nc::SetItemTooltip("%s (%s)\nWeight: %.1f", stack.def->name, stack.weapon.melee.c_str(), stack.def->weight);
                     else if (stack.def->weapon() && stack.weapon.clip >= 0)
-                        nc::SetItemTooltip("%s\nRounds: %d / %d\nWeight: %.1f", stack.def->name, stack.weapon.clip,
-                                           std::max(0, stack.weapon.ammo), stack.def->weight);
+                        nc::SetItemTooltip("%s\nMagazine: %d (the reserve is yours, shared by its ammo type)\nWeight: %.1f",
+                                           stack.def->name, stack.weapon.clip, stack.def->weight);
                     else
                         nc::SetItemTooltip("%s\n%s\nWeight: %.1f", stack.def->name, stack.def->description,
                                            stack.def->weight);

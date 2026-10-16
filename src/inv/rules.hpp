@@ -14,6 +14,9 @@
 //
 //   [stack]                    # how many fit in one box
 //   molotov = 2
+//
+//   [ammo]                     # the most reserve rounds of each ammo type (the game's ammo_<type>_max)
+//   assault_rifle = 360
 
 #include <optional>
 #include <string>
@@ -29,6 +32,7 @@ namespace inv
         std::optional<float> max_weight;
         std::optional<int> weapon_slots;
         int items_changed = 0; // weights and stack sizes set
+        int ammo_changed = 0; // [ammo] maxima set (set_ammo_max)
         std::vector<std::string> errors; // "line 3: ..."
     };
 

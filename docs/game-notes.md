@@ -223,6 +223,20 @@ when the player leaves). Verified: client connected to `srcds -insecure +sv_lan 
 inventory and the pistol in game slot 2. (The server binds to the LAN address, so `connect 192.168.1.2:27020`, not
 127.0.0.1.)
 
+## Ammo maxima
+
+The most reserve rounds of each type are server.dll's ConVars `ammo_<type>_max` (assaultrifle 360, smg 650, shotgun 72,
+autoshotgun 90, huntingrifle 150, sniperrifle 180, grenadelauncher 30, m60 0, chainsaw 20: their registrations, e.g.
+`0x10598CB0`: `push 0x2000; push "360"; push "ammo_assaultrifle_max"; mov ecx, 0x1084BBC0; call ConVar::ConVar`). The
+ammo types use them as their max carry (`0x102CFEE0` registers `AMMO_TYPE_ASSAULTRIFLE` with that name). At run time
+their flags read `0x2006`: FCVAR_DEVELOPMENTONLY too, so the console answers "Unknown command". The rules file's
+`[ammo]` values are set once, on the server's main thread (the dedicated server's first client command, or the host's
+pump): the ConVar is found by that registration (its name in server.dll, then `68 <name> B9 <ConVar>`), the 0x2 flag is
+taken off it (`m_nFlags` +0x14) and off its parent (`m_pParent` +0x1C; on a listen server the client's copy, which holds
+the value: flags `0x2008`), then `VEngineServer022` slot 37 ServerCommand (engine `0x10130D40`, prologue
+`55 8B EC 56 8B 75 08 85 F6 75`; it queues the line, which must end in `\n` or `;`) runs `ammo_<type>_max <n>`. Seen in
+the game: the parent's `m_nValue` (+0x30) went from 360 to 200 with `assault_rifle = 200`.
+
 ## Boxes on demand
 
 The weight is the limit: `slots` (24) and `weapon_slots` (8) are only caps (an ini from before, `layout` < 4, is raised
@@ -316,10 +330,15 @@ boxes), 26.7 units apart from where the panel's throwable box began, and moves t
 | `m_iExtraPrimaryAmmo` | `CTerrorGun` `+0x14F4` (`0x1024F100`, datamap entry `0x107A4160`): the reserve a gun lying in the world carries. A gun the map placed has 0 there (the game gives its own amount on pick-up), so 0 reads as "the game's amount" |
 | `m_strMapSetScriptName` | `CTerrorMeleeWeapon` `+0x17E0`, FIELD_STRING (a `const char*`), datamap entry `0x107BDF20` with the keyvalue name `"melee_script_name"`: which melee weapon (`fireaxe`, `katana`, ...; `scripts/melee/*.txt`) |
 
-Storing a carried weapon: read clip, reserve (and the melee name), set the player's `m_iAmmo` of that type to 0, then
-the quiet `Weapon_Drop` and `UTIL_Remove` (as `swap_out`). Taking one out: what is in that game slot is stored the same
-way into the box being emptied, then `GiveNamedItem` with the classname, or a melee weapon's script name (as
-`give fireaxe` does), and the stored clip / reserve are written onto the new weapon and the player. Dropping one:
+The reserve is the player's `m_iAmmo` of each type, shared by the guns of that type as in the game; a stored gun
+keeps only its magazine. Storing a carried weapon: read the clip (and the melee name), then the quiet `Weapon_Drop` and
+`UTIL_Remove` (as `swap_out`), with `m_iAmmo[32]` copied before and written back after (whatever the drop does to it).
+Taking one out: what is in that game slot is stored the same way into the box being emptied, then `GiveNamedItem` with
+the classname, or a melee weapon's script name (as `give fireaxe` does), again with `m_iAmmo` put back as it was (a
+given gun would bring the game's own amount), and the stored clip is written onto the new weapon. A gun stored from the
+ground (pick-up key, E with the slot taken) adds its `m_iExtraPrimaryAmmo` to the player's reserve of its type (not
+capped at the type's maximum, `inv::ammo_max`); a gun saved before the shared reserves still carries one, which joins the player's
+when it is taken out. Dropping one:
 `weapon_melee` gets `melee_script_name` with SetKeyValue before DispatchSpawn; a gun gets `m_iClip1` and
 `m_iExtraPrimaryAmmo` after it (not the pistols or the chainsaw, whose reserve is endless or none). +use on a weapon
 (slot-426 hook): with that game slot free the game's own pick-up (weight checked); with it taken, the weapon is stored

@@ -2,6 +2,7 @@
 
 #include "inv/items.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <toml++/toml.hpp>
 
@@ -111,8 +112,27 @@ namespace inv
             }
         }
 
+        // [ammo]: the most reserve rounds a player can carry of each ammo type ("assault_rifle" or "assaultrifle" ...)
+        if (const toml::table* ammo = root["ammo"].as_table())
+        {
+            for (const auto& [key, node] : *ammo)
+            {
+                std::string kind(key.str());
+                kind.erase(std::remove(kind.begin(), kind.end(), '_'), kind.end());
+                const auto rounds = node.value<std::int64_t>();
+                if (!rounds || *rounds < 0 || *rounds > 10000)
+                    rules.errors.push_back(at_line(node, "ammo: " + std::string(key.str()) + " must be a whole number from 0 to 10000"));
+                else if (set_ammo_max(kind, static_cast<int>(*rounds)))
+                    ++rules.ammo_changed;
+                else
+                    rules.errors.push_back(at_line(node, "ammo: unknown ammo type " + std::string(key.str()) +
+                                                             " (assault_rifle, smg, shotgun, auto_shotgun, hunting_rifle, "
+                                                             "sniper_rifle, grenade_launcher, m60, chainsaw)"));
+            }
+        }
+
         for (const auto& [key, node] : root)
-            if (key != "limits" && key != "weight" && key != "stack")
+            if (key != "limits" && key != "weight" && key != "stack" && key != "ammo")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
         return rules;
     }

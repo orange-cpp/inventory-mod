@@ -53,9 +53,15 @@ upgrade packs, gas can, propane / oxygen tank, fireworks, gnome, cola bottles, a
 magnum, melee weapons, chainsaw, SMGs, shotguns, rifles, sniper rifles, M60, grenade launcher).
 
 **Weapons** go into weapon boxes of their own (up to `weapon_slots`, 8 by default; a box appears only while it holds a weapon), drawn like the game's gun and melee
-boxes, between the game's melee box and the item grid. Each keeps what is in it: a gun its magazine and its reserve
-(shown like the game's gun box, magazine over reserve; the reserve leaves the player with it, so nothing is gained or
-lost), a melee weapon which one it is ("fireaxe", "katana" ...). The store key stores the gun or melee weapon in your
+boxes, between the game's melee box and the item grid. Each keeps what is in it: a gun its magazine, a melee weapon
+which one it is ("fireaxe", "katana" ...). The reserve is yours and shared, as in the game, by every gun of the same
+ammo type (M16, AK-47, SCAR and SG552 share rifle rounds; the SMGs, the pump shotguns, the auto shotguns, the sniper
+rifles each share theirs): storing a gun leaves it with you, a gun taken out uses it (the game does not hand out a
+fresh reserve), and a gun picked up off the ground into a box adds the rounds it carried, up to the most you can
+carry of that type. That maximum is the rules file's `[ammo]` table (`assault_rifle = 360`, `smg`, `shotgun`,
+`auto_shotgun`, `hunting_rifle`, `sniper_rifle`, `grenade_launcher`, `m60`, `chainsaw`); the mod also sets the game's
+own `ammo_<type>_max` to it, so ammo piles stop there too. A stored gun shows its magazine and the reserve it would use
+(your reserve of its type, e.g. "50 / 290"). The store key stores the gun or melee weapon in your
 hands, the pick-up key takes one off the ground, and taking one out (the wheel, double click in the window) swaps it
 with the one in that game slot, which goes into the same box. The wheel goes gun, melee, stored weapons, then the
 items. E on a weapon puts it in your hands when that game slot is empty; when you already have one there, it goes into
