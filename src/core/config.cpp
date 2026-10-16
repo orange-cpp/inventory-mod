@@ -64,6 +64,8 @@ namespace core
                 g_config.key_pickup = integer;
             else if (!strcmp(key, "slots"))
                 g_config.slots = integer < 1 ? 1 : (integer > 24 ? 24 : integer);
+            else if (!strcmp(key, "weapon_slots"))
+                g_config.weapon_slots = integer < 0 ? 0 : (integer > 8 ? 8 : integer);
             else if (!strcmp(key, "max_weight"))
                 g_config.max_weight = number < 0.f ? 0.f : number;
             else if (!strcmp(key, "show_hotbar"))
@@ -110,9 +112,12 @@ namespace core
             g_config.slots = *rules.slots;
         if (rules.max_weight)
             g_config.max_weight = *rules.max_weight;
+        if (rules.weapon_slots)
+            g_config.weapon_slots = *rules.weapon_slots;
         g_config.rules_file = true;
-        INV_LOG("inventory_mod.toml: %d slots, max weight %.1f, %d item settings, %d problems", g_config.slots,
-                g_config.max_weight, rules.items_changed, static_cast<int>(rules.errors.size()));
+        INV_LOG("inventory_mod.toml: %d slots, %d weapon slots, max weight %.1f, %d item settings, %d problems",
+                g_config.slots, g_config.weapon_slots, g_config.max_weight, rules.items_changed,
+                static_cast<int>(rules.errors.size()));
     }
 
     void config_save()
@@ -130,6 +135,7 @@ namespace core
         fprintf(f, "slots=%d\nmax_weight=%.2f\nshow_hotbar=%d\nauto_store=%d\nhud_scale=%.2f\nreplace_native=%d\nlayout=3\n",
                 g_config.slots, g_config.max_weight, g_config.show_hotbar ? 1 : 0, g_config.auto_store ? 1 : 0,
                 g_config.hud_scale, g_config.replace_native ? 1 : 0);
+        fprintf(f, "weapon_slots=%d\n", g_config.weapon_slots);
         fclose(f);
     }
 

@@ -17,7 +17,15 @@ namespace inv
         int max_stack; // per slot
         float weight; // counts against Limits::max_weight
         std::uint32_t color; // r | g << 8 | b << 16 | a << 24 (ImGui's ImU32 layout)
-        int game_slot; // the player's L4D2 inventory slot: 2 throwable, 3 medkit / upgrade, 4 pills, 5 carried item
+        int game_slot; // the player's L4D2 inventory slot: 0 gun, 1 melee / pistol, 2 throwable, 3 medkit / upgrade,
+                       // 4 pills, 5 carried item
+
+        // A gun or melee weapon (slots 0 and 1): stored one per box with its rounds (WeaponState), shown in the hands
+        // by the game's own panel.
+        bool weapon() const
+        {
+            return game_slot < 2;
+        }
     };
 
     std::span<const ItemDef> all_items();
@@ -29,10 +37,8 @@ namespace inv
     bool set_item_weight(std::string_view classname, float weight);
     bool set_item_stack(std::string_view classname, int max_stack);
 
-    // The guns and melee weapons are not inventory items, but what the player carries in the game's slots 0 and 1
-    // counts against the weight limit too.  0 for a classname that is not one of them.
+    // What a gun or melee weapon weighs (what the player carries in the game's slots 0 and 1 counts against the weight
+    // limit too); 0 for a classname that is not one of them.
     float weapon_weight(std::string_view classname);
-    // The rules file's [weight] entry for a weapon; false for an unknown classname or a negative weight.
-    bool set_weapon_weight(std::string_view classname, float weight);
 
 } // namespace inv

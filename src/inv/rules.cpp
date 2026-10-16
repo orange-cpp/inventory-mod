@@ -62,6 +62,14 @@ namespace inv
                     else
                         rules.errors.push_back(at_line(node, "slots must be a whole number from 1 to 24"));
                 }
+                else if (key == "weapon_slots")
+                {
+                    const auto slots = node.value<std::int64_t>();
+                    if (slots && *slots >= 0 && *slots <= 8)
+                        rules.weapon_slots = static_cast<int>(*slots);
+                    else
+                        rules.errors.push_back(at_line(node, "weapon_slots must be a whole number from 0 to 8"));
+                }
                 else if (key == "max_weight")
                 {
                     const auto weight = number(node);
@@ -82,8 +90,7 @@ namespace inv
                 const auto weight = number(node);
                 if (!weight)
                     rules.errors.push_back(at_line(node, "the weight of " + std::string(key.str()) + " must be a number"));
-                else if (set_item_weight(classname_of(key.str()), static_cast<float>(*weight)) ||
-                         set_weapon_weight(classname_of(key.str()), static_cast<float>(*weight)))
+                else if (set_item_weight(classname_of(key.str()), static_cast<float>(*weight)))
                     ++rules.items_changed;
                 else
                     rules.errors.push_back(at_line(node, "weight: unknown item or a negative weight: " + std::string(key.str())));
@@ -100,7 +107,7 @@ namespace inv
                 else if (set_item_stack(classname_of(key.str()), static_cast<int>(*stack)))
                     ++rules.items_changed;
                 else
-                    rules.errors.push_back(at_line(node, "stack: unknown item " + std::string(key.str())));
+                    rules.errors.push_back(at_line(node, "stack: unknown item, or a weapon (always one per box): " + std::string(key.str())));
             }
         }
 

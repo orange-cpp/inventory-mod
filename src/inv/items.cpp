@@ -10,6 +10,9 @@ namespace inv
             return r | (g << 8) | (b << 16) | (0xFFu << 24);
         }
 
+        constexpr std::uint32_t k_gun = rgb(150, 160, 175);
+        constexpr std::uint32_t k_side = rgb(170, 150, 120);
+
         // The weights and stack sizes are the defaults: the rules file can change them (set_item_weight / set_item_stack)
         ItemDef k_items[] = {
             {"weapon_first_aid_kit", "First Aid Kit", "FA", "Heals most of your missing health.", 2, 3.0f, rgb(210, 60, 60), 3},
@@ -30,7 +33,38 @@ namespace inv
             {"weapon_fireworkcrate", "Fireworks", "FW", "Loud and attractive.", 1, 4.0f, rgb(200, 80, 160), 5},
             {"weapon_gnome", "Gnome", "GN", "Gnome Chompski.", 1, 2.0f, rgb(90, 160, 90), 5},
             {"weapon_cola_bottles", "Cola Bottles", "CB", "Delivery item.", 1, 4.0f, rgb(180, 40, 40), 5},
+
+            // guns and melee weapons: one per box, with their rounds (WeaponState); weights roughly by size
+            {"weapon_pistol", "Pistol", "P", "Sidearm.", 1, 1.0f, k_side, 1},
+            {"weapon_pistol_magnum", "Magnum", "MG", "Heavy sidearm.", 1, 1.5f, k_side, 1},
+            {"weapon_melee", "Melee Weapon", "ML", "Close combat.", 1, 2.0f, k_side, 1},
+            {"weapon_chainsaw", "Chainsaw", "CS", "Loud and fuel hungry.", 1, 6.0f, k_side, 1},
+            {"weapon_smg", "SMG", "SM", "Submachine gun.", 1, 3.0f, k_gun, 0},
+            {"weapon_smg_silenced", "Silenced SMG", "SS", "Quiet submachine gun.", 1, 3.0f, k_gun, 0},
+            {"weapon_smg_mp5", "MP5", "M5", "Submachine gun.", 1, 3.0f, k_gun, 0},
+            {"weapon_pumpshotgun", "Pump Shotgun", "PS", "Pump-action shotgun.", 1, 4.0f, k_gun, 0},
+            {"weapon_shotgun_chrome", "Chrome Shotgun", "CH", "Pump-action shotgun.", 1, 4.0f, k_gun, 0},
+            {"weapon_autoshotgun", "Auto Shotgun", "AS", "Automatic shotgun.", 1, 5.0f, k_gun, 0},
+            {"weapon_shotgun_spas", "Combat Shotgun", "SP", "Automatic shotgun.", 1, 5.0f, k_gun, 0},
+            {"weapon_rifle", "M16", "M1", "Assault rifle.", 1, 4.0f, k_gun, 0},
+            {"weapon_rifle_ak47", "AK-47", "AK", "Assault rifle.", 1, 4.5f, k_gun, 0},
+            {"weapon_rifle_desert", "Combat Rifle", "SC", "Burst rifle.", 1, 4.5f, k_gun, 0},
+            {"weapon_rifle_sg552", "SG552", "SG", "Assault rifle with a scope.", 1, 4.5f, k_gun, 0},
+            {"weapon_hunting_rifle", "Hunting Rifle", "HR", "Sniper rifle.", 1, 5.0f, k_gun, 0},
+            {"weapon_sniper_military", "Military Sniper", "MS", "Sniper rifle.", 1, 5.5f, k_gun, 0},
+            {"weapon_sniper_awp", "AWP", "AW", "Sniper rifle.", 1, 5.5f, k_gun, 0},
+            {"weapon_sniper_scout", "Scout", "SO", "Light sniper rifle.", 1, 4.0f, k_gun, 0},
+            {"weapon_rifle_m60", "M60", "60", "Machine gun.", 1, 8.0f, k_gun, 0},
+            {"weapon_grenade_launcher", "Grenade Launcher", "GL", "Explosive rounds.", 1, 6.0f, k_gun, 0},
         };
+
+        ItemDef* find_mutable(std::string_view classname)
+        {
+            for (ItemDef& def : k_items)
+                if (classname == def.classname)
+                    return &def;
+            return nullptr;
+        }
     } // namespace
 
     std::span<const ItemDef> all_items()
@@ -40,79 +74,14 @@ namespace inv
 
     const ItemDef* find_item(std::string_view classname)
     {
-        for (const ItemDef& def : k_items)
-            if (classname == def.classname)
-                return &def;
-        return nullptr;
+        return find_mutable(classname);
     }
-
-    namespace
-    {
-        struct WeaponWeight
-        {
-            const char* classname;
-            float weight;
-        };
-
-        // The defaults, roughly by size; the rules file can change them
-        WeaponWeight k_weapons[] = {
-            {"weapon_pistol", 1.0f},
-            {"weapon_pistol_magnum", 1.5f},
-            {"weapon_melee", 2.0f},
-            {"weapon_chainsaw", 6.0f},
-            {"weapon_smg", 3.0f},
-            {"weapon_smg_silenced", 3.0f},
-            {"weapon_smg_mp5", 3.0f},
-            {"weapon_pumpshotgun", 4.0f},
-            {"weapon_shotgun_chrome", 4.0f},
-            {"weapon_autoshotgun", 5.0f},
-            {"weapon_shotgun_spas", 5.0f},
-            {"weapon_rifle", 4.0f},
-            {"weapon_rifle_ak47", 4.5f},
-            {"weapon_rifle_desert", 4.5f},
-            {"weapon_rifle_sg552", 4.5f},
-            {"weapon_hunting_rifle", 5.0f},
-            {"weapon_sniper_military", 5.5f},
-            {"weapon_sniper_awp", 5.5f},
-            {"weapon_sniper_scout", 4.0f},
-            {"weapon_rifle_m60", 8.0f},
-            {"weapon_grenade_launcher", 6.0f},
-        };
-
-        WeaponWeight* find_weapon(std::string_view classname)
-        {
-            for (WeaponWeight& w : k_weapons)
-                if (classname == w.classname)
-                    return &w;
-            return nullptr;
-        }
-    } // namespace
 
     float weapon_weight(std::string_view classname)
     {
-        const WeaponWeight* w = find_weapon(classname);
-        return w != nullptr ? w->weight : 0.f;
+        const ItemDef* def = find_item(classname);
+        return def != nullptr && def->weapon() ? def->weight : 0.f;
     }
-
-    bool set_weapon_weight(std::string_view classname, float weight)
-    {
-        WeaponWeight* w = find_weapon(classname);
-        if (w == nullptr || weight < 0.f)
-            return false;
-        w->weight = weight;
-        return true;
-    }
-
-    namespace
-    {
-        ItemDef* find_mutable(std::string_view classname)
-        {
-            for (ItemDef& def : k_items)
-                if (classname == def.classname)
-                    return &def;
-            return nullptr;
-        }
-    } // namespace
 
     bool set_item_weight(std::string_view classname, float weight)
     {
@@ -126,7 +95,7 @@ namespace inv
     bool set_item_stack(std::string_view classname, int max_stack)
     {
         ItemDef* def = find_mutable(classname);
-        if (def == nullptr || max_stack < 1)
+        if (def == nullptr || max_stack < 1 || def->weapon()) // a weapon stays one per box: it has its own rounds
             return false;
         def->max_stack = max_stack;
         return true;

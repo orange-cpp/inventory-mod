@@ -76,6 +76,14 @@ namespace game
         constexpr int k_vt_eye_angles = 141;
         constexpr std::uint32_t k_invalid_handle = 0xFFFFFFFFu;
         constexpr std::uintptr_t k_off_origin = 0x388; // CBaseEntity::m_vecOrigin (the SendProps: push 0x388 / push 0xC)
+        // A weapon's rounds (SendProp / datamap definitions: push <offset> / push "<name>"), for storing guns:
+        constexpr std::uintptr_t k_off_clip = 0x1414; // CBaseCombatWeapon::m_iClip1
+        constexpr std::uintptr_t k_off_ammo_type = 0x140C; // CBaseCombatWeapon::m_iPrimaryAmmoType
+        constexpr std::uintptr_t k_off_extra_ammo = 0x14F4; // CTerrorGun::m_iExtraPrimaryAmmo: a gun's reserve while it lies
+        constexpr std::uintptr_t k_off_player_ammo = 0x1874; // CBasePlayer::m_iAmmo[32]: the reserve of each ammo type
+        // CTerrorMeleeWeapon::m_strMapSetScriptName (datamap entry 0x107BDF20: FIELD_STRING, keyvalue
+        // "melee_script_name"): which melee weapon it is, "fireaxe", "katana" ...
+        constexpr std::uintptr_t k_off_melee_name = 0x17E0;
         constexpr float k_pickup_reach = 160.f;
 
         struct Vec3
@@ -244,6 +252,67 @@ namespace game
             return nullptr;
         }
 
+        // ---- guns and melee weapons --------------------------------------------------------------------------------
+        //
+        // A stored weapon keeps its rounds.  A carried gun's reserve is the player's m_iAmmo of its ammo type (a gun
+        // lying in the world keeps it in m_iExtraPrimaryAmmo); a melee weapon is told apart by its script name.
+
+        inv::WeaponState weapon_state(void* player, void* weapon, const inv::ItemDef& def, bool carried)
+        {
+            const bool is_melee = std::strcmp(def.classname, "weapon_melee") == 0;
+            inv::WeaponState state;
+            const auto w = reinterpret_cast<std::uintptr_t>(weapon);
+            mem::guarded([&] {
+                state.clip = mem::read_or<int>(w + k_off_clip, -1);
+                if (carried)
+                {
+                    const int type = mem::read_or<int>(w + k_off_ammo_type, -1);
+                    if (type >= 0 && type < 32)
+                        state.ammo = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
+                                                           4u * static_cast<unsigned>(type),
+                                                       -1);
+                }
+                else if (const int extra = mem::read_or<int>(w + k_off_extra_ammo, 0); extra > 0)
+                    state.ammo = extra; // 0 on a fresh gun from the map: the game's own amount on pick-up (-1)
+                char name[64] = {};
+                if (const char* melee = is_melee ? mem::read_or<const char*>(w + k_off_melee_name) : nullptr;
+                    melee != nullptr && mem::safe_copy(name, melee, sizeof(name) - 1) && name[0] != '\0')
+                    state.melee = name;
+            });
+            return state;
+        }
+
+        // The rounds of a stored weapon onto the one the player was just given.
+        void apply_weapon_state(void* player, void* weapon, const inv::WeaponState& state)
+        {
+            const auto w = reinterpret_cast<std::uintptr_t>(weapon);
+            mem::guarded([&] {
+                if (state.clip >= 0)
+                    *reinterpret_cast<int*>(w + k_off_clip) = state.clip;
+                const int type = mem::read_or<int>(w + k_off_ammo_type, -1);
+                if (state.ammo >= 0 && type >= 0 && type < 32)
+                    *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
+                                            4u * static_cast<unsigned>(type)) = state.ammo;
+            });
+        }
+
+        // The reserve goes with a stored gun: the player keeps none of that ammo type.
+        void clear_reserve(void* player, void* weapon)
+        {
+            mem::guarded([&] {
+                const int type = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_ammo_type, -1);
+                if (type >= 0 && type < 32)
+                    *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
+                                            4u * static_cast<unsigned>(type)) = 0;
+            });
+        }
+
+        // What GiveNamedItem gets for a stored weapon: a melee weapon by its script name (as `give fireaxe` does).
+        std::string give_name(const inv::ItemDef& def, const inv::WeaponState& state)
+        {
+            return def.weapon() && !state.melee.empty() ? state.melee : std::string(def.classname);
+        }
+
         // Takes one stored `def` out of inventory slot `slot`; false when the slot no longer has one (the HUD changed it).
         bool take_from_slot(int slot, const inv::ItemDef& def)
         {
@@ -301,6 +370,52 @@ namespace game
             return true;
         }
 
+        // Takes the carried weapon `weapon` (a gun or melee weapon, `def`) off the player into inventory box `index`
+        // (-1: the first empty one), with its rounds; the player keeps none of its ammo type.  Weapon_Drop first, as
+        // in swap_out, so it is out of m_hMyWeapons before anything is given.  The box, or -1 (said why).
+        int store_carried_weapon(void* player, void* weapon, const inv::ItemDef& def, int index = -1)
+        {
+            if (const auto cannot = reinterpret_cast<CannotDropFn>(mem::vslot(player, k_vt_cannot_drop));
+                cannot != nullptr && cannot(player) != 0)
+            {
+                notify("The game does not let you put that away now");
+                return -1;
+            }
+            const auto drop = g.quiet_drop != nullptr ? g.quiet_drop
+                                                      : reinterpret_cast<WeaponDropFn>(mem::vslot(player, k_vt_weapon_drop));
+            if (drop == nullptr)
+                return -1;
+            const inv::WeaponState state = weapon_state(player, weapon, def, true);
+            int box = -1;
+            {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                // it leaves the hands for the box: what it weighs in the hands does not count twice
+                const float carried = s.inventory.weapons_weight();
+                s.inventory.set_weapons_weight(std::max(0.f, carried - def.weight));
+                box = s.inventory.add_weapon(def, state, index);
+                s.inventory.set_weapons_weight(carried);
+            }
+            if (box < 0)
+            {
+                notify(index >= 0 ? std::string("No room for your ") + def.name : refusal(def));
+                return -1;
+            }
+            clear_reserve(player, weapon);
+            if (!mem::guarded([&] { drop(player, weapon, nullptr, nullptr); }) || player_has_slot(player, def.game_slot))
+            {
+                apply_weapon_state(player, weapon, state); // the reserve back
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                s.inventory.remove_from_slot(box, 1);
+                return -1;
+            }
+            mem::guarded([&] { g.util_remove(weapon); });
+            INV_LOG("stored %s (%s) into box %d: clip %d, reserve %d", def.classname, state.melee.c_str(), box, state.clip,
+                    state.ammo);
+            return box;
+        }
+
         bool g_giving = false; // main thread only: do_use is handing an item out
         bool g_switching = false; // main thread only: do_use is swapping / handing out (game events are muted)
         ULONGLONG g_switch_mute_until = 0; // main thread only: "weapon_pickup" is muted until then (see hk_create_event)
@@ -329,6 +444,70 @@ namespace game
             return g_create_event.original()(self, edx, name, force, cookie);
         }
 
+        // A stored gun or melee weapon into the hands.  The one in its game slot goes into the same box (the two swap
+        // places), then the stored one is given and gets its rounds back.
+        void do_use_weapon(void* player, int slot)
+        {
+            const inv::ItemDef* def = nullptr;
+            inv::WeaponState state;
+            {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                const inv::Stack& stack = s.inventory.slot(slot);
+                if (stack.empty() || stack.def == nullptr || !stack.def->weapon())
+                    return;
+                def = stack.def;
+                state = stack.weapon;
+                s.inventory.remove_from_slot(slot, 1); // the box is free for the weapon it replaces
+            }
+            const auto put_back = [&] {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                if (s.inventory.add_weapon(*def, state, slot) < 0 && s.inventory.add_weapon(*def, state) < 0)
+                    INV_LOG("use %s: no box to put it back in", def->classname); // (cannot happen: the box was just freed)
+            };
+            INV_LOG("use %s (box %d, %s): the player carries [%s]", def->classname, slot, state.melee.c_str(),
+                    carried_list(player).c_str());
+            g_switching = true;
+            struct Unmute
+            {
+                ~Unmute()
+                {
+                    g_switching = false;
+                    g_switch_mute_until = GetTickCount64() + 500;
+                }
+            } unmute;
+            const inv::ItemDef* held_def = nullptr;
+            if (void* held = carried_in_slot(player, def->game_slot, &held_def))
+            {
+                if (store_carried_weapon(player, held, *held_def, slot) < 0)
+                {
+                    put_back();
+                    return;
+                }
+            }
+            const auto give = reinterpret_cast<GiveFn>(mem::vslot(player, k_vt_give_named_item));
+            const std::string name = give_name(*def, state);
+            g_giving = true;
+            const bool gave = give != nullptr && mem::guarded([&] { give(player, name.c_str(), 0, 0, 0); });
+            g_giving = false;
+            const inv::ItemDef* given_def = nullptr;
+            void* given = carried_in_slot(player, def->game_slot, &given_def);
+            if (!gave || given == nullptr)
+            {
+                // the one that went into the box stays there; this one goes into the first free box
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                if (s.inventory.add_weapon(*def, state, slot) < 0 && s.inventory.add_weapon(*def, state) < 0)
+                    INV_LOG("use %s: the game refused it and no box is free: it is lost", def->classname);
+                notify(std::string("The game refused the ") + def->name);
+                return;
+            }
+            apply_weapon_state(player, given, state);
+            do_select_weapon(given_def->classname);
+            notify(std::string("Equipped ") + (state.melee.empty() ? def->name : state.melee));
+        }
+
         void do_use(int slot)
         {
             const inv::ItemDef* def = nullptr;
@@ -346,6 +525,11 @@ namespace game
             if (player == nullptr)
             {
                 notify("Not in a game");
+                return;
+            }
+            if (def->weapon())
+            {
+                do_use_weapon(player, slot);
                 return;
             }
             INV_LOG("use %s (box %d): the player carries [%s]", def->classname, slot, carried_list(player).c_str());
@@ -479,10 +663,18 @@ namespace game
             }
 
             int stored = 0;
+            int weapon_box = -1;
             {
+                const inv::WeaponState state = best_def->weapon() ? weapon_state(player, best, *best_def, false) : inv::WeaponState{};
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
-                stored = s.inventory.add(*best_def, 1);
+                if (best_def->weapon())
+                {
+                    weapon_box = s.inventory.add_weapon(*best_def, state); // a gun keeps what is left in it
+                    stored = weapon_box >= 0 ? 1 : 0;
+                }
+                else
+                    stored = s.inventory.add(*best_def, 1);
             }
             if (stored == 0)
             {
@@ -491,7 +683,14 @@ namespace game
             }
             if (!mem::guarded([&] { g.util_remove(best); }))
             {
-                take_from_inventory(*best_def, 1);
+                if (weapon_box >= 0)
+                {
+                    Session& s = session();
+                    std::lock_guard lock(s.mutex);
+                    s.inventory.remove_from_slot(weapon_box, 1);
+                }
+                else
+                    take_from_inventory(*best_def, 1);
                 notify("The game refused to take the item away");
                 return;
             }
@@ -504,6 +703,7 @@ namespace game
         {
             const inv::ItemDef* def = nullptr;
             int stored = 0;
+            inv::WeaponState state;
             {
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
@@ -512,6 +712,7 @@ namespace game
                     return;
                 def = stack.def;
                 stored = stack.count;
+                state = stack.weapon;
             }
             // the box only shows the item in the player's hands: that one is dropped the game's way
             if (stored <= 0)
@@ -545,6 +746,9 @@ namespace game
                     entity = g.create_entity(g.tools, def->classname);
                     if (entity == nullptr)
                         return;
+                    // which melee weapon: its keyvalue, read when it spawns
+                    if (def->weapon() && !state.melee.empty())
+                        g.set_key_value(g.tools, entity, "melee_script_name", state.melee.c_str());
                     if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(entity, k_vt_precache)))
                         precache(entity);
                     g.dispatch_spawn(g.tools, entity);
@@ -552,6 +756,18 @@ namespace game
                         teleport(entity, &position, nullptr, nullptr);
                     if (g.drop_to_floor != nullptr)
                         g.drop_to_floor(entity, 0x200400Bu, nullptr);
+                    // a gun keeps its rounds: the magazine, and the reserve the way a dropped gun keeps it
+                    // (m_iClip1 is every weapon's; m_iExtraPrimaryAmmo only a CTerrorGun's: not the melee weapon, the
+                    // chainsaw or the pistols, whose reserve is endless)
+                    if (def->weapon() && std::strcmp(def->classname, "weapon_melee") != 0)
+                    {
+                        const auto e = reinterpret_cast<std::uintptr_t>(entity);
+                        if (state.clip >= 0)
+                            *reinterpret_cast<int*>(e + k_off_clip) = state.clip;
+                        if (state.ammo >= 0 && std::strcmp(def->classname, "weapon_chainsaw") != 0 &&
+                            std::strstr(def->classname, "pistol") == nullptr)
+                            *reinterpret_cast<int*>(e + k_off_extra_ammo) = state.ammo;
+                    }
                 });
                 if (!ok || entity == nullptr)
                 {
@@ -622,7 +838,7 @@ namespace game
             for (int i = 0; def == nullptr && i < k_max_weapons; ++i)
             {
                 void* weapon = entity_from_handle(handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i)));
-                if (const inv::ItemDef* candidate = item_of(weapon))
+                if (const inv::ItemDef* candidate = item_of(weapon); candidate != nullptr && !candidate->weapon())
                 {
                     item = weapon;
                     def = candidate;
@@ -631,6 +847,13 @@ namespace game
             if (def == nullptr)
             {
                 notify("Nothing to store");
+                return;
+            }
+            // a gun or melee weapon in the hands: into a box of its own, with its rounds
+            if (def->weapon())
+            {
+                if (store_carried_weapon(player, item, *def) >= 0)
+                    notify(std::string("Stored ") + def->name);
                 return;
             }
 
@@ -740,10 +963,19 @@ namespace game
         bool store_world_item(void* weapon, const inv::ItemDef& def)
         {
             int stored = 0;
+            int weapon_box = -1;
             {
+                // a gun keeps what is in it, a melee weapon which one it is
+                const inv::WeaponState state = def.weapon() ? weapon_state(nullptr, weapon, def, false) : inv::WeaponState{};
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
-                stored = s.inventory.add(def, 1);
+                if (def.weapon())
+                {
+                    weapon_box = s.inventory.add_weapon(def, state);
+                    stored = weapon_box >= 0 ? 1 : 0;
+                }
+                else
+                    stored = s.inventory.add(def, 1);
             }
             if (stored == 0)
             {
@@ -752,7 +984,14 @@ namespace game
             }
             if (!mem::guarded([&] { g.util_remove(weapon); }))
             {
-                take_from_inventory(def, 1);
+                if (weapon_box >= 0)
+                {
+                    Session& s = session();
+                    std::lock_guard lock(s.mutex);
+                    s.inventory.remove_from_slot(weapon_box, 1);
+                }
+                else
+                    take_from_inventory(def, 1);
                 notify("The game refused to take the item away");
                 return false;
             }
@@ -785,6 +1024,8 @@ namespace game
                 const std::size_t slot = static_cast<std::size_t>(native_slot_of(name));
                 const float replaced = slot < s.native.size() ? inv::weapon_weight(s.native[slot].classname) : 0.f;
                 const float total = s.inventory.weight() - replaced + weight;
+                INV_LOG("+use on %s: weight %.1f - %.1f (replaced) + %.1f = %.1f of %.1f", name, s.inventory.weight(),
+                        replaced, weight, total, max_weight);
                 if (total <= max_weight + 1e-3f)
                     return false;
                 std::snprintf(text, sizeof(text), "Too heavy: %.1f / %.1f, %s weighs %.1f", s.inventory.weight(), max_weight,
@@ -795,14 +1036,50 @@ namespace game
             return true;
         }
 
+        // A stored copy from a map spawner names the player as its owner (m_hOwner), so GiveNamedItem reports success
+        // and the spawner counts it (see bump_weapon).
+        void claim_for(void* player, void* weapon)
+        {
+            for (int index = 1; index <= 64; ++index) // the player's EHANDLE: players are entities 1..maxplayers
+            {
+                EntInfo info{};
+                if (!mem::read(g.ent_list + 4 + static_cast<std::uintptr_t>(index) * sizeof(EntInfo), info) ||
+                    info.entity != player)
+                    continue;
+                const std::uint32_t handle = static_cast<std::uint32_t>(index) | (info.serial << 12);
+                mem::guarded([&] {
+                    *reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_weapon_owner) = handle;
+                });
+                return;
+            }
+        }
+
         bool bump_weapon(void* player, void* edx, void* weapon)
         {
             const inv::ItemDef* def = nullptr;
             const bool local = !g_giving && player != nullptr && player == local_player();
             if (local)
                 def = item_of(weapon);
-            if (def == nullptr)
+            // a gun or melee weapon: into the hands when that game slot is free (the game's own pick-up); when the
+            // hands have one there already, into a free weapon box with its rounds; with no free box (or too heavy for
+            // one) the game's own swap, as long as the swap is not too heavy
+            if (def == nullptr || def->weapon())
             {
+                if (local && def != nullptr && player_has_slot(player, def->game_slot))
+                {
+                    bool box = false;
+                    {
+                        Session& s = session();
+                        std::lock_guard lock(s.mutex);
+                        box = s.inventory.has_box_for(*def) && s.inventory.room_for(*def) >= 1;
+                    }
+                    INV_LOG("+use on %s: that game slot is taken, %s", def->classname, box ? "into a weapon box" : "no weapon box: the game's swap");
+                    if (box && store_world_item(weapon, *def))
+                    {
+                        claim_for(player, weapon);
+                        return true;
+                    }
+                }
                 if (local && weapon_too_heavy(weapon))
                     return false;
                 return g_bump_weapon.original()(player, edx, weapon);
@@ -823,18 +1100,7 @@ namespace game
             const bool tried = always || full;
             if (tried && store_world_item(weapon, *def))
             {
-                for (int index = 1; index <= 64; ++index) // the player's EHANDLE: players are entities 1..maxplayers
-                {
-                    EntInfo info{};
-                    if (!mem::read(g.ent_list + 4 + static_cast<std::uintptr_t>(index) * sizeof(EntInfo), info) ||
-                        info.entity != player)
-                        continue;
-                    const std::uint32_t handle = static_cast<std::uint32_t>(index) | (info.serial << 12);
-                    mem::guarded([&] {
-                        *reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_weapon_owner) = handle;
-                    });
-                    break;
-                }
+                claim_for(player, weapon);
                 return true;
             }
             // not stored: the game equips it into the free slot, and refreshing the game slots gives it a box, so it
@@ -890,7 +1156,7 @@ namespace game
                 });
             }
             bool take = false;
-            if (def != nullptr && player_has_slot(activator, def->game_slot))
+            if (def != nullptr && !def->weapon() && player_has_slot(activator, def->game_slot))
             {
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
@@ -943,7 +1209,7 @@ namespace game
         {
             std::string id;
             std::wstring file;
-            Session session{.inventory = inv::Inventory({.slots = core::config().slots, .max_weight = core::config().max_weight})};
+            Session session{.inventory = inv::Inventory(config_limits())};
             std::uint32_t saved_revision = 0;
             bool has_mod = false; // their HUD has talked to us
         };
@@ -998,9 +1264,10 @@ namespace game
         void refresh_native();
 
         // The player's inventory, as the line their client DLL reads:
-        //   @inv@ <slots> <max_weight> <weight>|<index> <classname> <count> <held>,...|<game slot 0>,...,<game slot 5>|<message>
+        //   @inv@ <slots> <max_weight> <weight> <weapon slots>|<index> <classname> <count> <held>,...|<game slot 0>,...,<game slot 5>|<message>
         // (<weight>: what the stored items weigh by the server's rules; a client that reads only two numbers still works)
-        // A game slot is "-" when empty, a leading '*' marks the weapon in the hands.
+        // A game slot is "-" when empty, a leading '*' marks the weapon in the hands.  A stored weapon's entry goes on
+        // with "<clip> <ammo> <melee script name or ->".
         void send_state(void* player, ServerPlayer& sp)
         {
             mem::guarded([] { refresh_native(); });
@@ -1011,16 +1278,20 @@ namespace game
                 std::lock_guard lock(s.mutex);
                 const inv::Inventory& inventory = s.inventory;
                 char head[64];
-                std::snprintf(head, sizeof(head), "%s %d %.2f %.2f|", k_state_marker, inventory.slot_count(),
-                              inventory.limits().max_weight, inventory.weight());
+                std::snprintf(head, sizeof(head), "%s %d %.2f %.2f %d|", k_state_marker, inventory.slot_count(),
+                              inventory.limits().max_weight, inventory.weight(), inventory.weapon_slot_count());
                 line = head;
-                for (int i = 0; i < inventory.slot_count(); ++i)
+                for (int i = 0; i < inventory.total_slots(); ++i)
                 {
                     const inv::Stack& stack = inventory.slot(i);
                     if (stack.empty())
                         continue;
                     line += std::to_string(i) + ' ' + stack.def->classname + ' ' + std::to_string(stack.count) + ' ' +
-                            (stack.held ? '1' : '0') + ',';
+                            (stack.held ? '1' : '0');
+                    if (stack.def->weapon()) // a weapon's rounds and kind, as in the save file
+                        line += ' ' + std::to_string(stack.weapon.clip) + ' ' + std::to_string(stack.weapon.ammo) + ' ' +
+                                (stack.weapon.melee.empty() ? std::string("-") : stack.weapon.melee);
+                    line += ',';
                 }
                 line += '|';
                 for (std::size_t i = 0; i < s.native.size(); ++i)
@@ -1284,7 +1555,7 @@ namespace game
             for (const NativeWeapon& weapon : list)
             {
                 const inv::ItemDef* def = weapon.classname.empty() ? nullptr : inv::find_item(weapon.classname);
-                if (def != nullptr && inventory.held_slot(*def) < 0)
+                if (def != nullptr && !def->weapon() && inventory.held_slot(*def) < 0)
                     inventory.set_held(inventory.home_for(*def), *def); // picked up in the game: it gets a box
             }
             // the gun and the melee / pistol count against the weight limit too
@@ -1397,7 +1668,7 @@ namespace game
             const std::string saved = core::inventory_file_load();
             Session& s = session();
             std::lock_guard lock(s.mutex);
-            inv::Inventory local({.slots = core::config().slots, .max_weight = core::config().max_weight});
+            inv::Inventory local(config_limits());
             if (!saved.empty())
                 local.from_text(saved);
             s.inventory = std::move(local);
@@ -1428,9 +1699,10 @@ namespace game
             int slots = 0;
             float max_weight = 0.f;
             float weight = -1.f;
-            if (std::sscanf(parts[0].c_str(), "%d %f %f", &slots, &max_weight, &weight) < 1 || slots < 1 || slots > 64)
+            int weapon_slots = 0; // a server from before the weapon boxes sends none
+            if (std::sscanf(parts[0].c_str(), "%d %f %f %d", &slots, &max_weight, &weight, &weapon_slots) < 1 || slots < 1 || slots > 64)
                 return;
-            inv::Inventory inventory({.slots = slots, .max_weight = max_weight});
+            inv::Inventory inventory({.slots = slots, .max_weight = max_weight, .weapon_slots = weapon_slots});
             for (std::size_t start = 0; start < parts[1].size();)
             {
                 std::size_t comma = parts[1].find(',', start);
@@ -1438,12 +1710,22 @@ namespace game
                     comma = parts[1].size();
                 int index = 0, count = 0, held = 0;
                 char name[64] = {};
-                if (std::sscanf(parts[1].substr(start, comma - start).c_str(), "%d %63s %d %d", &index, name, &count, &held) == 4)
+                inv::WeaponState state;
+                char melee[64] = {};
+                const int read = std::sscanf(parts[1].substr(start, comma - start).c_str(), "%d %63s %d %d %d %d %63s",
+                                             &index, name, &count, &held, &state.clip, &state.ammo, melee);
+                if (read >= 4)
                     if (const inv::ItemDef* def = inv::find_item(name))
                     {
-                        if (count > 0)
+                        if (def->weapon())
+                        {
+                            if (read == 7 && std::strcmp(melee, "-") != 0)
+                                state.melee = melee;
+                            inventory.add_weapon(*def, state, index);
+                        }
+                        else if (count > 0)
                             inventory.add_to_slot(index, *def, count);
-                        if (held != 0)
+                        if (held != 0 && !def->weapon())
                             inventory.set_held(index, *def);
                     }
                 start = comma + 1;

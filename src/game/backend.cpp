@@ -16,7 +16,8 @@ namespace game
 
         inv::Limits limits_from_config()
         {
-            return {.slots = core::config().slots, .max_weight = core::config().max_weight};
+            return {.slots = core::config().slots, .max_weight = core::config().max_weight,
+                    .weapon_slots = core::config().weapon_slots};
         }
 
         // Nothing of the game behind it: edits the list only, so the HUD can be driven on its own.
@@ -88,17 +89,18 @@ namespace game
         g_active = s;
     }
 
+    inv::Limits config_limits()
+    {
+        return limits_from_config();
+    }
+
     void session_apply_limits()
     {
         Session& s = local_session();
         std::lock_guard lock(s.mutex);
+        // the saved form keeps the boxes, the weapons' rounds, and moves what has no box any more into a free one
         inv::Inventory rebuilt(limits_from_config());
-        for (int i = 0; i < s.inventory.slot_count(); ++i)
-        {
-            const inv::Stack& stack = s.inventory.slot(i);
-            if (!stack.empty())
-                rebuilt.add(*stack.def, stack.count);
-        }
+        rebuilt.from_text(s.inventory.to_text());
         s.inventory = std::move(rebuilt);
     }
 
@@ -107,6 +109,8 @@ namespace game
         Session& s = session();
         std::lock_guard lock(s.mutex);
         const inv::Inventory& inventory = s.inventory;
+        if (!inventory.has_box_for(def))
+            return def.weapon() ? "No free weapon box" : "The inventory is full";
         if (inventory.room_for(def) == 0)
         {
             char text[96];

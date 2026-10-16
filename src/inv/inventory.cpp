@@ -33,12 +33,13 @@ namespace inv
     Inventory::Inventory(Limits limits) : limits_(limits)
     {
         limits_.slots = std::max(limits_.slots, 1);
-        slots_.assign(static_cast<std::size_t>(limits_.slots), Stack{});
+        limits_.weapon_slots = std::clamp(limits_.weapon_slots, 0, 16);
+        slots_.assign(static_cast<std::size_t>(limits_.slots + limits_.weapon_slots), Stack{});
     }
 
     const Stack& Inventory::slot(int index) const
     {
-        if (index < 0 || index >= slot_count())
+        if (index < 0 || index >= total_slots())
             return k_empty;
         return slots_[static_cast<std::size_t>(index)];
     }
@@ -56,10 +57,19 @@ namespace inv
 
     int Inventory::add(const ItemDef& def, int count)
     {
+        if (def.weapon())
+        {
+            int added = 0;
+            while (added < count && add_weapon(def, {}) >= 0)
+                ++added;
+            return added;
+        }
         count = std::min(count, room_for(def));
         int added = 0;
-        for (Stack& s : slots_)
+        const auto items = slots_.begin() + slot_count();
+        for (auto it = slots_.begin(); it != items; ++it)
         {
+            Stack& s = *it;
             if (added >= count)
                 break;
             if (s.empty() || s.def != &def || s.count >= def.max_stack)
@@ -68,8 +78,9 @@ namespace inv
             s.count += take;
             added += take;
         }
-        for (Stack& s : slots_)
+        for (auto it = slots_.begin(); it != items; ++it)
         {
+            Stack& s = *it;
             if (added >= count)
                 break;
             if (!s.empty())
@@ -86,6 +97,8 @@ namespace inv
 
     int Inventory::add_to_slot(int index, const ItemDef& def, int count)
     {
+        if (def.weapon())
+            return count > 0 && add_weapon(def, {}, index) >= 0 ? 1 : 0;
         if (index < 0 || index >= slot_count() || count <= 0)
             return 0;
         Stack& s = slots_[static_cast<std::size_t>(index)];
@@ -101,9 +114,34 @@ namespace inv
         return take;
     }
 
+    int Inventory::add_weapon(const ItemDef& def, const WeaponState& state, int index)
+    {
+        if (!def.weapon() || room_for(def) < 1)
+            return -1;
+        if (index < 0)
+            for (int i = first_weapon_slot(); i < total_slots() && index < 0; ++i)
+                if (slot(i).empty())
+                    index = i;
+        if (!is_weapon_slot(index) || !slot(index).empty())
+            return -1;
+        slots_[static_cast<std::size_t>(index)] = Stack{&def, 1, false, state};
+        ++revision_;
+        return index;
+    }
+
+    bool Inventory::has_box_for(const ItemDef& def) const
+    {
+        const int from = def.weapon() ? first_weapon_slot() : 0;
+        const int to = def.weapon() ? total_slots() : slot_count();
+        for (int i = from; i < to; ++i)
+            if (slot(i).empty() || (!def.weapon() && slot(i).def == &def && slot(i).count < def.max_stack))
+                return true;
+        return false;
+    }
+
     int Inventory::remove_from_slot(int index, int count)
     {
-        if (index < 0 || index >= slot_count() || count <= 0)
+        if (index < 0 || index >= total_slots() || count <= 0)
             return 0;
         Stack& s = slots_[static_cast<std::size_t>(index)];
         if (s.empty())
@@ -121,7 +159,7 @@ namespace inv
     int Inventory::remove_item(const ItemDef& def, int count)
     {
         int removed = 0;
-        for (int i = slot_count() - 1; i >= 0 && removed < count; --i)
+        for (int i = total_slots() - 1; i >= 0 && removed < count; --i)
             if (slot(i).def == &def)
                 removed += remove_from_slot(i, count - removed);
         return removed;
@@ -129,7 +167,8 @@ namespace inv
 
     bool Inventory::move(int from, int to)
     {
-        if (from == to || from < 0 || to < 0 || from >= slot_count() || to >= slot_count())
+        if (from == to || from < 0 || to < 0 || from >= total_slots() || to >= total_slots() ||
+            is_weapon_slot(from) != is_weapon_slot(to)) // a weapon stays in the weapon boxes, an item in the item boxes
             return false;
         Stack& a = slots_[static_cast<std::size_t>(from)];
         Stack& b = slots_[static_cast<std::size_t>(to)];
@@ -271,12 +310,16 @@ namespace inv
     std::string Inventory::to_text() const
     {
         std::string out = "inventory 1\n";
-        for (int i = 0; i < slot_count(); ++i)
+        for (int i = 0; i < total_slots(); ++i)
         {
             const Stack& s = slot(i);
             if (s.def == nullptr || s.count <= 0)
                 continue;
-            out += std::to_string(i) + ' ' + s.def->classname + ' ' + std::to_string(s.count) + '\n';
+            out += std::to_string(i) + ' ' + s.def->classname + ' ' + std::to_string(s.count);
+            if (s.def->weapon())
+                out += ' ' + std::to_string(s.weapon.clip) + ' ' + std::to_string(s.weapon.ammo) + ' ' +
+                       (s.weapon.melee.empty() ? std::string("-") : s.weapon.melee);
+            out += '\n';
         }
         return out;
     }
@@ -284,6 +327,7 @@ namespace inv
     bool Inventory::from_text(std::string_view text)
     {
         std::vector<Stack> loaded(slots_.size());
+        std::vector<Stack> misplaced;
         bool header = false;
         while (!text.empty())
         {
@@ -306,12 +350,41 @@ namespace inv
             if (!parse_int(first, index) || !parse_int(next_token(line), count))
                 continue;
             const ItemDef* def = find_item(name);
-            if (def == nullptr || index < 0 || index >= slot_count() || count <= 0)
+            if (def == nullptr || count <= 0)
                 continue;
-            loaded[static_cast<std::size_t>(index)] = Stack{def, std::min(count, def->max_stack)};
+            Stack stack{def, std::min(count, def->max_stack)};
+            if (def->weapon())
+            {
+                int clip = -1, ammo = -1;
+                if (parse_int(next_token(line), clip))
+                    stack.weapon.clip = clip;
+                if (parse_int(next_token(line), ammo))
+                    stack.weapon.ammo = ammo;
+                const std::string_view melee = next_token(line);
+                if (!melee.empty() && melee != "-")
+                    stack.weapon.melee = std::string(melee);
+            }
+            // the right kind of box at that number, else (a weapon in an item box, a box number past the end) later
+            const bool fits = index >= 0 && index < total_slots() && (index >= slot_count()) == def->weapon() &&
+                              loaded[static_cast<std::size_t>(index)].empty();
+            if (fits)
+                loaded[static_cast<std::size_t>(index)] = std::move(stack);
+            else
+                misplaced.push_back(std::move(stack));
         }
         if (!header)
             return false;
+        for (Stack& stack : misplaced)
+        {
+            const int from = stack.def->weapon() ? slot_count() : 0;
+            const int to = stack.def->weapon() ? total_slots() : slot_count();
+            for (int i = from; i < to; ++i)
+                if (loaded[static_cast<std::size_t>(i)].empty())
+                {
+                    loaded[static_cast<std::size_t>(i)] = std::move(stack);
+                    break;
+                }
+        }
         slots_ = std::move(loaded);
         ++revision_;
         return true;

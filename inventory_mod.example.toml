@@ -5,7 +5,8 @@
 # Read when the DLL loads: reload the mod after a change.  Mistakes are written to the log with their line.
 
 [limits]
-slots = 8              # inventory boxes per player, 1 to 24
+slots = 8              # item boxes per player, 1 to 24
+weapon_slots = 2       # boxes for stored guns and melee weapons, 0 to 8 (apart from the item boxes)
 max_weight = 30.0      # what everything you carry may weigh together; 0 = no weight limit
 
 # What each item and weapon weighs ("weapon_" may be left out).  Those not listed keep the mod's default.

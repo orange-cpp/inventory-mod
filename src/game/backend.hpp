@@ -56,6 +56,8 @@ namespace game
     void set_active_session(Session* s);
     // Rebuilds the inventory from the config's limits, keeping what fits.
     void session_apply_limits();
+    // The config's limits (boxes, weapon boxes, weight), for a new inventory.
+    inv::Limits config_limits();
     // Shows a line in the HUD for a few seconds.  Locks the session itself.
     void notify(const std::string& text);
     // Why `def` did not go into the active inventory: "Too heavy: ..." or "The inventory is full".  Takes the lock.

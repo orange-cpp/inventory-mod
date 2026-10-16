@@ -39,7 +39,9 @@ namespace
             CHECK(def.max_stack >= 1);
             CHECK(inv::find_item(def.classname) == &def);
         }
-        CHECK(inv::find_item("weapon_rifle") == nullptr);
+        CHECK(inv::find_item("weapon_ammo_spawn") == nullptr);
+        for (const inv::ItemDef& def : inv::all_items())
+            CHECK(!def.weapon() || def.max_stack == 1); // a weapon is one per box: it has its own rounds
     }
 
     void add_stacks_then_new_slots()
@@ -159,7 +161,7 @@ namespace
         inv::Inventory c({.slots = 2});
         CHECK(c.from_text("inventory 1\n0 weapon_molotov 99\n1 weapon_nonexistent 1\n7 weapon_gascan 1\nbad line\n"));
         CHECK(c.slot(0).count == item("weapon_molotov").max_stack);
-        CHECK(c.slot(1).empty());
+        CHECK(c.slot(1).def == &item("weapon_gascan")); // a box number past the end: into a free box, not lost
     }
 
     void revision()
@@ -197,6 +199,46 @@ namespace
         CHECK(inventory.set_held(1, medkit) && inventory.remove_from_slot(1, 1) == 1 && !inventory.slot(1).empty());
         inventory.clear_held(1);
         CHECK(inventory.slot(1).empty());
+    }
+
+    void weapons()
+    {
+        const inv::ItemDef& ak = item("weapon_rifle_ak47");
+        const inv::ItemDef& melee = item("weapon_melee");
+        CHECK(ak.weapon() && melee.weapon() && !item("weapon_molotov").weapon());
+        CHECK(ak.game_slot == 0 && melee.game_slot == 1 && item("weapon_pistol").game_slot == 1);
+
+        // 2 item boxes (0, 1), then 3 weapon boxes (2, 3, 4)
+        inv::Inventory inventory({.slots = 2, .weapon_slots = 3});
+        CHECK(inventory.slot_count() == 2 && inventory.first_weapon_slot() == 2 && inventory.total_slots() == 5);
+        CHECK(inventory.add_weapon(ak, {.clip = 17, .ammo = 240}) == 2);
+        CHECK(inventory.add_weapon(ak, {.clip = 40, .ammo = 0}) == 3); // one per box: a second AK gets its own
+        CHECK(inventory.add_weapon(melee, {.melee = "katana"}, 3) == -1); // box 3 is taken
+        CHECK(inventory.add_weapon(melee, {.melee = "katana"}, 0) == -1); // an item box
+        CHECK(inventory.add_weapon(melee, {.melee = "katana"}) == 4);
+        CHECK(inventory.add_weapon(melee, {.melee = "fireaxe"}) == -1); // the weapon boxes are full...
+        CHECK(!inventory.has_box_for(melee) && inventory.has_box_for(item("weapon_molotov")));
+        CHECK(inventory.add(item("weapon_molotov"), 1) == 1 && inventory.slot(0).def == &item("weapon_molotov")); // ...not the item boxes
+        CHECK(inventory.slot(2).weapon.clip == 17 && inventory.slot(2).weapon.ammo == 240);
+        CHECK(inventory.slot(4).weapon.melee == "katana");
+
+        inv::Inventory copy({.slots = 2, .weapon_slots = 3});
+        CHECK(copy.from_text(inventory.to_text()));
+        CHECK(copy.slot(3).def == &ak && copy.slot(3).weapon.clip == 40 && copy.slot(3).weapon.ammo == 0);
+        CHECK(copy.slot(4).def == &melee && copy.slot(4).weapon.melee == "katana" && copy.slot(4).weapon.clip == -1);
+
+        // a file from before the weapon boxes, with a weapon in an item box: it moves into a weapon box
+        inv::Inventory old({.slots = 2, .weapon_slots = 1});
+        CHECK(old.from_text("inventory 1\n0 weapon_shotgun_chrome 1 8 51 -\n1 weapon_pain_pills 2\n"));
+        CHECK(old.slot(0).empty() && old.slot(1).count == 2 && old.slot(2).def == &item("weapon_shotgun_chrome") &&
+              old.slot(2).weapon.ammo == 51);
+
+        CHECK(inventory.remove_from_slot(2, 1) == 1 && inventory.slot(2).empty() && inventory.slot(2).weapon.clip == -1);
+        CHECK(inventory.move(4, 2) && inventory.slot(2).weapon.melee == "katana"); // the state moves with it
+        CHECK(!inventory.move(2, 1)); // not into an item box
+
+        inv::Inventory heavy({.slots = 3, .max_weight = 6.f});
+        CHECK(heavy.add_weapon(ak, {}) == 3 && heavy.add_weapon(ak, {}) == -1); // 4.5 + 4.5 > 6
     }
 
     // Changes the item table: runs last, and puts the defaults back.
@@ -256,8 +298,8 @@ molotov = 1
         CHECK(armed.weight() == 8.5f);
         CHECK(armed.add(medkit, 1) == 0); // 8.5 + 5.5 > 10
         CHECK(armed.add(item("weapon_pain_pills"), 5) == 3);
-        inv::set_weapon_weight("weapon_rifle_ak47", ak_weight);
-        inv::set_weapon_weight("weapon_melee", 2.f);
+        inv::set_item_weight("weapon_rifle_ak47", ak_weight);
+        inv::set_item_weight("weapon_melee", 2.f);
 
         inv::set_item_weight("weapon_first_aid_kit", medkit_weight);
         inv::set_item_weight("weapon_pain_pills", 1.f);
@@ -277,6 +319,7 @@ int main()
     text_round_trip();
     revision();
     held_box();
+    weapons();
     rules_file();
     if (g_failed == 0)
         std::printf("all inventory tests passed\n");

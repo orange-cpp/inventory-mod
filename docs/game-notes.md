@@ -262,3 +262,34 @@ normal play, non-zero while the console or the chat line is open). The mod's hot
 `weapon_propanetank`, `weapon_oxygentank`, `weapon_fireworkcrate`, `weapon_gnome`, `weapon_cola_bottles`. Their L4D2
 inventory slots (2 throwable, 3 medkit/upgrade, 4 pills, 5 carried) are in `src/inv/items.cpp`; the mod does not give
 an item whose slot the player already fills.
+
+Guns and melee weapons (slot 0: `weapon_smg`, `weapon_smg_silenced`, `weapon_smg_mp5`, `weapon_pumpshotgun`,
+`weapon_shotgun_chrome`, `weapon_autoshotgun`, `weapon_shotgun_spas`, `weapon_rifle`, `weapon_rifle_ak47`,
+`weapon_rifle_desert`, `weapon_rifle_sg552`, `weapon_hunting_rifle`, `weapon_sniper_military`, `weapon_sniper_awp`,
+`weapon_sniper_scout`, `weapon_rifle_m60`, `weapon_grenade_launcher`; slot 1: `weapon_pistol`, `weapon_pistol_magnum`,
+`weapon_melee`, `weapon_chainsaw`) are items too (`ItemDef::weapon()`), one per box, with a `WeaponState`, in the
+inventory's weapon boxes (numbered after the item boxes: `first_weapon_slot()`; the state line's header carries their
+count). The HUD draws them as wide boxes the size of the panel's melee box (53.3 x 20 units, measured like the item
+boxes), 26.7 units apart from where the panel's throwable box began, and moves the item grid down by as much.
+
+## Storing weapons (server.dll)
+
+| What | Where / how |
+|---|---|
+| `m_iClip1` | weapon `+0x1414` (SendProp at `0x1004C5C6`: `push 0x1414 / push "m_iClip1"`) |
+| `m_iPrimaryAmmoType` | weapon `+0x140C` (`0x1004AFEC`) |
+| `m_iAmmo[32]` | player `+0x1874` (`0x1016CE1D`): a carried gun's reserve is the player's count of its ammo type |
+| `m_iExtraPrimaryAmmo` | `CTerrorGun` `+0x14F4` (`0x1024F100`, datamap entry `0x107A4160`): the reserve a gun lying in the world carries. A gun the map placed has 0 there (the game gives its own amount on pick-up), so 0 reads as "the game's amount" |
+| `m_strMapSetScriptName` | `CTerrorMeleeWeapon` `+0x17E0`, FIELD_STRING (a `const char*`), datamap entry `0x107BDF20` with the keyvalue name `"melee_script_name"`: which melee weapon (`fireaxe`, `katana`, ...; `scripts/melee/*.txt`) |
+
+Storing a carried weapon: read clip, reserve (and the melee name), set the player's `m_iAmmo` of that type to 0, then
+the quiet `Weapon_Drop` and `UTIL_Remove` (as `swap_out`). Taking one out: what is in that game slot is stored the same
+way into the box being emptied, then `GiveNamedItem` with the classname, or a melee weapon's script name (as
+`give fireaxe` does), and the stored clip / reserve are written onto the new weapon and the player. Dropping one:
+`weapon_melee` gets `melee_script_name` with SetKeyValue before DispatchSpawn; a gun gets `m_iClip1` and
+`m_iExtraPrimaryAmmo` after it (not the pistols or the chainsaw, whose reserve is endless or none). +use on a weapon
+(slot-426 hook): with that game slot free the game's own pick-up (weight checked); with it taken, the weapon is stored
+in a free weapon box with its rounds (`store_world_item`, and `claim_for` writes the player into `m_hOwner` as for
+items, so a spawner counts it); with no free box, the game's own swap, refused when the swap is too heavy. The hook
+logs each weight check ("weight 25.0 - 3.0 (replaced) + 4.0 = 26.0 of 30.0"). The melee scripts have no `TextureData`
+(`sprite_active "icon_fireaxe"` points elsewhere), so the HUD writes a melee weapon's name in its box.

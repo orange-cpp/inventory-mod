@@ -317,7 +317,8 @@ namespace hud
             // of the weapon panel the mod hides)
             // (an item in the hands also reports a "clip": not shown)
             const bool item_in_hands = std::any_of(session.native.begin(), session.native.end(), [](const game::NativeWeapon& w) {
-                return w.active && inv::find_item(w.classname) != nullptr;
+                const inv::ItemDef* def = inv::find_item(w.classname);
+                return w.active && def != nullptr && !def->weapon();
             });
             if (!item_in_hands && (session.ammo_clip >= 0 || session.ammo_reserve > 0))
             {
@@ -383,21 +384,29 @@ namespace hud
                    });
         }
 
-        // Everything the wheel steps through, in reading order: the gun, the melee / pistol, then the inventory row by
-        // row, left to right, empty boxes left out.  A carried item is its box; a carried thing that has no box (the
-        // inventory is full, or a gas can) comes after the melee.
+        // Everything the wheel steps through, top to bottom: the gun, the melee / pistol, the stored weapons, then the
+        // item boxes row by row, left to right, empty boxes left out.  A carried item is its box; a carried thing that
+        // has no box (the inventory is full, or a gas can) comes before the item boxes.
         std::vector<GridEntry> grid_entries(const game::Session& session)
         {
+            const inv::Inventory& inventory = session.inventory;
             std::vector<GridEntry> entries;
-            for (int index = 0; index < static_cast<int>(session.native.size()); ++index)
-            {
+            const auto add_native = [&](int index) {
                 const game::NativeWeapon& weapon = session.native[static_cast<std::size_t>(index)];
                 const inv::ItemDef* def = weapon.classname.empty() ? nullptr : inv::find_item(weapon.classname);
-                if (!weapon.classname.empty() && (index < 2 || def == nullptr || session.inventory.held_slot(*def) < 0))
+                if (!weapon.classname.empty() && (index < 2 || def == nullptr || inventory.held_slot(*def) < 0))
                     entries.push_back({true, index});
-            }
-            for (int i = 0; i < session.inventory.slot_count(); ++i)
-                if (!session.inventory.slot(i).empty())
+            };
+            const int natives = static_cast<int>(session.native.size());
+            for (int index = 0; index < std::min(2, natives); ++index)
+                add_native(index);
+            for (int i = inventory.first_weapon_slot(); i < inventory.total_slots(); ++i)
+                if (!inventory.slot(i).empty())
+                    entries.push_back({false, i});
+            for (int index = 2; index < natives; ++index)
+                add_native(index);
+            for (int i = 0; i < inventory.slot_count(); ++i)
+                if (!inventory.slot(i).empty())
                     entries.push_back({false, i});
             return entries;
         }
@@ -450,8 +459,60 @@ namespace hud
             const float size_f = 23.3f * unit, pitch_f = 26.7f * unit;
             const int size = static_cast<int>(size_f);
             const float right = display.x - 8.3f * unit;
-            const float first_bottom = display.y * 0.5f + 54.f * unit - 2.f * pitch_f; // the bottom of row 0
             const float thickness = std::max(1.f, unit * 0.5f);
+
+            // The stored weapons: wide boxes like the panel's melee box (53.3 x 20 units, measured the same way; the
+            // throwable box below it started 6.7 units lower), one under the other where the panel's item boxes began.
+            const float weapon_w = 53.3f * unit, weapon_h = 20.f * unit, weapon_pitch = 26.7f * unit;
+            const float weapons_top = display.y * 0.5f - 22.7f * unit;
+            for (int k = 0; k < inventory.weapon_slot_count(); ++k)
+            {
+                const int i = inventory.first_weapon_slot() + k;
+                const inv::Stack& stack = inventory.slot(i);
+                const ImVec2 p0(right - weapon_w, weapons_top + k * weapon_pitch), p1(right, p0.y + weapon_h);
+                if (stack.empty())
+                {
+                    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 60));
+                    dl->AddRect(p0, p1, IM_COL32(255, 255, 255, 50), 0.f, 0, thickness);
+                    continue;
+                }
+                dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120));
+                dl->AddRect(p0, p1, IM_COL32(255, 255, 255, 120), 0.f, 0, thickness);
+                const int x0 = static_cast<int>(p0.x), y0 = static_cast<int>(p0.y);
+                const int x1 = static_cast<int>(p1.x), y1 = static_cast<int>(p1.y);
+                const int pad = static_cast<int>(unit * 2.f);
+                if (!stack.weapon.melee.empty())
+                {
+                    std::string label = stack.weapon.melee;
+                    std::replace(label.begin(), label.end(), '_', ' ');
+                    nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
+                                label.c_str());
+                    continue;
+                }
+                // a gun: like the panel's gun box, its rounds on the left (magazine over reserve), its icon on the right
+                const int text_w = static_cast<int>(weapon_w * 0.32f);
+                if (!draw_icon(dl, x0 + text_w, y0 + pad, x1 - pad, y1 - pad, stack.def->classname))
+                {
+                    const int tw = nc::CalcTextWidth(fonts.Header, stack.def->name);
+                    nc::AddText(dl, fonts.Header, x1 - tw - pad, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
+                                stack.def->name);
+                }
+                if (stack.weapon.clip >= 0)
+                {
+                    char clip[16], reserve[16];
+                    std::snprintf(clip, sizeof(clip), "%d", stack.weapon.clip);
+                    nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + pad, ImVec4(1.f, 1.f, 1.f, 1.f), clip);
+                    if (stack.weapon.ammo >= 0)
+                    {
+                        std::snprintf(reserve, sizeof(reserve), "%d", stack.weapon.ammo);
+                        nc::AddText(dl, fonts.Normal, x0 + pad * 2, y1 - line - pad, ImVec4(0.66f, 0.66f, 0.66f, 1.f), reserve);
+                    }
+                }
+            }
+
+            // the item grid, under the weapon boxes
+            const float first_bottom = display.y * 0.5f + 54.f * unit - 2.f * pitch_f +
+                                       static_cast<float>(inventory.weapon_slot_count()) * weapon_pitch; // the bottom of row 0
 
             const ImU32 green = IM_COL32(142, 214, 57, 255);
             const int n = inventory.slot_count();
@@ -537,12 +598,16 @@ namespace hud
             constexpr int k_columns = 4;
             const int size = 56;
             const int gap = 4;
-            const int n = inventory.slot_count();
+            // the item boxes, then the weapon boxes on rows of their own
+            const int n = inventory.total_slots();
+            const int first_weapon = inventory.first_weapon_slot();
 
             for (int i = 0; i < n; ++i)
             {
                 ImGui::PushID(i);
-                if (i % k_columns != 0)
+                if (i == first_weapon)
+                    ImGui::Dummy(ImVec2(0.f, 2.f));
+                if ((i < first_weapon ? i : i - first_weapon) % k_columns != 0)
                     ImGui::SameLine(0.f, static_cast<float>(gap));
                 const ImVec2 pos = ImGui::GetCursorScreenPos();
                 ImGui::InvisibleButton("##slot", ImVec2(static_cast<float>(size), static_cast<float>(size)));
@@ -582,8 +647,16 @@ namespace hud
                 draw_slot(ImGui::GetWindowDrawList(), static_cast<int>(pos.x), static_cast<int>(pos.y), size, stack,
                           i == inventory.selected(), hovered, 0);
                 if (hovered && !stack.empty())
-                    nc::SetItemTooltip("%s\n%s\nWeight: %.1f", stack.def->name, stack.def->description,
-                                       stack.def->weight);
+                {
+                    if (!stack.weapon.melee.empty())
+                        nc::SetItemTooltip("%s (%s)\nWeight: %.1f", stack.def->name, stack.weapon.melee.c_str(), stack.def->weight);
+                    else if (stack.def->weapon() && stack.weapon.clip >= 0)
+                        nc::SetItemTooltip("%s\nRounds: %d / %d\nWeight: %.1f", stack.def->name, stack.weapon.clip,
+                                           std::max(0, stack.weapon.ammo), stack.def->weight);
+                    else
+                        nc::SetItemTooltip("%s\n%s\nWeight: %.1f", stack.def->name, stack.def->description,
+                                           stack.def->weight);
+                }
                 ImGui::PopID();
             }
 
@@ -692,6 +765,12 @@ namespace hud
                 if (nc::InputInt("Slots:", &slots, 1, 4))
                 {
                     cfg.slots = slots < 1 ? 1 : (slots > 24 ? 24 : slots);
+                    changed = true;
+                }
+                int weapon_slots = cfg.weapon_slots;
+                if (nc::InputInt("Weapon slots:", &weapon_slots, 1, 2))
+                {
+                    cfg.weapon_slots = weapon_slots < 0 ? 0 : (weapon_slots > 8 ? 8 : weapon_slots);
                     changed = true;
                 }
                 if (nc::InputFloat("Max weight:", &cfg.max_weight, 1.f, 5.f, "%.1f"))

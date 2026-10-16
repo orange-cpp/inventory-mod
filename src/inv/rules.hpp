@@ -4,6 +4,7 @@
 //
 //   [limits]
 //   slots = 8
+//   weapon_slots = 2           # boxes for stored guns and melee weapons
 //   max_weight = 20.0          # 0: no weight limit
 //
 //   [weight]                   # per item or weapon; "weapon_" may be left out
@@ -26,6 +27,7 @@ namespace inv
     {
         std::optional<int> slots;
         std::optional<float> max_weight;
+        std::optional<int> weapon_slots;
         int items_changed = 0; // weights and stack sizes set
         std::vector<std::string> errors; // "line 3: ..."
     };
