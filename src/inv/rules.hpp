@@ -52,6 +52,7 @@ namespace inv
     //   specials = ["smoker", "boomer", "hunter", "spitter", "jockey", "charger"]   # what may rise
     //   bots = false                 # the survivor bots too
     //   no_cure = true               # pain pills only put the clock back to the start (false: they cure)
+    //   cough = true                 # the infected cough now and then, more often as the clock runs out
     struct InfectionRules
     {
         bool enabled = false;
@@ -60,6 +61,7 @@ namespace inv
         std::vector<int> specials{1, 2, 3, 4, 5, 6}; // the game's zombie classes: 1 smoker ... 6 charger
         bool bots = false;
         bool no_cure = true;
+        bool cough = true;
     };
     // The last apply_rules' [infection] (the defaults, disabled, without one).
     const InfectionRules& infection_rules();

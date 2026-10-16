@@ -269,6 +269,22 @@ thump, the ring) is scaled by the `volume` ConVar itself: `0x1044A560`, register
 game: 0.12, as in cfg/config.cfg. The scream goes over the game's mix (at 0.6) through a soft limiter above 0.8. The game's sounds are loose files:
 `left4dead2/sound/npc/witch/voice/mad/female_ls_d_madscream01.wav` is 16-bit mono 44100 Hz PCM.
 
+### Coughing
+
+The server makes each infected survivor cough (`[infection] cough`): the wait is drawn from 26 s down to 4 s as the
+clock runs out (60 .. 140 % of that, at least 2.5 s), checked in the GameFrame hook. The cough is one VScript line
+through the `script` handler: `GetPlayerFromUserID(id)`, `GetModelName()` (survivor_coach.mdl ...), one of the
+survivor's soundscripts, `PrecacheScriptSound`, `EmitSoundOn` (all in server.dll 2.2.4.3). The soundscripts, from
+scripts/game_sounds_<survivor>.txt ("[Coughing from smoke]"): `Coach_Cough01..08`, `Gambler_Cough01..04`,
+`Mechanic_Cough01..04`, `Producer_Cough01..07`, `Player.Biker_Cough01..07`, `Player.Manager_Cough01..05`,
+`Player.NamVet_Cough01..06`, `Player.TeenGirl_Cough01..06` (Zoey's model is survivor_teenangst). Seen in the game: Nick
+coughed `Gambler_Cough02`, then `Gambler_Cough04` (written by a StringToFile after EmitSoundOn).
+
+The `script` console command is a cheat ("Can't use cheat command script in multiplayer"), its handler is not: the
+mod calls the handler. A script line is at most 480 characters there (the mod's CCommand), and an `::InvCough <-
+function` defined by one line was missing ("the index 'InvCough' does not exist") for the next, so the cough is one
+line with a try / catch; an error goes to left4dead2/ems/inv_cough_error.txt.
+
 ### The screamer
 
 The server's `turn` sends `@inf@ 0 0 1` (the third number: turned now; older clients read only two), or sets the

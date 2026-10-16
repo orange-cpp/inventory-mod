@@ -79,3 +79,4 @@ hit_seconds = 20       # what each new grab / vomit / knock-down takes off a run
 specials = ["smoker", "boomer", "hunter", "spitter", "jockey", "charger"]   # what may rise
 bots = false           # the survivor bots too
 no_cure = true         # pain pills only put the clock back to the start (false: they cure)
+cough = true           # the infected cough now and then (everyone hears it), more often as the clock runs out

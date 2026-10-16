@@ -310,6 +310,9 @@ molotov = 1
         CHECK(inv::infection_rules().bots && inv::infection_rules().specials == std::vector<int>({3, 6}));
         CHECK(inv::infection_rules().no_cure); // the default: pills only reset the clock
         CHECK(inv::apply_rules("[infection]\nno_cure = false\n").errors.empty() && !inv::infection_rules().no_cure);
+        CHECK(inv::infection_rules().cough); // the default
+        CHECK(inv::apply_rules("[infection]\ncough = false\n").errors.empty() && !inv::infection_rules().cough);
+        CHECK(!inv::apply_rules("[infection]\ncough = 3\n").errors.empty());
         CHECK(!inv::apply_rules("[infection]\nenabled = false\n").errors.size() && !inv::infection_rules().enabled);
         inv::apply_rules("");
 

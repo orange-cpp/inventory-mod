@@ -60,10 +60,10 @@ namespace inv
                     else
                         infection.hit_seconds = static_cast<int>(*n);
                 }
-                else if (key == "bots" || key == "no_cure")
+                else if (key == "bots" || key == "no_cure" || key == "cough")
                 {
-                    if (const auto on = node.value<bool>())
-                        (key == "bots" ? infection.bots : infection.no_cure) = *on;
+                    if (const auto on = node.value_exact<bool>()) // (value<bool> would take 3 as true)
+                        (key == "bots" ? infection.bots : key == "no_cure" ? infection.no_cure : infection.cough) = *on;
                     else
                         rules.errors.push_back(at_line(node, "infection." + std::string(key.str()) + " must be true or false"));
                 }

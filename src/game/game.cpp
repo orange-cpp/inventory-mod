@@ -40,6 +40,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -1657,6 +1658,7 @@ namespace game
         {
             ULONGLONG until = 0;
             int total_ms = 0;
+            ULONGLONG next_cough = 0; // [infection] cough
         };
         std::map<int, Infection> g_infections; // by userid
         std::vector<int> g_no_rescue; // userids that died of it: no defibrillator, no rescue closet before the next chapter
@@ -1772,6 +1774,8 @@ namespace game
                 mem::guarded([&] { g_client_printf(g_engine_server, edict, line); });
         }
 
+        ULONGLONG cough_delay(float severity);
+
         void infect(void* player, const char* how)
         {
             const inv::InfectionRules& rules = inv::infection_rules();
@@ -1796,6 +1800,7 @@ namespace game
             {
                 infection.total_ms = rules.seconds * 1000;
                 infection.until = now + static_cast<ULONGLONG>(infection.total_ms);
+                infection.next_cough = now + cough_delay(0.f);
                 INV_LOG("infection: userid %d infected (%s), %d s", user_id, how, rules.seconds);
             }
             else
@@ -1824,6 +1829,46 @@ namespace game
             g_infections.erase(it);
             INV_LOG("infection: userid %d cured (%s)", user_id, how);
             tell_infection(player, nullptr);
+        }
+
+        // How bad it is: 0 just infected .. 1 turning.
+        float severity_of(const Infection& infection, ULONGLONG now)
+        {
+            if (infection.total_ms <= 0 || infection.until <= now)
+                return 1.f;
+            return std::clamp(1.f - static_cast<float>(infection.until - now) / static_cast<float>(infection.total_ms), 0.f, 1.f);
+        }
+
+        // The infected cough now and then, more often as the clock runs out: about every 26 s at first, every 4 s at
+        // the end, each wait 60 .. 140 % of that.
+        ULONGLONG cough_delay(float severity)
+        {
+            static std::minstd_rand random(static_cast<unsigned>(GetTickCount64()));
+            const float mean = 26.f - 22.f * severity;
+            const float spread = 0.6f + 0.8f * static_cast<float>(random() % 1000u) / 1000.f;
+            return static_cast<ULONGLONG>(std::max(2.5f, mean * spread) * 1000.f);
+        }
+
+        // One of the survivor's own coughs (the soundscripts they cough with in smoke), played on them for everyone to
+        // hear.  The survivor is told apart by their model: survivor_coach.mdl -> Coach_Cough01..08, the L4D1 four's
+        // entries start with "Player.".  (VScript: GetPlayerFromUserID, GetModelName, PrecacheScriptSound, EmitSoundOn,
+        // all in server.dll 2.2.4.3.)  One script line (run_script takes at most 480 characters; a function defined
+        // with "::name <- function" by one line was not there for the next, so it is all in one).  An error is written
+        // to left4dead2/ems/inv_cough_error.txt.
+        void cough(int user_id)
+        {
+            char code[512];
+            const int n = std::snprintf(
+                code, sizeof(code),
+                "try{local p=GetPlayerFromUserID(%d);if(p){local m=p.GetModelName();"
+                "foreach(s in [[\"coac\",\"Coach\",8],[\"gamb\",\"Gambler\",4],[\"mech\",\"Mechanic\",4],[\"prod\",\"Producer\",7],"
+                "[\"bike\",\"Player.Biker\",7],[\"mana\",\"Player.Manager\",5],[\"namv\",\"Player.NamVet\",6],"
+                "[\"teen\",\"Player.TeenGirl\",6]])if(m.find(s[0])!=null){local n=s[1]+\"_Cough0\"+RandomInt(1,s[2]);"
+                "p.PrecacheScriptSound(n);EmitSoundOn(n,p);break;}}}"
+                "catch(e){StringToFile(\"inv_cough_error.txt\",\"\"+e)}",
+                user_id);
+            if (n <= 0 || n >= 480 || !run_script(code))
+                INV_LOG("infection: userid %d could not cough (the script failed)", user_id);
         }
 
         // The clock ran out: the survivor dies and a random special rises where they stood.
@@ -1973,9 +2018,24 @@ namespace game
             const ULONGLONG now = GetTickCount64();
             mem::guarded([&] {
                 std::vector<int> due;
-                for (const auto& [user_id, infection] : g_infections)
+                for (auto& [user_id, infection] : g_infections)
+                {
                     if (infection.until <= now)
+                    {
                         due.push_back(user_id);
+                        continue;
+                    }
+                    if (!inv::infection_rules().cough || infection.next_cough > now)
+                        continue;
+                    const float severity = severity_of(infection, now);
+                    infection.next_cough = now + cough_delay(severity);
+                    if (void* player = player_by_user_id(user_id); player != nullptr && alive(player))
+                    {
+                        cough(user_id);
+                        INV_LOG("infection: userid %d coughs (%.0f%%, the next in %llu s)", user_id, severity * 100.f,
+                                (infection.next_cough - now) / 1000);
+                    }
+                }
                 for (const int user_id : due)
                 {
                     void* player = player_by_user_id(user_id);

@@ -84,7 +84,8 @@ sees it. A shader over the game's picture (and the mod's own boxes, wheel and wi
 the edges blur and split into red and blue, the colour drains to a sick yellow green, dark veins creep in from the
 edges, the vignette closes in, then double vision and dimming near the end and a red beat in the last ten seconds.
 (It needs Windows' `d3dcompiler_47.dll`; without it a plain green tint and vignette.) `bots = true` infects the
-survivor bots too. The window's Debug tab has "Infect me" to try it and a preview slider for the effect alone. (In co-op the round is lost when every human player is dead, so playing alone, turning ends the round.)
+survivor bots too. With `cough = true` (the default) an infected survivor coughs now and then with their own voice
+(the coughs they use in smoke), heard by everyone around: about every 26 s at first, every 4 s near the end. The window's Debug tab has "Infect me" to try it and a preview slider for the effect alone. (In co-op the round is lost when every human player is dead, so playing alone, turning ends the round.)
 
 The sound goes too: the game's own mix gets more muffled and warped (its pitch bends up and down), a heartbeat thumps
 under it in time with the picture, the ears ring past a third of the way and the sound crushes near the end. When the
