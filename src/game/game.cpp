@@ -83,6 +83,11 @@ namespace game
         constexpr std::uintptr_t k_off_ammo_type = 0x140C; // CBaseCombatWeapon::m_iPrimaryAmmoType
         constexpr std::uintptr_t k_off_extra_ammo = 0x14F4; // CTerrorGun::m_iExtraPrimaryAmmo: a gun's reserve while it lies
         constexpr std::uintptr_t k_off_player_ammo = 0x1874; // CBasePlayer::m_iAmmo[32]: the reserve of each ammo type
+        // A gun's upgrades (SendProps: push 0x17E0 / "m_upgradeBitVec" in CTerrorGun's table; push 0x1788 /
+        // "m_nUpgradedPrimaryAmmoLoaded" in CTerrorWeapon's LocalL4DWeaponData): 1 incendiary, 2 explosive, 4 laser
+        // sight, and the incendiary / explosive rounds still loaded.
+        constexpr std::uintptr_t k_off_upgrades = 0x17E0;
+        constexpr std::uintptr_t k_off_special_loaded = 0x1788;
         // CTerrorMeleeWeapon::m_strMapSetScriptName (datamap entry 0x107BDF20: FIELD_STRING, keyvalue
         // "melee_script_name"): which melee weapon it is, "fireaxe", "katana" ...
         constexpr std::uintptr_t k_off_melee_name = 0x17E0;
@@ -264,6 +269,27 @@ namespace game
 
         // What `weapon` is in: its magazine, and for a gun lying in the world the reserve it carries (-1: none, or a
         // fresh gun from the map, which has 0 there).  A carried gun's reserve is the player's, so not part of it.
+        // A gun (CTerrorGun): not the melee weapon or the chainsaw.
+        bool is_gun(const inv::ItemDef& def)
+        {
+            return def.weapon() && std::strcmp(def.classname, "weapon_melee") != 0 && std::strcmp(def.classname, "weapon_chainsaw") != 0;
+        }
+
+        void state_changed(void* entity); // see "stamina"
+
+        // A gun's upgrades and special rounds onto `weapon` (one just given, or dropped into the world).
+        void write_upgrades(void* weapon, const inv::ItemDef& def, const inv::WeaponState& state)
+        {
+            if (!is_gun(def) || (state.upgrades == 0 && state.special == 0))
+                return;
+            const auto w = reinterpret_cast<std::uintptr_t>(weapon);
+            if (mem::guarded([&] {
+                    *reinterpret_cast<int*>(w + k_off_upgrades) = state.upgrades;
+                    *reinterpret_cast<int*>(w + k_off_special_loaded) = state.special;
+                }))
+                state_changed(weapon);
+        }
+
         inv::WeaponState weapon_state(void* player, void* weapon, const inv::ItemDef& def, bool carried)
         {
             (void)player;
@@ -279,6 +305,11 @@ namespace game
                 if (const char* melee = is_melee ? mem::read_or<const char*>(w + k_off_melee_name) : nullptr;
                     melee != nullptr && mem::safe_copy(name, melee, sizeof(name) - 1) && name[0] != '\0')
                     state.melee = name;
+                if (is_gun(def))
+                {
+                    state.upgrades = mem::read_or<int>(w + k_off_upgrades, 0) & 7;
+                    state.special = std::max(0, mem::read_or<int>(w + k_off_special_loaded, 0));
+                }
             });
             return state;
         }
@@ -343,7 +374,10 @@ namespace game
                     *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_clip) = state.clip;
             });
             char name[64];
-            add_to_pool(player, classname_of(weapon, name, sizeof(name)) ? name : nullptr, ammo_type_of(weapon), state.ammo);
+            const bool named = classname_of(weapon, name, sizeof(name));
+            if (const inv::ItemDef* def = named ? inv::find_item(name) : nullptr)
+                write_upgrades(weapon, *def, state); // incendiary / explosive rounds, laser sight
+            add_to_pool(player, named ? name : nullptr, ammo_type_of(weapon), state.ammo);
         }
 
         // What GiveNamedItem gets for a stored weapon: a melee weapon by its script name (as `give fireaxe` does).
@@ -452,8 +486,8 @@ namespace game
                 return -1;
             }
             mem::guarded([&] { g.util_remove(weapon); });
-            INV_LOG("stored %s (%s) into box %d: magazine %d (the reserve stays with the player)", def.classname,
-                    state.melee.c_str(), box, state.clip);
+            INV_LOG("stored %s (%s) into box %d: magazine %d, upgrades %d, %d special rounds (the reserve stays with the player)",
+                    def.classname, state.melee.c_str(), box, state.clip, state.upgrades, state.special);
             return box;
         }
 
@@ -562,6 +596,10 @@ namespace game
                 return;
             }
             apply_weapon_state(player, given, state);
+            if (state.upgrades != 0 || state.special != 0)
+                INV_LOG("upgrades back on %s: %d (now %d), %d special rounds (now %d)", given_def->classname, state.upgrades,
+                        mem::read_or<int>(reinterpret_cast<std::uintptr_t>(given) + k_off_upgrades),
+                        state.special, mem::read_or<int>(reinterpret_cast<std::uintptr_t>(given) + k_off_special_loaded));
             do_select_weapon(given_def->classname);
             notify(std::string("Equipped ") + (state.melee.empty() ? def->name : state.melee));
         }
@@ -833,6 +871,7 @@ namespace game
                             std::strstr(def->classname, "pistol") == nullptr)
                             *reinterpret_cast<int*>(e + k_off_extra_ammo) = state.ammo;
                     }
+                    write_upgrades(entity, *def, state);
                 });
                 if (!ok || entity == nullptr)
                 {
@@ -1431,7 +1470,8 @@ namespace game
                             (stack.held ? '1' : '0');
                     if (stack.def->weapon()) // a weapon's rounds and kind, as in the save file
                         line += ' ' + std::to_string(stack.weapon.clip) + ' ' + std::to_string(stack.weapon.ammo) + ' ' +
-                                (stack.weapon.melee.empty() ? std::string("-") : stack.weapon.melee);
+                                (stack.weapon.melee.empty() ? std::string("-") : stack.weapon.melee) + ' ' +
+                                std::to_string(stack.weapon.upgrades) + ' ' + std::to_string(stack.weapon.special);
                     line += ',';
                 }
                 line += '|';
@@ -2809,14 +2849,15 @@ namespace game
                 char name[64] = {};
                 inv::WeaponState state;
                 char melee[64] = {};
-                const int read = std::sscanf(parts[1].substr(start, comma - start).c_str(), "%d %63s %d %d %d %d %63s",
-                                             &index, name, &count, &held, &state.clip, &state.ammo, melee);
+                const int read = std::sscanf(parts[1].substr(start, comma - start).c_str(), "%d %63s %d %d %d %d %63s %d %d",
+                                             &index, name, &count, &held, &state.clip, &state.ammo, melee, &state.upgrades,
+                                             &state.special);
                 if (read >= 4)
                     if (const inv::ItemDef* def = inv::find_item(name))
                     {
                         if (def->weapon())
                         {
-                            if (read == 7 && std::strcmp(melee, "-") != 0)
+                            if (read >= 7 && std::strcmp(melee, "-") != 0)
                                 state.melee = melee;
                             inventory.add_weapon(*def, state, index);
                         }

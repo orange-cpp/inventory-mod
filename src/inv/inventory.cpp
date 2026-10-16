@@ -318,7 +318,8 @@ namespace inv
             out += std::to_string(i) + ' ' + s.def->classname + ' ' + std::to_string(s.count);
             if (s.def->weapon())
                 out += ' ' + std::to_string(s.weapon.clip) + ' ' + std::to_string(s.weapon.ammo) + ' ' +
-                       (s.weapon.melee.empty() ? std::string("-") : s.weapon.melee);
+                       (s.weapon.melee.empty() ? std::string("-") : s.weapon.melee) + ' ' + std::to_string(s.weapon.upgrades) +
+                       ' ' + std::to_string(s.weapon.special);
             out += '\n';
         }
         return out;
@@ -363,6 +364,11 @@ namespace inv
                 const std::string_view melee = next_token(line);
                 if (!melee.empty() && melee != "-")
                     stack.weapon.melee = std::string(melee);
+                int upgrades = 0, special = 0;
+                if (parse_int(next_token(line), upgrades) && upgrades >= 0)
+                    stack.weapon.upgrades = upgrades;
+                if (parse_int(next_token(line), special) && special >= 0)
+                    stack.weapon.special = special;
             }
             // the right kind of box at that number, else (a weapon in an item box, a box number past the end) later
             const bool fits = index >= 0 && index < total_slots() && (index >= slot_count()) == def->weapon() &&

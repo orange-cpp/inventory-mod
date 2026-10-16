@@ -436,13 +436,18 @@ boxes), 26.7 units apart from where the panel's throwable box began, and moves t
 | `m_iAmmo[32]` | player `+0x1874` (`0x1016CE1D`): a carried gun's reserve is the player's count of its ammo type |
 | `m_iExtraPrimaryAmmo` | `CTerrorGun` `+0x14F4` (`0x1024F100`, datamap entry `0x107A4160`): the reserve a gun lying in the world carries. A gun the map placed has 0 there (the game gives its own amount on pick-up), so 0 reads as "the game's amount" |
 | `m_strMapSetScriptName` | `CTerrorMeleeWeapon` `+0x17E0`, FIELD_STRING (a `const char*`), datamap entry `0x107BDF20` with the keyvalue name `"melee_script_name"`: which melee weapon (`fireaxe`, `katana`, ...; `scripts/melee/*.txt`) |
+| `m_upgradeBitVec` | `CTerrorGun` `+0x17E0` (`0x103E724F`: `push 0x17E0 / push "m_upgradeBitVec"`, beside `m_hasDualWeapons` `0x17DD`): 1 incendiary ammo, 2 explosive ammo, 4 laser sight (the game tests its low byte). The same offset is the melee weapon's script name, so it is read and written for guns only (not `weapon_melee` or `weapon_chainsaw`) |
+| `m_nUpgradedPrimaryAmmoLoaded` | `CTerrorWeapon` `+0x1788` (`0x103ED099`, in `LocalL4DWeaponData`; an int, read with `mov eax, [ecx+0x1788]`): the incendiary / explosive rounds still loaded |
 
 The reserve is the player's `m_iAmmo` of each type, shared by the guns of that type as in the game; a stored gun
 keeps only its magazine. Storing a carried weapon: read the clip (and the melee name), then the quiet `Weapon_Drop` and
 `UTIL_Remove` (as `swap_out`), with `m_iAmmo[32]` copied before and written back after (whatever the drop does to it).
 Taking one out: what is in that game slot is stored the same way into the box being emptied, then `GiveNamedItem` with
 the classname, or a melee weapon's script name (as `give fireaxe` does), again with `m_iAmmo` put back as it was (a
-given gun would bring the game's own amount), and the stored clip is written onto the new weapon. A gun stored from the
+given gun would bring the game's own amount), and the stored clip is written onto the new weapon, with its upgrades and
+special rounds (then the edict is marked changed, see "Stamina", so the client sees them). Seen in the game: a Combat
+Rifle stored with incendiary ammo (upgrade 1, 60 rounds) came back with both, fired down to 57, and kept 57 through
+another switch. A gun dropped from a box gets them written the same way (not yet seen in the game). A gun stored from the
 ground (pick-up key, E with the slot taken) adds its `m_iExtraPrimaryAmmo` to the player's reserve of its type (not
 capped at the type's maximum, `inv::ammo_max`); a gun saved before the shared reserves still carries one, which joins the player's
 when it is taken out. Dropping one:

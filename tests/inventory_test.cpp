@@ -212,7 +212,7 @@ namespace
         inv::Inventory inventory({.slots = 2, .weapon_slots = 3});
         CHECK(inventory.slot_count() == 2 && inventory.first_weapon_slot() == 2 && inventory.total_slots() == 5);
         CHECK(inventory.add_weapon(ak, {.clip = 17, .ammo = 240}) == 2);
-        CHECK(inventory.add_weapon(ak, {.clip = 40, .ammo = 0}) == 3); // one per box: a second AK gets its own
+        CHECK(inventory.add_weapon(ak, {.clip = 40, .ammo = 0, .upgrades = 1 | 4, .special = 33}) == 3); // one per box: a second AK gets its own
         CHECK(inventory.add_weapon(melee, {.melee = "katana"}, 3) == -1); // box 3 is taken
         CHECK(inventory.add_weapon(melee, {.melee = "katana"}, 0) == -1); // an item box
         CHECK(inventory.add_weapon(melee, {.melee = "katana"}) == 4);
@@ -225,13 +225,15 @@ namespace
         inv::Inventory copy({.slots = 2, .weapon_slots = 3});
         CHECK(copy.from_text(inventory.to_text()));
         CHECK(copy.slot(3).def == &ak && copy.slot(3).weapon.clip == 40 && copy.slot(3).weapon.ammo == 0);
+        CHECK(copy.slot(3).weapon.upgrades == 5 && copy.slot(3).weapon.special == 33); // incendiary + laser, 33 loaded
+        CHECK(copy.slot(2).weapon.upgrades == 0 && copy.slot(2).weapon.special == 0);
         CHECK(copy.slot(4).def == &melee && copy.slot(4).weapon.melee == "katana" && copy.slot(4).weapon.clip == -1);
 
         // a file from before the weapon boxes, with a weapon in an item box: it moves into a weapon box
         inv::Inventory old({.slots = 2, .weapon_slots = 1});
         CHECK(old.from_text("inventory 1\n0 weapon_shotgun_chrome 1 8 51 -\n1 weapon_pain_pills 2\n"));
         CHECK(old.slot(0).empty() && old.slot(1).count == 2 && old.slot(2).def == &item("weapon_shotgun_chrome") &&
-              old.slot(2).weapon.ammo == 51);
+              old.slot(2).weapon.ammo == 51 && old.slot(2).weapon.upgrades == 0); // (from before the upgrades)
 
         CHECK(inventory.remove_from_slot(2, 1) == 1 && inventory.slot(2).empty() && inventory.slot(2).weapon.clip == -1);
         CHECK(inventory.move(4, 2) && inventory.slot(2).weapon.melee == "katana"); // the state moves with it

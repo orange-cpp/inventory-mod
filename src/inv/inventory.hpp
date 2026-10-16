@@ -18,6 +18,10 @@ namespace inv
         int clip = -1; // rounds in the magazine; -1: as the game gives it
         int ammo = -1; // rounds in reserve; -1: as the game gives it
         std::string melee; // weapon_melee's script name ("fireaxe", "katana" ...); empty for a gun
+        // A gun's upgrades (the game's m_upgradeBitVec: 1 incendiary ammo, 2 explosive ammo, 4 laser sight) and how many
+        // of the incendiary / explosive rounds are still loaded.
+        int upgrades = 0;
+        int special = 0;
     };
 
     struct Stack
@@ -141,7 +145,8 @@ namespace inv
         }
 
         // "inventory 1" then one "<slot> <classname> <count>" line per occupied slot; a weapon's line goes on with
-        // "<clip> <ammo> <melee script name or ->".  Reading puts what is in the wrong kind of box (a weapon in an
+        // "<clip> <ammo> <melee script name or -> <upgrades> <special rounds>" (files from before the upgrades end at the
+        // melee name).  Reading puts what is in the wrong kind of box (a weapon in an
         // item box: files from before the weapon boxes) into a free box of its kind.
         std::string to_text() const;
         // Replaces the contents.  Unknown items are skipped; a box number past the end goes into a free box of its kind
