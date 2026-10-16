@@ -733,6 +733,90 @@ namespace hud
                 dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 20, 10, static_cast<int>(60.f * pulse * last)));
         }
 
+        // ---- stamina ------------------------------------------------------------------------------------------------
+        //
+        // Session::stamina (the server's [stamina]): a thin bar under the crosshair while it is not full (it fades a
+        // moment after it is full again; orange when low, red and pulsing while exhausted), and the vignette of
+        // postfx.cpp (the edges darken from half down; while exhausted they close in and pulse with each gasp).
+        // Without the shader the HUD darkens the edges itself.  The settings' [stamina] turns either off.
+        bool g_stamina_preview = false; // the Debug tab's preview
+        float g_stamina_preview_value = 0.3f;
+        bool g_stamina_preview_exhausted = false;
+        float g_stamina_shown = 1.f; // eased toward the server's value (it comes ten times a second)
+        float g_stamina_alpha = 0.f; // the bar's
+        float g_stamina_exhausted = 0.f; // eased 0 .. 1
+        ULONGLONG g_stamina_tick = 0;
+        ULONGLONG g_stamina_full_since = 0;
+
+        void draw_stamina(const game::Session& session)
+        {
+            const ULONGLONG now = GetTickCount64();
+            const float dt = g_stamina_tick != 0 && now - g_stamina_tick < 250 ? static_cast<float>(now - g_stamina_tick) / 1000.f : 0.f;
+            g_stamina_tick = now;
+            float value = session.stamina;
+            bool exhausted = session.stamina_exhausted;
+            if (g_stamina_preview)
+            {
+                value = g_stamina_preview_value;
+                exhausted = g_stamina_preview_exhausted;
+            }
+            if (value < 0.f)
+            {
+                g_stamina_shown = 1.f;
+                g_stamina_alpha = g_stamina_exhausted = 0.f;
+                return;
+            }
+            g_stamina_shown += (value - g_stamina_shown) * std::min(1.f, dt * 12.f);
+            g_stamina_exhausted = exhausted ? std::min(1.f, g_stamina_exhausted + dt / 0.4f) : std::max(0.f, g_stamina_exhausted - dt / 0.8f);
+            if (value < 0.999f)
+                g_stamina_full_since = 0;
+            else if (g_stamina_full_since == 0)
+                g_stamina_full_since = now;
+            const bool show = g_stamina_full_since == 0 || now - g_stamina_full_since < 1200;
+            g_stamina_alpha = show ? std::min(1.f, g_stamina_alpha + dt * 6.f) : std::max(0.f, g_stamina_alpha - dt * 2.f);
+
+            const core::Config& cfg = core::config();
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            // the gasps for air: about 50 a minute
+            const float t = static_cast<float>(now % 1000000ULL) / 1000.f;
+            const float breath = 0.5f - 0.5f * std::cos(t * 6.2831853f * 0.85f);
+            const float tired = std::clamp((0.5f - g_stamina_shown) / 0.5f, 0.f, 1.f);
+            if (cfg.stamina_vignette && (tired > 0.f || g_stamina_exhausted > 0.f))
+            {
+                if (postfx::stamina_ready())
+                    postfx::set_stamina(tired, g_stamina_exhausted, breath);
+                else
+                {
+                    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+                    const float depth = (0.12f + 0.16f * tired + 0.06f * g_stamina_exhausted * breath) * std::min(display.x, display.y);
+                    const int edge = static_cast<int>(std::clamp(120.f * tired + 70.f * g_stamina_exhausted * (0.6f + 0.4f * breath), 0.f, 220.f));
+                    const ImU32 dark = IM_COL32(0, 0, 0, edge), clear = IM_COL32(0, 0, 0, 0);
+                    dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(display.x, depth), dark, dark, clear, clear);
+                    dl->AddRectFilledMultiColor(ImVec2(0.f, display.y - depth), display, clear, clear, dark, dark);
+                    dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(depth, display.y), dark, clear, clear, dark);
+                    dl->AddRectFilledMultiColor(ImVec2(display.x - depth, 0.f), display, clear, dark, dark, clear);
+                }
+            }
+            if (cfg.stamina_bar && g_stamina_alpha > 0.01f)
+            {
+                ImDrawList* dl = ImGui::GetBackgroundDrawList();
+                const float scale = cfg.hud_scale * std::max(1.f, display.y / 900.f);
+                const float w = std::round(150.f * scale), h = std::max(3.f, std::round(5.f * scale));
+                const float x0 = std::round((display.x - w) * 0.5f), y0 = std::round(display.y * 0.5f + 70.f * scale);
+                const float a = g_stamina_alpha;
+                dl->AddRectFilled(ImVec2(x0 - 1.f, y0 - 1.f), ImVec2(x0 + w + 1.f, y0 + h + 1.f),
+                                  IM_COL32(0, 0, 0, static_cast<int>(120.f * a)), h * 0.5f);
+                ImU32 color = IM_COL32(235, 235, 225, static_cast<int>(210.f * a));
+                if (exhausted)
+                    color = IM_COL32(225, 45, 30, static_cast<int>(255.f * a * (0.55f + 0.45f * breath)));
+                else if (g_stamina_shown < 0.3f)
+                    color = IM_COL32(240, 150, 40, static_cast<int>(230.f * a));
+                const float fill = std::clamp(g_stamina_shown, 0.f, 1.f) * w;
+                if (fill >= 1.f)
+                    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + fill, y0 + h), color, h * 0.5f);
+            }
+        }
+
         // ---- the screamer -------------------------------------------------------------------------------------------
         //
         // When the clock runs out (Session::infection_turned_at): the settings' picture over everything for a moment,
@@ -1142,6 +1226,12 @@ namespace hud
                 nc::Checkbox("Preview the infection effect", &g_infection_preview);
                 if (g_infection_preview)
                     nc::SliderFloat("Infection:", &g_infection_preview_severity, 0.f, 1.f, "%.2f");
+                nc::Checkbox("Preview the stamina bar and vignette", &g_stamina_preview);
+                if (g_stamina_preview)
+                {
+                    nc::SliderFloat("Stamina:", &g_stamina_preview_value, 0.f, 1.f, "%.2f");
+                    nc::Checkbox("Exhausted", &g_stamina_preview_exhausted);
+                }
             }
             nc::EndGroupBox();
         }
@@ -1185,6 +1275,14 @@ namespace hud
                 changed |= nc::Checkbox("Sound distortion and heartbeat", &cfg.infection_sound);
                 changed |= nc::Checkbox("Screamer when the clock runs out", &cfg.infection_screamer);
                 nc::TextDisabled("The picture and the scream: screamer_image / screamer_sound in inventory_mod_settings.toml.");
+            }
+            nc::EndGroupBox();
+
+            if (nc::BeginGroupBox("Stamina", ImVec2(0, 0)))
+            {
+                changed |= nc::Checkbox("Bar under the crosshair", &cfg.stamina_bar);
+                changed |= nc::Checkbox("Vignette as it runs low", &cfg.stamina_vignette);
+                nc::TextDisabled("Whether there is stamina at all is [stamina] in the host's inventory_mod.toml.");
             }
             nc::EndGroupBox();
 
@@ -1278,6 +1376,8 @@ namespace hud
                 else
                     draw_column(session);
             }
+            if (session.playing || g_stamina_preview)
+                draw_stamina(session);
             if (session.playing || g_infection_preview)
                 draw_infection(session);
             draw_screamer(session);

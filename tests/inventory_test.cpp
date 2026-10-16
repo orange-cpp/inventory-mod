@@ -316,6 +316,21 @@ molotov = 1
         CHECK(!inv::apply_rules("[infection]\nenabled = false\n").errors.size() && !inv::infection_rules().enabled);
         inv::apply_rules("");
 
+        // [stamina]
+        CHECK(!inv::stamina_rules().enabled);
+        const inv::Rules stamina = inv::apply_rules(
+            "[stamina]\nrun = 5\njump = 20.5\nregen = 30\nslow = 50\ndamage = 25\nbots = true\nsprint = 3\nswing_speed = 5\n");
+        CHECK(stamina.errors.size() == 2); // no "sprint"; swing_speed is at least 10
+        CHECK(inv::stamina_rules().enabled && inv::stamina_rules().run == 5.f && inv::stamina_rules().jump == 20.5f);
+        CHECK(inv::stamina_rules().regen == 30.f && inv::stamina_rules().slow == 50.f && inv::stamina_rules().damage == 25.f);
+        CHECK(inv::stamina_rules().bots && inv::stamina_rules().swing_speed == 60.f); // the default kept
+        CHECK(inv::stamina_rules().swing == 10.f && inv::stamina_rules().recover == 30.f); // the defaults
+        CHECK(!inv::apply_rules("[stamina]\nrun = true\n").errors.empty());
+        CHECK(!inv::apply_rules("[stamina]\nbots = 1\n").errors.empty());
+        CHECK(inv::apply_rules("[stamina]\nenabled = false\n").errors.empty() && !inv::stamina_rules().enabled);
+        inv::apply_rules("");
+        CHECK(!inv::stamina_rules().enabled);
+
         // [ammo]: the most reserve rounds per ammo type
         CHECK(std::string(inv::ammo_kind("weapon_rifle_desert")) == "assaultrifle" && inv::ammo_kind("weapon_melee") == nullptr);
         CHECK(inv::ammo_max("assaultrifle") == 360 && !inv::ammo_max_set("assaultrifle")); // the game's default

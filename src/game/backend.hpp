@@ -55,6 +55,9 @@ namespace game
         ULONGLONG infection_until = 0;
         int infection_total_ms = 0;
         ULONGLONG infection_turned_at = 0; // the clock ran out (GetTickCount64): the screamer
+        // Stamina ([stamina] in the rules): 0 .. 1, -1 when there is none; exhausted: it ran out and is not back yet.
+        float stamina = -1.f;
+        bool stamina_exhausted = false;
     };
     // The active session: the local player's, or (while the game code serves another player: a dedicated server, or
     // a guest on this listen server) theirs.  The game code uses this one.

@@ -1,5 +1,5 @@
 #pragma once
-// The infection's screen effect: a pixel shader run over the game's finished frame (a copy of the back buffer) before
+// The infection's and the stamina's screen effects: a pixel shader run over the game's finished frame (a copy of the back buffer) before
 // the HUD is drawn.  The shaders are compiled at run time with Windows' d3dcompiler_47.dll; without it (or when a
 // shader does not compile) ready() stays false and the HUD draws a plain tint and vignette instead.
 
@@ -15,6 +15,11 @@ namespace postfx
     // Render thread, while the HUD draws: the effect for this frame.  severity 0 (just infected) .. 1 (turning), beat
     // the heartbeat 0 .. 1, last 0 .. 1 over the clock's last seconds.
     void set_infection(float severity, float beat, float last);
+    // The stamina's vignette (its own shader, run before the infection's): whether it compiled, and this frame's
+    // (render thread, while the HUD draws).  tired 0 (half full or more) .. 1 (empty), exhausted 0 .. 1 (eased in and
+    // out), breath 0 .. 1 (each gasp while exhausted).
+    bool stamina_ready();
+    void set_stamina(float tired, float exhausted, float breath);
     // Render thread, while the HUD draws: the screamer for this frame, drawn over the frame and the HUD before the
     // effect (set_infection) so the effect runs over it too: a black backdrop (its alpha 0 .. 1), the picture over
     // `rect` (x0, y0, x1, y1 in pixels) tinted `color` (0xAARRGGBB), then a red wash and a white flash (their alphas).

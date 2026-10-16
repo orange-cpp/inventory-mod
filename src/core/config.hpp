@@ -43,6 +43,9 @@ namespace core
         std::string screamer_image = "inventory_mod_screamer.jpg"; // next to the DLL, or a full path (PNG, JPEG, BMP)
         // a 16-bit PCM .wav: under the game's left4dead2/sound folder, next to the DLL, or a full path
         std::string screamer_sound = "npc/witch/voice/mad/female_ls_d_madscream01.wav";
+        // How this player's stamina shows (whether there is any is the host's inventory_mod.toml).
+        bool stamina_bar = true; // a bar under the crosshair while it is not full
+        bool stamina_vignette = true; // the screen's edges darken as it runs low (postfx)
         // inventory_mod.toml (the rules) was read: its limits win over the settings' (see rules_load)
         bool rules_file = false;
     };

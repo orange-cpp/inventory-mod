@@ -122,6 +122,39 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
 }
 )";
 
+        // Stamina: the edges darken and lose their colour as it runs low (from half down), and while exhausted they
+        // close in further, blur a little and pulse with each gasp for air.
+        constexpr const char* k_stamina_shader = R"(
+sampler2D frame : register(s0);
+float4 p0 : register(c0); // time (s), tired (0 at half .. 1 empty), exhausted (0 .. 1, eased), breath (0 .. 1)
+float4 p1 : register(c1); // 1 / width, 1 / height, width / height, 0
+
+float4 main(float2 uv : TEXCOORD0) : COLOR
+{
+    float k = p0.y, ex = p0.z, breath = p0.w, aspect = p1.z;
+    float e = length(uv - 0.5) * 2.0; // 0 in the middle, 1 at the middle of an edge
+    float2 suv = 0.5 + (uv - 0.5) * (1.0 - 0.006 * breath * ex); // each gasp pulls the picture in a little
+
+    float edge = saturate((e - 0.45) * 1.8);
+    float blur = 0.0045 * edge * ex;
+    float3 col = tex2Dlod(frame, float4(suv, 0, 0)).rgb * 2.0;
+    [unroll] for (int i = 0; i < 6; ++i)
+    {
+        float a = i * 1.047198;
+        col += tex2Dlod(frame, float4(suv + float2(cos(a) / aspect, sin(a)) * blur, 0, 0)).rgb;
+    }
+    col /= 8.0;
+
+    float inner = 0.95 - 0.40 * k - 0.15 * ex - 0.10 * ex * breath;
+    float vig = smoothstep(inner, inner + 0.8, e);
+    float lum = dot(col, float3(0.299, 0.587, 0.114));
+    col = lerp(col, lum.xxx, saturate(vig * (0.45 * k + 0.35 * ex)));
+    col *= 1.0 - vig * saturate(0.5 * k + 0.35 * ex * (0.6 + 0.4 * breath));
+    col += float3(0.045, 0.0, 0.0) * vig * ex * breath;
+    return float4(saturate(col), 1.0);
+}
+)";
+
         using D3DCompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
                                               LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
 
@@ -133,6 +166,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
 
         IDirect3DVertexShader9* g_vs = nullptr;
         IDirect3DPixelShader9* g_ps = nullptr;
+        IDirect3DPixelShader9* g_ps_stamina = nullptr;
         IDirect3DVertexDeclaration9* g_decl = nullptr;
         IDirect3DDevice9* g_device = nullptr;
         IDirect3DTexture9* g_screamer = nullptr; // managed pool: survives a Reset
@@ -154,6 +188,8 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         };
         Screamer g_screamer_frame; // set_screamer this frame
         float g_severity = 0.f, g_beat = 0.f, g_last = 0.f;
+        bool g_stamina_wanted = false; // set_stamina this frame
+        float g_tired = 0.f, g_exhausted = 0.f, g_breath = 0.f;
 
         template <class T> void release(T*& p)
         {
@@ -311,6 +347,57 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         }
 
+        // The back buffer into g_copy, then g_copy back over it through `ps` (constants c0: p0, c1: the size).
+        void full_screen_pass(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer, IDirect3DPixelShader9* ps,
+                              const float p0[4])
+        {
+            IDirect3DSurface9* copy = nullptr;
+            if (FAILED(g_copy->GetSurfaceLevel(0, &copy)))
+                return;
+            const HRESULT hr = device->StretchRect(back_buffer, nullptr, copy, nullptr, D3DTEXF_NONE);
+            copy->Release();
+            if (FAILED(hr))
+                return;
+
+            // (the overlay's state block puts the game's state back afterwards)
+            const float w = static_cast<float>(g_copy_w), h = static_cast<float>(g_copy_h);
+            D3DVIEWPORT9 viewport{0, 0, g_copy_w, g_copy_h, 0.f, 1.f};
+            device->SetViewport(&viewport);
+            device->SetRenderState(D3DRS_ZENABLE, FALSE);
+            device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+            device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+            device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+            device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+            device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+            device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+            device->SetTexture(0, g_copy);
+            device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+            device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+            device->SetVertexDeclaration(g_decl);
+            device->SetVertexShader(g_vs);
+            device->SetPixelShader(ps);
+            const float half_pixel[4] = {-1.f / w, 1.f / h, 0.f, 0.f};
+            device->SetVertexShaderConstantF(0, half_pixel, 1);
+            const float constants[8] = {p0[0], p0[1], p0[2], p0[3], 1.f / w, 1.f / h, w / h, 0.f};
+            device->SetPixelShaderConstantF(0, constants, 2);
+            const Vertex quad[4] = {
+                {-1.f, 1.f, 0.5f, 1.f, 0.f, 0.f},
+                {1.f, 1.f, 0.5f, 1.f, 1.f, 0.f},
+                {-1.f, -1.f, 0.5f, 1.f, 0.f, 1.f},
+                {1.f, -1.f, 0.5f, 1.f, 1.f, 1.f},
+            };
+            device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
+            device->SetTexture(0, nullptr);
+            device->SetVertexShader(nullptr);
+            device->SetPixelShader(nullptr);
+        }
+
         bool make_copy(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer)
         {
             D3DSURFACE_DESC desc{};
@@ -353,6 +440,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         }
         ID3DBlob* vs = compile(d3d_compile, k_vertex_shader, "vs_3_0");
         ID3DBlob* ps = vs != nullptr ? compile(d3d_compile, k_pixel_shader, "ps_3_0") : nullptr;
+        ID3DBlob* ps_stamina = vs != nullptr ? compile(d3d_compile, k_stamina_shader, "ps_3_0") : nullptr;
         bool ok = vs != nullptr && ps != nullptr &&
                   SUCCEEDED(device->CreateVertexShader(static_cast<const DWORD*>(vs->GetBufferPointer()), &g_vs)) &&
                   SUCCEEDED(device->CreatePixelShader(static_cast<const DWORD*>(ps->GetBufferPointer()), &g_ps));
@@ -365,10 +453,17 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             };
             ok = SUCCEEDED(device->CreateVertexDeclaration(elements, &g_decl));
         }
+        // (without it the stamina's vignette is the HUD's plain one)
+        if (ok && ps_stamina != nullptr &&
+            FAILED(device->CreatePixelShader(static_cast<const DWORD*>(ps_stamina->GetBufferPointer()), &g_ps_stamina)))
+            g_ps_stamina = nullptr;
         if (ps != nullptr)
             INV_LOG("postfx: infection shader ready (%u bytes)", static_cast<unsigned>(ps->GetBufferSize()));
+        if (g_ps_stamina != nullptr)
+            INV_LOG("postfx: stamina shader ready (%u bytes)", static_cast<unsigned>(ps_stamina->GetBufferSize()));
         release(vs);
         release(ps);
+        release(ps_stamina);
         FreeLibrary(compiler);
         if (!ok)
         {
@@ -380,6 +475,16 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
     }
 
     bool ready() { return g_ready; }
+
+    bool stamina_ready() { return g_ready && g_ps_stamina != nullptr; }
+
+    void set_stamina(float tired, float exhausted, float breath)
+    {
+        g_stamina_wanted = true;
+        g_tired = tired;
+        g_exhausted = exhausted;
+        g_breath = breath;
+    }
 
     void set_infection(float severity, float beat, float last)
     {
@@ -406,7 +511,9 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         g_wanted = false;
         const Screamer screamer = g_screamer_frame;
         g_screamer_frame.wanted = false;
-        if (!g_ready || back_buffer == nullptr || (!wanted && !screamer.wanted) || !make_copy(device, back_buffer))
+        const bool stamina = g_stamina_wanted;
+        g_stamina_wanted = false;
+        if (!g_ready || back_buffer == nullptr || (!wanted && !screamer.wanted && !stamina) || !make_copy(device, back_buffer))
             return;
         if (screamer.wanted)
         {
@@ -426,54 +533,18 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             draw_screamer(device, screamer, static_cast<float>(g_copy_w), static_cast<float>(g_copy_h));
         }
-        if (!wanted)
-            return;
-        IDirect3DSurface9* copy = nullptr;
-        if (FAILED(g_copy->GetSurfaceLevel(0, &copy)))
-            return;
-        const HRESULT hr = device->StretchRect(back_buffer, nullptr, copy, nullptr, D3DTEXF_NONE);
-        copy->Release();
-        if (FAILED(hr))
-            return;
-
-        // (the overlay's state block puts the game's state back afterwards)
-        const float w = static_cast<float>(g_copy_w), h = static_cast<float>(g_copy_h);
-        D3DVIEWPORT9 viewport{0, 0, g_copy_w, g_copy_h, 0.f, 1.f};
-        device->SetViewport(&viewport);
-        device->SetRenderState(D3DRS_ZENABLE, FALSE);
-        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-        device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-        device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-        device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-        device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-        device->SetRenderState(D3DRS_FOGENABLE, FALSE);
-        device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-        device->SetTexture(0, g_copy);
-        device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-        device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-        device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-        device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-        device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-        device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
-        device->SetVertexDeclaration(g_decl);
-        device->SetVertexShader(g_vs);
-        device->SetPixelShader(g_ps);
-        const float half_pixel[4] = {-1.f / w, 1.f / h, 0.f, 0.f};
-        device->SetVertexShaderConstantF(0, half_pixel, 1);
         const float time = static_cast<float>(GetTickCount64() % 1000000ULL) / 1000.f;
-        const float constants[8] = {time, g_severity, g_beat, g_last, 1.f / w, 1.f / h, w / h, 0.f};
-        device->SetPixelShaderConstantF(0, constants, 2);
-        const Vertex quad[4] = {
-            {-1.f, 1.f, 0.5f, 1.f, 0.f, 0.f},
-            {1.f, 1.f, 0.5f, 1.f, 1.f, 0.f},
-            {-1.f, -1.f, 0.5f, 1.f, 0.f, 1.f},
-            {1.f, -1.f, 0.5f, 1.f, 1.f, 1.f},
-        };
-        device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
-        device->SetTexture(0, nullptr);
-        device->SetVertexShader(nullptr);
-        device->SetPixelShader(nullptr);
+        // stamina first, so the infection (when there is one too) runs over it
+        if (stamina && g_ps_stamina != nullptr)
+        {
+            const float p0[4] = {time, g_tired, g_exhausted, g_breath};
+            full_screen_pass(device, back_buffer, g_ps_stamina, p0);
+        }
+        if (wanted)
+        {
+            const float p0[4] = {time, g_severity, g_beat, g_last};
+            full_screen_pass(device, back_buffer, g_ps, p0);
+        }
     }
 
     void* screamer_texture(float* aspect)
@@ -495,12 +566,14 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         invalidate();
         release(g_vs);
         release(g_ps);
+        release(g_ps_stamina);
         release(g_decl);
         release(g_screamer);
         g_screamer_path.clear();
         g_device = nullptr;
         g_ready = false;
         g_wanted = false;
+        g_stamina_wanted = false;
     }
 
 } // namespace postfx

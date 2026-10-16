@@ -66,4 +66,39 @@ namespace inv
     // The last apply_rules' [infection] (the defaults, disabled, without one).
     const InfectionRules& infection_rules();
 
+    // [stamina]: running, jumping, melee swings and shoves use stamina (0 .. 100), which comes back after a moment's
+    // rest.  A survivor who runs out is exhausted until it is back to `recover`: slower, slower to swing and shove,
+    // and their melee hits do less damage.
+    //
+    //   [stamina]
+    //   enabled = true
+    //   run = 8                      # used per second of running
+    //   jump = 12                    # per jump
+    //   swing = 10                   # per melee swing
+    //   shove = 8                    # per shove
+    //   regen = 20                   # back per second of rest
+    //   regen_delay = 1.0            # seconds after the last use before it comes back
+    //   recover = 30                 # exhausted until it is back to this much
+    //   slow = 60                    # exhausted: % of the normal speed
+    //   swing_speed = 60             # exhausted: % of the normal swing and shove rate
+    //   damage = 50                  # exhausted: % of the normal melee damage
+    //   bots = false                 # the survivor bots too
+    struct StaminaRules
+    {
+        bool enabled = false;
+        float run = 8.f;
+        float jump = 12.f;
+        float swing = 10.f;
+        float shove = 8.f;
+        float regen = 20.f;
+        float regen_delay = 1.f;
+        float recover = 30.f;
+        float slow = 60.f;
+        float swing_speed = 60.f;
+        float damage = 50.f;
+        bool bots = false;
+    };
+    // The last apply_rules' [stamina] (the defaults, disabled, without one).
+    const StaminaRules& stamina_rules();
+
 } // namespace inv

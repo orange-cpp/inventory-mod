@@ -95,6 +95,21 @@ player chooses for themselves in the Settings tab ("Infection") or under `[infec
 `inventory_mod_screamer.jpg` by default, shipped with the mod) and `screamer_sound` (a 16-bit PCM .wav under the game's
 `left4dead2/sound`, next to the DLL or a full path; the witch's scream by default). The Debug tab has "Screamer (test)".
 
+## Stamina
+
+With `[stamina]` in the host's `inventory_mod.toml` (on in the example): running uses stamina (`run` a second), and so
+do jumps (`jump`), melee swings (`swing`) and shoves (`shove`), out of 100. `regen_delay` seconds after the last use it
+comes back (`regen` a second; half that while an exhausted survivor keeps running). A survivor who runs out is
+exhausted until it is back to `recover`: they move at `slow` % of their speed (on the ground; jumps and falls are not
+slowed), wait longer between swings and shoves (`swing_speed` %), and their melee hits do `damage` % (at 50, a common
+infected takes two hits). While it is on, the game's own shove fatigue (each shove in a row waiting longer) is off:
+stamina is the limit. `bots = true` gives the survivor bots stamina too.
+
+Each player chooses how it shows, in the Settings tab ("Stamina") or under `[stamina]` in `inventory_mod_settings.toml`:
+`bar` (a thin bar under the crosshair while it is not full; orange when low, red and pulsing when exhausted) and
+`vignette` (the screen's edges darken and lose their colour from half down; exhausted, they close in and pulse with
+each gasp). The Debug tab has a preview of both.
+
 ## Keys (all can be rebound in the window's Settings tab)
 
 | Key | Action |

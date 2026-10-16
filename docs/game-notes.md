@@ -294,6 +294,28 @@ pre-transformed quads over the frame and the mod's UI: black backdrop, the pictu
 white flash) before its pass, and the pass runs at severity 0.92
 over it; with the effect off it goes on ImGui's foreground draw list.
 
+## Stamina
+
+Server side, in the GameFrame hook, for each living survivor (see "stamina" in game.cpp). All of it read out of
+server.dll's SendProp / datamap definitions (`push <offset> / push "<name>"`, or the datamap's `mov [..], "<name>" /
+mov [..], <offset>`) and checked in the game:
+
+| What | Where / how |
+|---|---|
+| the game's clock | `PlayerInfoManager002` (`CPlayerInfoManager`, vtable `0x1062EFEC`) slot 1 `GetGlobalVars` `0x101897E0` (`mov eax, [0x107F7690]; ret`). `CGlobalVars::curtime` at +0xC: what most of server.dll reads of it, and what it compares `m_flNextPrimaryAttack` with |
+| on the ground | `CBasePlayer::m_fFlags` +0x13C, `FL_ONGROUND` 1 |
+| running, jumping | `CBaseEntity::m_vecVelocity` +0x2D8 (also `m_vecAbsVelocity` +0x260): running is on the ground faster than 130 (a walk is 85, a run 220, a limp 150); a jump leaves the ground with z above 150 |
+| swings, shoves | the active weapon's `m_flNextPrimaryAttack` +0x13F0 / `m_flNextSecondaryAttack` +0x13F4 moving on. Seen: a shove (pistol or melee) waits 0.77 s and moves both; a melee swing moves both too; a reload moves the secondary a tenth or two (so a shove must be at least 0.4 s out); gunfire only the primary. A shove raises `CTerrorPlayer::m_iShovePenalty` +0x2CF0, a swing does not; `CBasePlayer::m_nButtons` +0x1CB4 (`IN_ATTACK2` 0x800) often misses a quick press |
+| the game's shove fatigue | `m_iShovePenalty` set back to 0 with `SetShovePenalty(int)` `0x102CB750` (thiscall, `cmp [esi+0x2CF0], edi`), which marks the edict changed. Seen: shoves in a row stay at 0.77 s |
+| slower | `CBasePlayer::m_flLaggedMovementValue` +0x20D0, the game's movement speed scale (the client predicts with it). It slows the player's whole movement clock, falls too, so it is set on the ground only; leaving the ground the horizontal velocity is scaled instead |
+| networked writes | a field written by the mod only reaches the players if the entity says it changed: `edict->m_fStateFlags \|= 0x101` (FL_EDICT_CHANGED \| FL_FULL_EDICT_CHANGED) and the change accessor's serial (+2) 0, as `0x100ED4B0` does through `VEngineServer022` slot 97 `GetChangeAccessor(edict)` (the server's own engine pointer `0x107F7698` is the same interface) |
+| less damage | `CBaseEntity::TakeDamage(const CTakeDamageInfo&)` `0x10055C70` (thiscall, `ret 4`, prologue `55 8B EC 83 EC 6C 57 8B F9 8B 0D`; warns "CBaseEntity::TakeDamage:  with inputInfo.GetDamageForce() == vec3_origin"), hooked. `CTakeDamageInfo` is 0x60 bytes (its copy constructor `0x10010140`): `m_hInflictor` +0x30, `m_hAttacker` +0x34 (`GetAttacker` `0x1003D4B0`), `m_hWeapon` +0x38, `m_flDamage` +0x3C, `m_bitsDamageType` +0x48. Seen: a melee hit on a common is weapon and inflictor `weapon_melee`, type `0x80200004`, 50 damage (then a 0 one); exhausted it became 25 and the common took two hits |
+
+Exhausted, the wait for the next swing or shove is stretched (seen: 0.99 s became 1.65 s at `swing_speed = 60`). The
+stamina reaches the player as `@sta@ <per mille, -1: none> <1: exhausted>` (at most ten a second while it changes), or
+straight into the host's session. The HUD draws the bar; postfx runs a second, small pixel shader (1512 bytes) before
+the infection's: the edges darken and lose colour from half down, and while exhausted close in, blur and pulse.
+
 ## Ammo maxima
 
 The most reserve rounds of each type are server.dll's ConVars `ammo_<type>_max` (assaultrifle 360, smg 650, shotgun 72,

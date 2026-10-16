@@ -95,11 +95,66 @@ namespace inv
             }
             g_infection = infection;
         }
+
+        StaminaRules g_stamina;
+
+        // [stamina] (see rules.hpp)
+        void read_stamina(const toml::table& table, Rules& rules)
+        {
+            StaminaRules stamina;
+            stamina.enabled = true; // a table at all switches it on, unless it says otherwise
+            struct Number
+            {
+                const char* key;
+                float StaminaRules::*field;
+                double low, high;
+            };
+            static constexpr Number k_numbers[] = {
+                {"run", &StaminaRules::run, 0, 100},           {"jump", &StaminaRules::jump, 0, 100},
+                {"swing", &StaminaRules::swing, 0, 100},       {"shove", &StaminaRules::shove, 0, 100},
+                {"regen", &StaminaRules::regen, 0, 1000},      {"regen_delay", &StaminaRules::regen_delay, 0, 60},
+                {"recover", &StaminaRules::recover, 0, 100},   {"slow", &StaminaRules::slow, 10, 100},
+                {"swing_speed", &StaminaRules::swing_speed, 10, 100}, {"damage", &StaminaRules::damage, 0, 100},
+            };
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled" || key == "bots")
+                {
+                    if (const auto on = node.value_exact<bool>())
+                        (key == "enabled" ? stamina.enabled : stamina.bots) = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "stamina." + std::string(key.str()) + " must be true or false"));
+                    continue;
+                }
+                const Number* found = nullptr;
+                for (const Number& n : k_numbers)
+                    if (key == n.key)
+                        found = &n;
+                if (found == nullptr)
+                {
+                    rules.errors.push_back(at_line(node, "unknown setting stamina." + std::string(key.str())));
+                    continue;
+                }
+                const auto value = node.is_boolean() ? std::nullopt : number(node);
+                char range[64];
+                std::snprintf(range, sizeof(range), " must be a number from %g to %g", found->low, found->high);
+                if (!value || *value < found->low || *value > found->high)
+                    rules.errors.push_back(at_line(node, "stamina." + std::string(key.str()) + range));
+                else
+                    stamina.*found->field = static_cast<float>(*value);
+            }
+            g_stamina = stamina;
+        }
     } // namespace
 
     const InfectionRules& infection_rules()
     {
         return g_infection;
+    }
+
+    const StaminaRules& stamina_rules()
+    {
+        return g_stamina;
     }
 
     Rules apply_rules(std::string_view text)
@@ -202,8 +257,13 @@ namespace inv
         if (const toml::table* infection = root["infection"].as_table())
             read_infection(*infection, rules);
 
+        g_stamina = StaminaRules{};
+        if (const toml::table* stamina = root["stamina"].as_table())
+            read_stamina(*stamina, rules);
+
         for (const auto& [key, node] : root)
-            if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection")
+            if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection" &&
+                key != "stamina")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
         return rules;
     }

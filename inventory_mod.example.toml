@@ -80,3 +80,20 @@ specials = ["smoker", "boomer", "hunter", "spitter", "jockey", "charger"]   # wh
 bots = false           # the survivor bots too
 no_cure = true         # pain pills only put the clock back to the start (false: they cure)
 cough = true           # the infected cough now and then (everyone hears it), more often as the clock runs out
+
+# Stamina: running, jumping, melee swings and shoves use it (0 .. 100); it comes back after a moment's rest. A survivor
+# who runs out is exhausted until it is back to `recover`: slower, slower to swing and shove, and their melee hits do
+# less damage. How it shows (a bar, a vignette) is each player's inventory_mod_settings.toml.
+[stamina]
+enabled = true
+run = 8                # used per second of running
+jump = 12              # per jump
+swing = 10             # per melee swing
+shove = 8              # per shove
+regen = 20             # back per second of rest
+regen_delay = 1.0      # seconds after the last use before it comes back
+recover = 30           # exhausted until it is back to this much
+slow = 60              # exhausted: % of the normal speed
+swing_speed = 60       # exhausted: % of the normal swing and shove rate
+damage = 50            # exhausted: % of the normal melee damage
+bots = false           # the survivor bots too
