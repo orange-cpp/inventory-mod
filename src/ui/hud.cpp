@@ -1500,7 +1500,10 @@ namespace hud
             if (!pick.valid)
                 return;
             if (pick.native)
+            {
+                INV_LOG("hud: wheel right click drops %s", pick.classname.c_str());
                 game::backend().drop_weapon(pick.classname);
+            }
             else
                 game::backend().drop(pick.index, 1);
         }
@@ -1649,7 +1652,10 @@ namespace hud
                         weapon = w.classname;
             }
             if (!weapon.empty())
+            {
+                INV_LOG("hud: drop key (%s) drops %s, in the hands", core::key_name(vk).c_str(), weapon.c_str());
                 game::backend().drop_weapon(weapon);
+            }
             return true;
         }
         if (vk == cfg.key_use || vk == cfg.key_drop)
@@ -1661,7 +1667,10 @@ namespace hud
                 if (vk == cfg.key_use)
                     game::backend().select_weapon(weapon);
                 else
+                {
+                    INV_LOG("hud: drop key (%s) drops %s, selected", core::key_name(vk).c_str(), weapon.c_str());
                     game::backend().drop_weapon(weapon);
+                }
                 return true;
             }
         }

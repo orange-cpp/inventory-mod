@@ -101,6 +101,15 @@ The hook (`hk_bump_weapon` in `src/game/game.cpp`) does, for the local player (e
 main thread, so the game calls need no queueing. `init()` installs it only when slot 426 of the player vtable still
 starts with the prologue above; otherwise the log says so and the rest of the mod works without it.
 
+A gun does not always come through slot 426. With incendiary or explosive rounds in the gun in the hands (seen), and
+also for guns a player dropped, +use calls the gun's own `CTerrorGun::Use` (`0x103E8700`, slot 106 of `CTerrorGun`'s
+vtable `0x106D5544` and of every gun class's, e.g. `CRifle_Desert`; thiscall `(activator, caller, type, value)`,
+`ret 0x10`, prologue `55 8B EC 83 EC 08 56 57 8B 7D 08 8B F1 85 FF`). It checks the activator (`IsPlayer`,
+`Weapon_CanUse` slot 280) and equips with `Weapon_Equip` (slot 281) itself, so the gun in the hands was swapped out and
+thrown, never stored. The mod hooks it too and makes the same choice as for slot 426 (`weapon_pickup`: into a free
+weapon box when that game slot is taken). Seen: holding a gun, E on an M16 and an auto shotgun on the floor came
+through it and both went into boxes; with the slot free the game's own pick-up.
+
 Game events (`IGameEventManager2`) were not needed: `item_pickup` / `weapon_given` fire only after a successful
 pickup, so they cannot see a refusal.
 

@@ -1164,34 +1164,48 @@ namespace game
             }
         }
 
+        // +use on a gun or melee weapon by the local (or served) player: into the hands when that game slot is free (the
+        // game's own pick-up); when the hands have one there already, into a free weapon box with its rounds; with no
+        // free box (or too heavy for one) the game's own swap, as long as the swap is not too heavy.
+        enum class WeaponPickup
+        {
+            Game, // the game's own pick-up or swap
+            Stored, // into a box: the game must not equip it
+            Refused, // too heavy
+        };
+
+        WeaponPickup weapon_pickup(void* player, void* weapon, const inv::ItemDef* def)
+        {
+            if (def != nullptr && player_has_slot(player, def->game_slot))
+            {
+                bool box = false;
+                {
+                    Session& s = session();
+                    std::lock_guard lock(s.mutex);
+                    box = s.inventory.has_box_for(*def) && s.inventory.room_for(*def) >= 1;
+                }
+                INV_LOG("+use on %s: that game slot is taken, %s", def->classname, box ? "into a weapon box" : "no weapon box: the game's swap");
+                if (box && store_world_item(weapon, *def))
+                {
+                    claim_for(player, weapon);
+                    return WeaponPickup::Stored;
+                }
+            }
+            return weapon_too_heavy(weapon) ? WeaponPickup::Refused : WeaponPickup::Game;
+        }
+
         bool bump_weapon(void* player, void* edx, void* weapon)
         {
             const inv::ItemDef* def = nullptr;
             const bool local = !g_giving && player != nullptr && player == local_player();
             if (local)
                 def = item_of(weapon);
-            // a gun or melee weapon: into the hands when that game slot is free (the game's own pick-up); when the
-            // hands have one there already, into a free weapon box with its rounds; with no free box (or too heavy for
-            // one) the game's own swap, as long as the swap is not too heavy
+            // a gun or melee weapon: see weapon_pickup
             if (def == nullptr || def->weapon())
             {
-                if (local && def != nullptr && player_has_slot(player, def->game_slot))
-                {
-                    bool box = false;
-                    {
-                        Session& s = session();
-                        std::lock_guard lock(s.mutex);
-                        box = s.inventory.has_box_for(*def) && s.inventory.room_for(*def) >= 1;
-                    }
-                    INV_LOG("+use on %s: that game slot is taken, %s", def->classname, box ? "into a weapon box" : "no weapon box: the game's swap");
-                    if (box && store_world_item(weapon, *def))
-                    {
-                        claim_for(player, weapon);
-                        return true;
-                    }
-                }
-                if (local && weapon_too_heavy(weapon))
-                    return false;
+                const WeaponPickup pickup = local ? weapon_pickup(player, weapon, def) : WeaponPickup::Game;
+                if (pickup != WeaponPickup::Game)
+                    return pickup == WeaponPickup::Stored;
                 return g_bump_weapon.original()(player, edx, weapon);
             }
 
@@ -1585,6 +1599,42 @@ namespace game
             spawn_use(spawner, edx, activator, caller, type, value);
         }
 
+        // +use on a gun lying in the world does not always come through the pick-up above (slot 426): with incendiary
+        // or explosive rounds in the gun on the ground or in the hands (and for guns a player dropped), the game calls
+        // the gun's own Use instead,
+        // CTerrorGun::Use (0x103E8700, slot 106 of every gun's vtable; thiscall (activator, caller, type, value),
+        // ret 0x10), which equips it with Weapon_Equip (player slot 281) and so swaps out, and drops, the gun in the
+        // hands.  It gets the same choice (weapon_pickup).
+        constexpr std::uintptr_t k_rva_gun_use = 0x3E8700;
+        core::Hook<SpawnUseFn> g_gun_use;
+
+        void gun_use(void* gun, void* edx, void* activator, void* caller, int type, float value)
+        {
+            if (!g_giving && activator != nullptr && activator == local_player())
+            {
+                const WeaponPickup pickup = weapon_pickup(activator, gun, item_of(gun));
+                if (pickup != WeaponPickup::Game)
+                    return;
+            }
+            g_gun_use.original()(gun, edx, activator, caller, type, value);
+        }
+
+        void __fastcall hk_gun_use(void* gun, void* edx, void* activator, void* caller, int type, float value)
+        {
+            if (served_remotely(activator))
+            {
+                Activation active(activator);
+                if (!active.ok())
+                {
+                    g_gun_use.original()(gun, edx, activator, caller, type, value);
+                    return;
+                }
+                gun_use(gun, edx, activator, caller, type, value);
+                return;
+            }
+            gun_use(gun, edx, activator, caller, type, value);
+        }
+
         void do_drop_weapon(const std::string& classname);
 
         // The requests a client's HUD sends (forwarded console commands).  Anything else goes to the game.
@@ -1637,7 +1687,10 @@ namespace game
                 else if (command == "inv_select" && weapon_name)
                     do_select_weapon(text);
                 else if (command == "inv_dropweapon" && weapon_name)
+                {
+                    INV_LOG("server: a player asks to drop %s", text.c_str());
                     do_drop_weapon(text);
+                }
                 else if (command == "inv_infect")
                     infect(player, "test");
                 else if (command == "inv_spawn")
@@ -3384,6 +3437,17 @@ namespace game
             }
             else
                 INV_LOG("game: the item spawner functions do not look as expected: a spawner refuses when the slot is full");
+        }
+
+        // a gun's own Use (optional, see hk_gun_use): slot 106 of CTerrorGun's vtable (0x106D5544, RTTI)
+        {
+            const std::uintptr_t gun_use = g.server.base + k_rva_gun_use;
+            if (mem::read_or<std::uintptr_t>(g.server.base + 0x6D5544 + 4u * 106) == gun_use &&
+                mem::find_pattern(gun_use, 15, "55 8B EC 83 EC 08 56 57 8B 7D 08 8B F1 85 FF") == gun_use &&
+                g_gun_use.create("GunUse", reinterpret_cast<void*>(gun_use), hk_gun_use))
+                g_gun_use.enable();
+            else
+                INV_LOG("game: CTerrorGun::Use does not look as expected: +use on a gun with special rounds swaps it");
         }
 
         // The game's own weapon-selection panel (client.dll, CHudWeaponSelection): hidden while the mod replaces it.
