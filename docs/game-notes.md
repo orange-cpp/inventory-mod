@@ -117,7 +117,7 @@ slot shows it; with `auto_store=1` an incendiary pack with a free slot is stored
 |---|---|
 | `CHudWeaponSelection` | the game's own weapon panel (the list on the right of the screen). RTTI `.?AVCHudWeaponSelection@@` gives three vtables; the `CHudElement` one is `0x105D5A84` |
 | `ShouldDraw` | slot 10 of that vtable, `0x101DC2C0`, `bool __thiscall (this)`, prologue `56 57 6A FF 8B F9 E8`. Slots 4 / 5 (`0x101DBE80`, `0x101DBEE0`) are `LevelInit` / `Reset`-like, slot 3 is `SetActive`. The mod hooks it and returns false while `replace_native=1`, which hides the panel; `init()` checks the vtable slot and the prologue first |
-| `Paint` | slot 128 of the panel's `vgui::Panel` vtable `0x105D5734`: `0x102D11E0`. Unrolled, one part per box: `0x102CEB20(slot)` (thiscall on the `CHudElement` part, `esi - 0x48`) gets the weapon in a slot, then `0x102CE5B0` / `0x102CE4C0` draw the box and `0x102CE980` its key. The gun is slot 0 (ends with `push 0; ...; call 0x102CE980`), the melee / pistol slot 1 (ends with `push 1; mov ecx, ebx; call 0x102CE980` at `0x102D1B2D`), then a part that calls `0x102CDDF0` and ends with key label 5 (`0x102D1C16`), then slots 2, 3, 4 (`push 2/3/4` before `0x102CEB20` at `0x102D1C48` / `0x102D1D37` / `0x102D1E2D`) up to `0x102D1EFC` (after `push 4; ...; call 0x102CE980`, then `cmp [ebp-0x88], 0`). Skipping only slots 2-4 (from `0x102D1C1F`) still left the throwable box on screen, so the mod hooks `0x102D1B36` (MinHook, a naked detour) and jumps to `0x102D1EFC` while its grid is shown: the gun and melee boxes stay, the mod takes the keys `3`..`5` for its boxes |
+| `Paint` | slot 128 of the panel's `vgui::Panel` vtable `0x105D5734`: `0x102D11E0`. Unrolled, one part per box: `0x102CEB20(slot)` (thiscall on the `CHudElement` part, `esi - 0x48`) gets the weapon in a slot, then `0x102CE5B0` / `0x102CE4C0` draw the box and `0x102CE980` its key. The gun is slot 0 (ends with `push 0; ...; call 0x102CE980`), the melee / pistol slot 1 (ends with `push 1; mov ecx, ebx; call 0x102CE980` at `0x102D1B2D`), then a part that calls `0x102CDDF0` and ends with key label 5 (`0x102D1C16`), then slots 2, 3, 4 (`push 2/3/4` before `0x102CEB20` at `0x102D1C48` / `0x102D1D37` / `0x102D1E2D`) up to `0x102D1EFC` (after `push 4; ...; call 0x102CE980`, then `cmp [ebp-0x88], 0`). Skipping only slots 2-4 (from `0x102D1C1F`) still left the throwable box on screen, so the mod hooks `0x102D1B36` (MinHook, a naked detour) and jumps to `0x102D1EFC` while its grid is shown. With slot 1 empty (no melee or pistol) the melee part is left by `je 0x102D1B59` at `0x102D17BF`, past that hook (seen in the game: the item boxes came back), so `0x102D1B59` (`mov eax, [ebp-0x64]; push eax; mov ecx, ebx; call 0x102CDDF0`, found from the `je`'s target) gets the same detour: the gun and melee boxes stay, the mod takes the keys `3`..`5` for its boxes |
 | `m_iMaxSlots` | `"MaxSlots"` (5) is a `CPanelAnimationVar` at `this + 0x22C` of the Panel part (getter `0x102CD600`), not used by Paint for the boxes |
 
 The game's slot keys (`1`..`5`) and the wheel (`invprev` / `invnext`) are not touched in the game: with
@@ -194,8 +194,21 @@ Protocol (all text):
   `inv_use <box>`, `inv_drop <box> <count>`, `inv_store`, `inv_pickup`, `inv_move <from> <to>`,
   `inv_select <weapon_...>`, `inv_dropweapon <weapon_...>`. The HUD sends `inv_sync` once a second while the client
   is in a game it does not host (`IsInGame()` and no player in its own `server.dll`).
-- server -> client, after every request and pickup: `@inv@ <slots> <max_weight>|<box> <classname> <count> <held>,...|
-  <game slot 0..5 classname or ->,...|<notice>` (`*` before the classname in the player's hands).
+- server -> client, after every request and pickup: `@inv@ <slots> <max_weight> <weight>|<box> <classname> <count> <held>,...|
+  <game slot 0..5 classname or ->,...|<notice>` (`*` before the classname in the player's hands). `<weight>` is what
+  the stored items weigh by the server's rules (`inventory_mod.toml` may weigh items differently from the client's
+  table), so the client's weight bar shows the server's count; older clients read only the first two numbers.
+
+**Rules file:** `inventory_mod.toml` next to the DLL (`[limits] slots / max_weight`, `[weight]`, `[stack]`, read with
+toml++ in `inv::apply_rules`) is read after the ini, at load. The server's limits apply to every player's inventory
+it creates; a refused store says why ("Too heavy: ..." when the weight limit is what stopped it). The weight includes
+the items in the game slots (`Stack::held`, the box each carried catalogue item gets), so the +use hook (slot 426)
+also answers false, before the original equips it, for an item that would go into a free game slot but is too heavy;
+a map spawner then keeps its item (GiveNamedItem fails, see the spawner notes). The gun and melee / pistol in game
+slots 0 and 1 count too (`inv::weapon_weight`, `[weight]` entries for weapon classnames): `refresh_native` sets
+`Inventory::set_weapons_weight`, and the same hook refuses a weapon whose weight, less the weight of the one it replaces
+in its slot, would go over the limit (`weapon_too_heavy`, which refreshes the slots first since a server player's may
+be stale).
 
 **Listen servers:** the same server side runs in the host's game for every guest (everyone but entity 1, the host,
 who keeps the local inventory). Guest inventories are saved on the host's machine as `inventory_<steamid>.inventory`

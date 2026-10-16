@@ -506,6 +506,29 @@ namespace hud
                     nc::AddText(dl, fonts.Normal, x0 + 3, y0 + 1, ImVec4(1.f, 1.f, 1.f, 0.55f), key);
                 }
             }
+
+            // the weight limit (inventory_mod.toml / the ini): a bar under the grid, red once nothing more fits.  On a
+            // dedicated server the weight is the server's count (its rules may weigh the items differently).
+            const float max_weight = inventory.limits().max_weight;
+            if (max_weight > 0.f && n > 0)
+            {
+                const float weight = session.remote_weight >= 0.f ? session.remote_weight : inventory.weight();
+                const int rows = grid_cell(n - 1).row + 1;
+                const float x0 = right - 3.f * pitch_f + (pitch_f - size_f), x1 = right;
+                const float y0 = first_bottom + (rows - 1) * pitch_f + (pitch_f - size_f), y1 = y0 + static_cast<float>(line) + 4.f;
+                const float fraction = std::clamp(weight / max_weight, 0.f, 1.f);
+                const bool full = weight >= max_weight - 1e-3f;
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(0, 0, 0, 120));
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + (x1 - x0) * fraction, y1),
+                                  full ? IM_COL32(200, 50, 40, 170) : IM_COL32(255, 255, 255, 60));
+                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), full ? IM_COL32(230, 70, 60, 230) : IM_COL32(255, 255, 255, 120), 0.f, 0,
+                            thickness);
+                char text[32];
+                std::snprintf(text, sizeof(text), "%.1f / %.1f", weight, max_weight);
+                const int tw = nc::CalcTextWidth(fonts.Normal, text);
+                nc::AddText(dl, fonts.Normal, static_cast<int>((x0 + x1) * 0.5f) - tw / 2, static_cast<int>(y0) + 2,
+                            ImVec4(1.f, 1.f, 1.f, 0.9f), text);
+            }
             // no item name or status line here: the boxes say it (the messages still go to inventory_mod.log)
         }
 
@@ -677,6 +700,8 @@ namespace hud
                     changed = true;
                 }
                 nc::TextDisabled("0 = no weight limit. Slots and weight apply after a restart.");
+                if (cfg.rules_file)
+                    nc::TextDisabled("inventory_mod.toml sets these (and the item weights): it wins over this tab.");
             }
             nc::EndGroupBox();
 

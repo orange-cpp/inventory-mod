@@ -10,7 +10,10 @@ call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" x86 >nul || exit /b 1
 set CMAKE=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe
 set NINJA=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe
 set BUILD=%~dp0build\x86-%CONFIG%
-"%CMAKE%" -S "%~dp0." -B "%BUILD%" -G Ninja -DCMAKE_MAKE_PROGRAM="%NINJA%" -DCMAKE_BUILD_TYPE=%CONFIG% -DCMAKE_CXX_COMPILER=cl || exit /b 2
+rem vcpkg (vcpkg.json): the copy that comes with Visual Studio, which vcvarsall puts in VCPKG_ROOT, unless one is set
+if "%VCPKG_ROOT%"=="" set VCPKG_ROOT=%VS%\VC\vcpkg
+set VCPKG=-DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x86-windows-static
+"%CMAKE%" -S "%~dp0." -B "%BUILD%" -G Ninja -DCMAKE_MAKE_PROGRAM="%NINJA%" -DCMAKE_BUILD_TYPE=%CONFIG% -DCMAKE_CXX_COMPILER=cl %VCPKG% || exit /b 2
 if "%TARGET%"=="" (
     "%CMAKE%" --build "%BUILD%" || exit /b 3
 ) else (

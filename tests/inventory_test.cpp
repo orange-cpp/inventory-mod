@@ -1,6 +1,7 @@
 // Tests of the inventory model.  A plain program: exit code 0 when every check passes.
 
 #include "inv/inventory.hpp"
+#include "inv/rules.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -197,6 +198,71 @@ namespace
         inventory.clear_held(1);
         CHECK(inventory.slot(1).empty());
     }
+
+    // Changes the item table: runs last, and puts the defaults back.
+    void rules_file()
+    {
+        const inv::ItemDef& medkit = item("weapon_first_aid_kit");
+        const inv::ItemDef& molotov = item("weapon_molotov");
+        const float medkit_weight = medkit.weight;
+        const int molotov_stack = molotov.max_stack;
+
+        const inv::Rules rules = inv::apply_rules(R"(
+# a server's rules
+[limits]
+slots = 6
+max_weight = 12        # an integer is fine too
+
+[weight]
+first_aid_kit = 5.5    # "weapon_" left out
+weapon_pain_pills = 0.5
+
+[stack]
+molotov = 1
+)");
+        CHECK(rules.errors.empty());
+        CHECK(rules.slots == 6);
+        CHECK(rules.max_weight && *rules.max_weight == 12.f);
+        CHECK(rules.items_changed == 3);
+        CHECK(medkit.weight == 5.5f && item("weapon_pain_pills").weight == 0.5f && molotov.max_stack == 1);
+
+        // the limits work with the new weights: 12 / 5.5 -> two kits
+        inv::Inventory inventory({.slots = *rules.slots, .max_weight = *rules.max_weight});
+        CHECK(inventory.add(medkit, 5) == 2);
+        CHECK(inventory.add(molotov, 2) == 0); // 11 of 12 used, a molotov weighs 2
+
+        // the one in the hands is carried: it counts, and taking it out or putting it back changes nothing
+        CHECK(inventory.remove_from_slot(0, 1) == 1 && inventory.set_held(0, medkit));
+        CHECK(inventory.weight() == 11.f);
+        CHECK(inventory.add(item("weapon_pain_pills"), 3) == 2); // 0.5 each: one point left
+        inventory.release_held(0);
+        CHECK(inventory.weight() == 12.f && inventory.slot(0).count == 2);
+
+        // mistakes are reported with their line and change nothing else
+        const inv::Rules bad = inv::apply_rules("[limits]\nslots = 0\n[weight]\nno_such_item = 1\n[stack]\nmolotov = \"two\"\n[colour]\n");
+        CHECK(bad.errors.size() == 4);
+        CHECK(!bad.slots && bad.items_changed == 0);
+        CHECK(!bad.errors.empty() && bad.errors[0].rfind("line 2:", 0) == 0);
+        CHECK(!inv::apply_rules("[limits\nslots = 3").errors.empty()); // does not parse
+
+        // weapons: their weights from the same [weight] table, counted through set_weapons_weight
+        const float ak_weight = inv::weapon_weight("weapon_rifle_ak47");
+        CHECK(ak_weight > 0.f && inv::weapon_weight("weapon_first_aid_kit") == 0.f);
+        const inv::Rules weapons = inv::apply_rules("[weight]\nrifle_ak47 = 7\nweapon_melee = 1.5\n");
+        CHECK(weapons.errors.empty() && weapons.items_changed == 2);
+        CHECK(inv::weapon_weight("weapon_rifle_ak47") == 7.f && inv::weapon_weight("weapon_melee") == 1.5f);
+        inv::Inventory armed({.slots = 4, .max_weight = 10.f});
+        armed.set_weapons_weight(inv::weapon_weight("weapon_rifle_ak47") + inv::weapon_weight("weapon_melee"));
+        CHECK(armed.weight() == 8.5f);
+        CHECK(armed.add(medkit, 1) == 0); // 8.5 + 5.5 > 10
+        CHECK(armed.add(item("weapon_pain_pills"), 5) == 3);
+        inv::set_weapon_weight("weapon_rifle_ak47", ak_weight);
+        inv::set_weapon_weight("weapon_melee", 2.f);
+
+        inv::set_item_weight("weapon_first_aid_kit", medkit_weight);
+        inv::set_item_weight("weapon_pain_pills", 1.f);
+        inv::set_item_stack("weapon_molotov", molotov_stack);
+    }
 } // namespace
 
 int main()
@@ -211,6 +277,7 @@ int main()
     text_round_trip();
     revision();
     held_box();
+    rules_file();
     if (g_failed == 0)
         std::printf("all inventory tests passed\n");
     return g_failed == 0 ? 0 : 1;

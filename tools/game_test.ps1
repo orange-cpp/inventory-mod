@@ -168,6 +168,10 @@ function Inject-Server {
     if (-not (Test-Path "$dir\inventory_mod.ini") -and (Test-Path "$script:Root\out\Release\inventory_mod.ini")) {
         Copy-Item "$script:Root\out\Release\inventory_mod.ini" $dir
     }
+    # the server's rules (slots, weight limit, item weights): edit out\Server\inventory_mod.toml, then Reload-Server
+    if (-not (Test-Path "$dir\inventory_mod.toml")) {
+        Copy-Item "$script:Root\inventory_mod.example.toml" "$dir\inventory_mod.toml"
+    }
     & "$script:Root\out\Release\injector.exe" "$dir\inventory_mod.dll" (Server-Pid)
     Start-Sleep -Seconds 4
     Server-Log | Select-Object -Last 3

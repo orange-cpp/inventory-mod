@@ -10,7 +10,8 @@ namespace inv
             return r | (g << 8) | (b << 16) | (0xFFu << 24);
         }
 
-        constexpr ItemDef k_items[] = {
+        // The weights and stack sizes are the defaults: the rules file can change them (set_item_weight / set_item_stack)
+        ItemDef k_items[] = {
             {"weapon_first_aid_kit", "First Aid Kit", "FA", "Heals most of your missing health.", 2, 3.0f, rgb(210, 60, 60), 3},
             {"weapon_defibrillator", "Defibrillator", "DF", "Revives a dead survivor.", 1, 3.0f, rgb(230, 200, 60), 3},
             {"weapon_pain_pills", "Pain Pills", "PP", "Temporary health.", 4, 1.0f, rgb(235, 235, 235), 4},
@@ -43,6 +44,92 @@ namespace inv
             if (classname == def.classname)
                 return &def;
         return nullptr;
+    }
+
+    namespace
+    {
+        struct WeaponWeight
+        {
+            const char* classname;
+            float weight;
+        };
+
+        // The defaults, roughly by size; the rules file can change them
+        WeaponWeight k_weapons[] = {
+            {"weapon_pistol", 1.0f},
+            {"weapon_pistol_magnum", 1.5f},
+            {"weapon_melee", 2.0f},
+            {"weapon_chainsaw", 6.0f},
+            {"weapon_smg", 3.0f},
+            {"weapon_smg_silenced", 3.0f},
+            {"weapon_smg_mp5", 3.0f},
+            {"weapon_pumpshotgun", 4.0f},
+            {"weapon_shotgun_chrome", 4.0f},
+            {"weapon_autoshotgun", 5.0f},
+            {"weapon_shotgun_spas", 5.0f},
+            {"weapon_rifle", 4.0f},
+            {"weapon_rifle_ak47", 4.5f},
+            {"weapon_rifle_desert", 4.5f},
+            {"weapon_rifle_sg552", 4.5f},
+            {"weapon_hunting_rifle", 5.0f},
+            {"weapon_sniper_military", 5.5f},
+            {"weapon_sniper_awp", 5.5f},
+            {"weapon_sniper_scout", 4.0f},
+            {"weapon_rifle_m60", 8.0f},
+            {"weapon_grenade_launcher", 6.0f},
+        };
+
+        WeaponWeight* find_weapon(std::string_view classname)
+        {
+            for (WeaponWeight& w : k_weapons)
+                if (classname == w.classname)
+                    return &w;
+            return nullptr;
+        }
+    } // namespace
+
+    float weapon_weight(std::string_view classname)
+    {
+        const WeaponWeight* w = find_weapon(classname);
+        return w != nullptr ? w->weight : 0.f;
+    }
+
+    bool set_weapon_weight(std::string_view classname, float weight)
+    {
+        WeaponWeight* w = find_weapon(classname);
+        if (w == nullptr || weight < 0.f)
+            return false;
+        w->weight = weight;
+        return true;
+    }
+
+    namespace
+    {
+        ItemDef* find_mutable(std::string_view classname)
+        {
+            for (ItemDef& def : k_items)
+                if (classname == def.classname)
+                    return &def;
+            return nullptr;
+        }
+    } // namespace
+
+    bool set_item_weight(std::string_view classname, float weight)
+    {
+        ItemDef* def = find_mutable(classname);
+        if (def == nullptr || weight < 0.f)
+            return false;
+        def->weight = weight;
+        return true;
+    }
+
+    bool set_item_stack(std::string_view classname, int max_stack)
+    {
+        ItemDef* def = find_mutable(classname);
+        if (def == nullptr || max_stack < 1)
+            return false;
+        def->max_stack = max_stack;
+        return true;
     }
 
 } // namespace inv

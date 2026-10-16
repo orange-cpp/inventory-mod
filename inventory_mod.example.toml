@@ -1,0 +1,55 @@
+# The inventory's rules.  Copy this file next to inventory_mod.dll as inventory_mod.toml.
+#
+# On a dedicated server (srcds.exe) these are the rules for every player: the server decides what fits, and the
+# players' game clients show its limits and weights.  In a game you host, it is your own and your guests' rules.
+# Read when the DLL loads: reload the mod after a change.  Mistakes are written to the log with their line.
+
+[limits]
+slots = 8              # inventory boxes per player, 1 to 24
+max_weight = 30.0      # what everything you carry may weigh together; 0 = no weight limit
+
+# What each item and weapon weighs ("weapon_" may be left out).  Those not listed keep the mod's default.
+[weight]
+first_aid_kit = 3.0
+defibrillator = 3.0
+pain_pills = 1.0
+adrenaline = 1.0
+pipe_bomb = 2.0
+molotov = 2.0
+vomitjar = 2.0
+upgradepack_incendiary = 3.0
+upgradepack_explosive = 3.0
+gascan = 6.0
+propanetank = 5.0
+oxygentank = 5.0
+fireworkcrate = 4.0
+gnome = 2.0
+cola_bottles = 4.0
+# the gun and the melee weapon / pistol in your hands count too
+pistol = 1.0
+pistol_magnum = 1.5
+melee = 2.0
+chainsaw = 6.0
+smg = 3.0
+smg_silenced = 3.0
+smg_mp5 = 3.0
+pumpshotgun = 4.0
+shotgun_chrome = 4.0
+autoshotgun = 5.0
+shotgun_spas = 5.0
+rifle = 4.0
+rifle_ak47 = 4.5
+rifle_desert = 4.5
+rifle_sg552 = 4.5
+hunting_rifle = 5.0
+sniper_military = 5.5
+sniper_awp = 5.5
+sniper_scout = 4.0
+rifle_m60 = 8.0
+grenade_launcher = 6.0
+
+# How many of an item fit in one box (1 to 99).
+[stack]
+first_aid_kit = 2
+pain_pills = 4
+molotov = 3

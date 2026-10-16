@@ -24,4 +24,15 @@ namespace inv
     // nullptr when the classname is not an inventory item.
     const ItemDef* find_item(std::string_view classname);
 
+    // The rules file's changes to an item (rules.hpp).  Done at start-up, before the inventories use the table.  False
+    // for an unknown classname or a value out of range (weight < 0, stack < 1).
+    bool set_item_weight(std::string_view classname, float weight);
+    bool set_item_stack(std::string_view classname, int max_stack);
+
+    // The guns and melee weapons are not inventory items, but what the player carries in the game's slots 0 and 1
+    // counts against the weight limit too.  0 for a classname that is not one of them.
+    float weapon_weight(std::string_view classname);
+    // The rules file's [weight] entry for a weapon; false for an unknown classname or a negative weight.
+    bool set_weapon_weight(std::string_view classname, float weight);
+
 } // namespace inv

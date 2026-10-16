@@ -20,6 +20,15 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   instead of leaving it on the floor. With `auto_store=1` in `inventory_mod.ini` (or "Store items on use" in Settings)
   every such +use stores the item, even when you could carry it.
 - Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory`.
+- **Rules file** `inventory_mod.toml` next to the DLL (start from [inventory_mod.example.toml](inventory_mod.example.toml)):
+  the boxes per player, the carry limit (`max_weight`), each item's weight and stack size, and each gun's and melee
+  weapon's weight. On a dedicated server
+  it is the rules for every player: the server refuses what is too heavy ("Too heavy: 18.0 / 20.0, ..."), and the
+  clients show its numbers. With a limit set, a bar under the grid shows the weight, red when nothing more fits. The
+  weight counts everything you carry: what is stored, the throwable, kit, pills or carried item in your game slots,
+  and your gun and melee weapon / pistol. Taking an item in hand or putting it back changes nothing; picking an item
+  or a weapon up in the game (E) is refused when it would be too heavy (a weapon that replaces yours counts only the
+  difference).
 - **Beside the game's weapon panel** (`replace_native=0`, the default): the game's own panel on the right stays as it
   is for the gun and the melee / pistol (ammo, slot keys `1`, `2`); its three item boxes are hidden and the inventory
   is a grid under them, three boxes per row, drawn the same way. The throwable, kit and pills you carry live in their
@@ -58,8 +67,11 @@ build.bat Release            # configure + build everything into out\Release
 build.bat Release inventory_mod
 ```
 
-`build.bat` uses the Visual Studio 18 toolchain (vcvarsall x86, its bundled CMake and Ninja). ImGui 1.92.8 and MinHook
-1.3.4 are fetched by CMake; imgui-nullcore is taken from the sibling folder (`-DINVENTORY_NULLCORE_DIR=...` to change).
+`build.bat` uses the Visual Studio 18 toolchain (vcvarsall x86, its bundled CMake, Ninja and vcpkg). Libraries come
+from vcpkg in manifest mode ([vcpkg.json](vcpkg.json), triplet `x86-windows-static`, pinned by `builtin-baseline`):
+MinHook and toml++; `VCPKG_ROOT` picks another vcpkg. ImGui 1.92.8 is fetched by CMake, since imgui-nullcore builds
+against its sources; imgui-nullcore is taken from the sibling folder (`-DINVENTORY_NULLCORE_DIR=...` to change). A
+build folder configured before vcpkg needs a fresh configure (delete `build\x86-Release\CMakeCache.txt`).
 
 Outputs in `out\Release`: `inventory_mod.dll`, `injector.exe`, `inventory_tests.exe` (the inventory model's tests).
 
@@ -75,7 +87,7 @@ says why and the inventory only edits its own list.
 ## Layout
 
 ```
-src/inv/       the model, no Windows or ImGui (tested on its own)
+src/inv/       the model, no Windows or ImGui (tested on its own); rules.cpp reads inventory_mod.toml
 src/core/      log, config, MinHook wrapper
 src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (hotbar + window)
 src/game/      backend.hpp (the seam), game.cpp (the real backend), mem.cpp (guarded reads and calls)

@@ -27,10 +27,16 @@ namespace core
         bool show_hotbar = true;
         bool auto_store = false; // +use on a catalogue item always stores it (otherwise only when the player's slot is full)
         float hud_scale = 1.f;
+        // inventory_mod.toml was read: its slots and max_weight win over the ini's (see rules_load)
+        bool rules_file = false;
     };
 
     Config& config();
+    // The ini, then the rules file.
     void config_load();
+    // inventory_mod.toml next to the DLL (inv/rules.hpp): the slots, the weight limit and the item weights / stacks.
+    // On a dedicated server it is the rules for every player; their game clients show the server's limits.
+    void rules_load();
     void config_save();
     // "I", "[", "F5" ...
     std::string key_name(int vk);

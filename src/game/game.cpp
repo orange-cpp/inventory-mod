@@ -281,7 +281,7 @@ namespace game
             }
             if (full)
             {
-                notify("The inventory is full"); // notify() takes the session lock itself
+                notify(refusal(def)); // notify() takes the session lock itself
                 return false;
             }
             if (!mem::guarded([&] { drop(player, weapon, nullptr, nullptr); }) || player_has_slot(player, def.game_slot))
@@ -486,7 +486,7 @@ namespace game
             }
             if (stored == 0)
             {
-                notify("The inventory is full");
+                notify(refusal(*best_def));
                 return;
             }
             if (!mem::guarded([&] { g.util_remove(best); }))
@@ -648,7 +648,7 @@ namespace game
             }
             if (full)
             {
-                notify("The inventory is full"); // notify() takes the session lock itself
+                notify(refusal(*def)); // notify() takes the session lock itself
                 return;
             }
             if (!mem::guarded([&] { g.util_remove(item); }))
@@ -719,6 +719,23 @@ namespace game
             }
         }
 
+        // With nothing in slot 1 (no melee or pistol: seen in the game, the item boxes came back) the melee part is
+        // left by `je` straight to its last statement, after the hook above (0x102D17BF -> 0x102D1B59, `mov eax,
+        // [ebp-0x64]; push eax; mov ecx, ebx; call 0x102CDDF0`): a second hook there, to the same end.
+        core::Hook<ItemBoxesFn> g_item_boxes_empty;
+        std::uintptr_t g_item_boxes_empty_original = 0;
+
+        __declspec(naked) void hk_item_boxes_empty()
+        {
+            __asm {
+                cmp byte ptr [g_hide_item_boxes], 0
+                je draw
+                jmp dword ptr [g_item_boxes_end]
+            draw:
+                jmp dword ptr [g_item_boxes_empty_original]
+            }
+        }
+
         // Takes `weapon` (a catalogue item lying in the world) into the inventory.
         bool store_world_item(void* weapon, const inv::ItemDef& def)
         {
@@ -730,7 +747,7 @@ namespace game
             }
             if (stored == 0)
             {
-                notify("The inventory is full");
+                notify(refusal(def));
                 return false;
             }
             if (!mem::guarded([&] { g.util_remove(weapon); }))
@@ -743,13 +760,53 @@ namespace game
             return true;
         }
 
+        void refresh_native();
+        int native_slot_of(const char* classname);
+        NativeWeapon describe_weapon(const char* classname);
+
+        // A gun or melee weapon the local player is about to pick up would take them over the weight limit (the one it
+        // replaces in its game slot, if any, is dropped by the game, so only the difference counts).  Says why.
+        bool weapon_too_heavy(void* weapon)
+        {
+            char name[64];
+            if (!classname_of(weapon, name, sizeof(name)))
+                return false;
+            const float weight = inv::weapon_weight(name);
+            if (weight <= 0.f)
+                return false;
+            mem::guarded([] { refresh_native(); }); // what they carry right now (a server player's may be stale)
+            char text[128] = {};
+            {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                const float max_weight = s.inventory.limits().max_weight;
+                if (max_weight <= 0.f)
+                    return false;
+                const std::size_t slot = static_cast<std::size_t>(native_slot_of(name));
+                const float replaced = slot < s.native.size() ? inv::weapon_weight(s.native[slot].classname) : 0.f;
+                const float total = s.inventory.weight() - replaced + weight;
+                if (total <= max_weight + 1e-3f)
+                    return false;
+                std::snprintf(text, sizeof(text), "Too heavy: %.1f / %.1f, %s weighs %.1f", s.inventory.weight(), max_weight,
+                              describe_weapon(name).name.c_str(), weight);
+            }
+            INV_LOG("+use on %s: too heavy to carry, refused", name);
+            notify(text);
+            return true;
+        }
+
         bool bump_weapon(void* player, void* edx, void* weapon)
         {
             const inv::ItemDef* def = nullptr;
-            if (!g_giving && player != nullptr && player == local_player())
+            const bool local = !g_giving && player != nullptr && player == local_player();
+            if (local)
                 def = item_of(weapon);
             if (def == nullptr)
+            {
+                if (local && weapon_too_heavy(weapon))
+                    return false;
                 return g_bump_weapon.original()(player, edx, weapon);
+            }
 
             const bool always = core::config().auto_store;
             const bool full = player_has_slot(player, def->game_slot);
@@ -763,7 +820,8 @@ namespace game
             // left the spawner full, so its item could be stored again and again.  So the stored copy (already marked
             // for deletion) names the player as its owner.  A weapon lying in the world (CBaseCombatWeapon::Use
             // 0x1024F4A0) ignores both.
-            if ((always || full) && store_world_item(weapon, *def))
+            const bool tried = always || full;
+            if (tried && store_world_item(weapon, *def))
             {
                 for (int index = 1; index <= 64; ++index) // the player's EHANDLE: players are entities 1..maxplayers
                 {
@@ -778,6 +836,21 @@ namespace game
                     break;
                 }
                 return true;
+            }
+            // not stored: the game equips it into the free slot, and refreshing the game slots gives it a box, so it
+            // counts against the weight limit like a stored one.  Too heavy: refused here, before the game equips it.
+            bool too_heavy = false;
+            {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                too_heavy = !full && s.inventory.room_for(*def) == 0;
+            }
+            if (too_heavy)
+            {
+                INV_LOG("+use on %s: too heavy to carry, refused", def->classname);
+                if (!tried) // (a failed store has said why already)
+                    notify(refusal(*def));
+                return false;
             }
             return g_bump_weapon.original()(player, edx, weapon);
         }
@@ -925,7 +998,8 @@ namespace game
         void refresh_native();
 
         // The player's inventory, as the line their client DLL reads:
-        //   @inv@ <slots> <max_weight>|<index> <classname> <count> <held>,...|<game slot 0>,...,<game slot 5>|<message>
+        //   @inv@ <slots> <max_weight> <weight>|<index> <classname> <count> <held>,...|<game slot 0>,...,<game slot 5>|<message>
+        // (<weight>: what the stored items weigh by the server's rules; a client that reads only two numbers still works)
         // A game slot is "-" when empty, a leading '*' marks the weapon in the hands.
         void send_state(void* player, ServerPlayer& sp)
         {
@@ -937,8 +1011,8 @@ namespace game
                 std::lock_guard lock(s.mutex);
                 const inv::Inventory& inventory = s.inventory;
                 char head[64];
-                std::snprintf(head, sizeof(head), "%s %d %.2f|", k_state_marker, inventory.slot_count(),
-                              inventory.limits().max_weight);
+                std::snprintf(head, sizeof(head), "%s %d %.2f %.2f|", k_state_marker, inventory.slot_count(),
+                              inventory.limits().max_weight, inventory.weight());
                 line = head;
                 for (int i = 0; i < inventory.slot_count(); ++i)
                 {
@@ -1213,6 +1287,11 @@ namespace game
                 if (def != nullptr && inventory.held_slot(*def) < 0)
                     inventory.set_held(inventory.home_for(*def), *def); // picked up in the game: it gets a box
             }
+            // the gun and the melee / pistol count against the weight limit too
+            float weapons = 0.f;
+            for (const NativeWeapon& weapon : list)
+                weapons += inv::weapon_weight(weapon.classname);
+            inventory.set_weapons_weight(weapons);
             s.native = std::move(list);
         }
 
@@ -1312,6 +1391,7 @@ namespace game
                 if (!s.remote)
                     return;
                 s.remote = false;
+                s.remote_weight = -1.f;
             }
             session_apply_limits();
             const std::string saved = core::inventory_file_load();
@@ -1347,7 +1427,8 @@ namespace game
                 return;
             int slots = 0;
             float max_weight = 0.f;
-            if (std::sscanf(parts[0].c_str(), "%d %f", &slots, &max_weight) < 1 || slots < 1 || slots > 64)
+            float weight = -1.f;
+            if (std::sscanf(parts[0].c_str(), "%d %f %f", &slots, &max_weight, &weight) < 1 || slots < 1 || slots > 64)
                 return;
             inv::Inventory inventory({.slots = slots, .max_weight = max_weight});
             for (std::size_t start = 0; start < parts[1].size();)
@@ -1391,6 +1472,7 @@ namespace game
                 inventory.select(s.inventory.selected());
                 s.inventory = std::move(inventory);
                 s.native = std::move(native);
+                s.remote_weight = weight;
                 if (!s.remote)
                     INV_LOG("remote: the server keeps this inventory now (%d slots)", slots);
                 s.remote = true;
@@ -1857,6 +1939,24 @@ namespace game
                 g_item_boxes.enable();
                 INV_LOG("game: native item boxes from %p to %p", reinterpret_cast<void*>(start + 9),
                         reinterpret_cast<void*>(g_item_boxes_end));
+
+                // the way past the melee part when slot 1 is empty: push 1; mov ecx, ebx; mov [ebp-0x3C], edi;
+                // call 0x102CEB20 (the weapon in slot 1); mov [ebp-0x54], eax; test eax, eax; je <target>
+                const std::uintptr_t check =
+                    mem::find_pattern(paint, 0xD80, "6A 01 8B CB 89 7D C4 E8 ?? ?? ?? ?? 89 45 AC 85 C0 0F 84");
+                const std::uintptr_t target =
+                    check != 0 ? check + 0x17 + static_cast<std::uintptr_t>(mem::read_or<std::int32_t>(check + 0x13)) : 0;
+                if (target > check && target < start + 9 + 0x100 &&
+                    mem::find_pattern(target, 7, "8B 45 9C 50 8B CB E8") == target &&
+                    g_item_boxes_empty.create("WeaponSelectItemBoxesEmpty", reinterpret_cast<void*>(target), hk_item_boxes_empty))
+                {
+                    g_item_boxes_empty_original = reinterpret_cast<std::uintptr_t>(g_item_boxes_empty.original());
+                    g_item_boxes_empty.enable();
+                    INV_LOG("game: native item boxes (no melee) from %p", reinterpret_cast<void*>(target));
+                }
+                else
+                    INV_LOG("game: the no-melee way into the item boxes (%p) does not look as expected: with slot 1 empty "
+                            "they show", reinterpret_cast<void*>(target));
             }
             else
                 INV_LOG("game: CHudWeaponSelection::Paint (%p) does not look as expected: its item boxes stay",

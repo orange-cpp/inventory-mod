@@ -27,10 +27,15 @@ if(NOT EXISTS "${INVENTORY_NULLCORE_DIR}/include/imgui_nullcore/imgui_nullcore.h
     message(FATAL_ERROR "imgui-nullcore not found at ${INVENTORY_NULLCORE_DIR} (set INVENTORY_NULLCORE_DIR)")
 endif()
 
+# Libraries from vcpkg (vcpkg.json; build.bat passes the toolchain and the x86-windows-static triplet, whose static
+# CRT matches the one above).  Dear ImGui stays a fetched source tree: imgui-nullcore builds against its sources at
+# this exact version.
+find_package(minhook CONFIG REQUIRED)
+find_package(tomlplusplus CONFIG REQUIRED)
+
 include(FetchContent)
 FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.92.8 GIT_SHALLOW TRUE)
-FetchContent_Declare(minhook GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git GIT_TAG v1.3.4 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(imgui minhook)
+FetchContent_MakeAvailable(imgui)
 
 function(inventory_options target)
     target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
@@ -44,8 +49,11 @@ add_library(inventory_core STATIC
     src/inv/items.cpp
     src/inv/items.hpp
     src/inv/inventory.cpp
-    src/inv/inventory.hpp)
+    src/inv/inventory.hpp
+    src/inv/rules.cpp
+    src/inv/rules.hpp)
 target_include_directories(inventory_core PUBLIC src)
+target_link_libraries(inventory_core PRIVATE tomlplusplus::tomlplusplus)
 inventory_options(inventory_core)
 
 enable_testing()
@@ -101,7 +109,7 @@ add_library(inventory_mod SHARED
     src/ui/icons.cpp
     src/ui/icons.hpp)
 target_include_directories(inventory_mod PRIVATE src)
-target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook)
+target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook::minhook)
 inventory_options(inventory_mod)
 if(MSVC)
     target_link_options(inventory_mod PRIVATE /MAP /DEBUG /OPT:REF /OPT:ICF)

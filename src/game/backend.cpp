@@ -4,6 +4,7 @@
 #include "core/log.hpp"
 
 #include <atomic>
+#include <cstdio>
 
 namespace game
 {
@@ -99,6 +100,21 @@ namespace game
                 rebuilt.add(*stack.def, stack.count);
         }
         s.inventory = std::move(rebuilt);
+    }
+
+    std::string refusal(const inv::ItemDef& def)
+    {
+        Session& s = session();
+        std::lock_guard lock(s.mutex);
+        const inv::Inventory& inventory = s.inventory;
+        if (inventory.room_for(def) == 0)
+        {
+            char text[96];
+            std::snprintf(text, sizeof(text), "Too heavy: %.1f / %.1f, %s weighs %.1f", inventory.weight(),
+                          inventory.limits().max_weight, def.name, def.weight);
+            return text;
+        }
+        return "The inventory is full";
     }
 
     void notify(const std::string& text)

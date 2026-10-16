@@ -37,6 +37,9 @@ namespace game
         ULONGLONG message_until = 0;
         // Client only: the inventory mirrors the one a dedicated server keeps for this player (it is not saved here).
         bool remote = false;
+        // With `remote`: what the server counts the stored items as weighing (its rules file may give the items other
+        // weights than this DLL's table); -1 otherwise.
+        float remote_weight = -1.f;
         // Client only, refreshed on the main thread: the player is a living survivor in a game with no menu open (the
         // hotbar shows and its keys work only then), and the weapon in their hands: rounds in the clip and in reserve
         // (-1: none, e.g. a melee weapon or an item).
@@ -55,6 +58,8 @@ namespace game
     void session_apply_limits();
     // Shows a line in the HUD for a few seconds.  Locks the session itself.
     void notify(const std::string& text);
+    // Why `def` did not go into the active inventory: "Too heavy: ..." or "The inventory is full".  Takes the lock.
+    std::string refusal(const inv::ItemDef& def);
 
     class Backend
     {

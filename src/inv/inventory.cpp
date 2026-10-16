@@ -232,10 +232,10 @@ namespace inv
 
     float Inventory::weight() const
     {
-        float w = 0.f;
+        float w = weapons_weight_;
         for (const Stack& s : slots_)
             if (!s.empty())
-                w += s.def->weight * static_cast<float>(s.count);
+                w += s.def->weight * static_cast<float>(s.count + (s.held ? 1 : 0)); // the one in the hands is carried too
         return w;
     }
 

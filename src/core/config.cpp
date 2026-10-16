@@ -1,6 +1,7 @@
 #include "core/config.hpp"
 
 #include "core/log.hpp"
+#include "inv/rules.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -88,6 +89,30 @@ namespace core
             config_save();
         }
         INV_LOG("config loaded");
+        rules_load();
+    }
+
+    void rules_load()
+    {
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, (std::wstring(module_dir()) + L"inventory_mod.toml").c_str(), L"rb") != 0 || f == nullptr)
+            return; // no rules file: the ini's limits and the default item weights
+        std::string text;
+        char chunk[512];
+        for (size_t n; (n = fread(chunk, 1, sizeof(chunk), f)) > 0;)
+            text.append(chunk, n);
+        fclose(f);
+
+        const inv::Rules rules = inv::apply_rules(text);
+        for (const std::string& error : rules.errors)
+            INV_LOG("inventory_mod.toml: %s", error.c_str());
+        if (rules.slots)
+            g_config.slots = *rules.slots;
+        if (rules.max_weight)
+            g_config.max_weight = *rules.max_weight;
+        g_config.rules_file = true;
+        INV_LOG("inventory_mod.toml: %d slots, max weight %.1f, %d item settings, %d problems", g_config.slots,
+                g_config.max_weight, rules.items_changed, static_cast<int>(rules.errors.size()));
     }
 
     void config_save()

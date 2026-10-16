@@ -17,7 +17,7 @@ namespace inv
         const ItemDef* def = nullptr;
         int count = 0; // how many are stored here
         // One more of `def` is in the player's hands and this is its box: it comes back here, and the box keeps showing
-        // it while the player holds it.  Not counted in `count`, the weight or the save file.
+        // it while the player holds it.  Not counted in `count` or the save file; counted in the weight (it is carried).
         bool held = false;
 
         bool empty() const
@@ -70,12 +70,23 @@ namespace inv
         bool set_held(int index, const ItemDef& def);
         // The held item is gone from the hands (used up, thrown, dropped): the box keeps only what is stored.
         void clear_held(int index);
-        // The held item comes back into its box from the hands (stored again, whatever the limits).
+        // The held item comes back into its box from the hands (stored again; the weight stays the same).
         void release_held(int index);
 
         int count_of(const ItemDef& def) const;
         int used_slots() const;
+        // What the stored items, the held ones (Stack::held) and the weapons (set_weapons_weight) weigh: everything
+        // the player carries.
         float weight() const;
+        // What the player's gun and melee / pistol weigh (weapon_weight); the game code keeps it up to date.
+        void set_weapons_weight(float weight)
+        {
+            weapons_weight_ = weight;
+        }
+        float weapons_weight() const
+        {
+            return weapons_weight_;
+        }
 
         // The slot the hotbar has selected.
         int selected() const
@@ -99,13 +110,16 @@ namespace inv
         // Replaces the contents.  Unknown items and bad slot numbers are skipped; false when the header is wrong.
         bool from_text(std::string_view text);
 
-    private:
+        // How many more of `def` the weight limit lets in (a large number when there is none).
         int room_for(const ItemDef& def) const;
+
+    private:
 
         Limits limits_;
         std::vector<Stack> slots_;
         int selected_ = 0;
         std::uint32_t revision_ = 0;
+        float weapons_weight_ = 0.f;
     };
 
 } // namespace inv
