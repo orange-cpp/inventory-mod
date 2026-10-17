@@ -146,9 +146,17 @@ function Start-Server([string]$Map = "c1m1_hotel", [int]$Port = 27015, [int]$Wai
 # The srcds.exe started on that port (found again in a new PowerShell session, where $script:ServerPid is gone).
 function Server-Pid([int]$Port = $script:ServerPort) {
     if ($script:ServerPid -ne 0 -and (Get-Process -Id $script:ServerPid -ErrorAction SilentlyContinue)) { return $script:ServerPid }
-    $p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'srcds.exe' -and $_.CommandLine -match "-port\s+$Port\b" } |
-        Select-Object -First 1
-    if ($p) { $script:ServerPid = [int]$p.ProcessId }
+    $all = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'srcds.exe' })
+    $p = $all | Where-Object { $_.CommandLine -match "-port\s+$Port\b" } | Select-Object -First 1
+    if ($p) { $script:ServerPid = [int]$p.ProcessId; return $script:ServerPid }
+    # CommandLine can be empty (no access) or lack -port (a server started elsewhere, on the default port): fall back to
+    # the only srcds.exe running.
+    if ($all.Count -eq 1) {
+        $script:ServerPid = [int]$all[0].ProcessId
+        Write-Host "Server-Pid: no srcds.exe command line matched -port $Port; using the only srcds.exe, pid $script:ServerPid"
+    } elseif ($all.Count -gt 1) {
+        Write-Host "Server-Pid: several srcds.exe are running (pids $(($all | ForEach-Object ProcessId) -join ', ')) and none matched -port $Port"
+    }
     $script:ServerPid
 }
 
@@ -163,6 +171,8 @@ function Server-Log { Get-Content "$script:Root\out\Server\inventory_mod_server.
 # The server gets its own copy, so the game and the server never lock the same file.
 function Inject-Server {
     $dir = "$script:Root\out\Server"
+    $serverPid = Server-Pid
+    if ($serverPid -eq 0) { Write-Host "Inject-Server: no srcds.exe found (Start-Server first, or pass the right port)"; return }
     New-Item -ItemType Directory -Force $dir | Out-Null
     Copy-Item "$script:Root\out\Release\inventory_mod.dll" $dir -Force
     # the mod's addons (the ammo packs), mounted by the mod from the addons folder next to the DLL (a copy in use is
@@ -178,7 +188,7 @@ function Inject-Server {
     if (-not (Test-Path "$dir\inventory_mod.toml")) {
         Copy-Item "$script:Root\inventory_mod.example.toml" "$dir\inventory_mod.toml"
     }
-    & "$script:Root\out\Release\injector.exe" "$dir\inventory_mod.dll" (Server-Pid)
+    & "$script:Root\out\Release\injector.exe" "$dir\inventory_mod.dll" $serverPid
     Start-Sleep -Seconds 4
     Server-Log | Select-Object -Last 3
 }
