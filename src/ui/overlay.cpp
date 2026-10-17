@@ -394,7 +394,9 @@ namespace ui::overlay
         // in inventory_mod_menu.vpk: a drop-down per setting, as on the Video page).  Its own code, which looks for its
         // own controls, is switched off: of the slots where it differs from its base L4D360UI::CL4DFrame (vtable
         // 0x101636AC), these get the base's back or the mod's:
-        //    88 0x10025A00 -> 0x1000F660 (the base's, then something of its own)
+        //    88 0x10025A00 stays: the base's 0x1000F660, then SetPaintBackgroundEnabled(true) (vgui slot 71, flag 8 at
+        //       +0x60) and the frame's layout 0x1000F360, as the Video page's 0x10074810 starts.  Without the
+        //       background the dark band behind the controls (ImgBackground) is not drawn.
         //    96 OnCommand 0x10025430 -> the mod's: "InvMod <key> <value>" (a choice), "InventoryModWindow", "Back";
         //       the rest to the base 0x100FB8B0 (vgui Frame's: "Close", "CloseModal" ...)
         //   101 0x10025220 -> the mod's: the base's 0x100FC680 (the layout loaded, the controls made), then the values
@@ -412,6 +414,12 @@ namespace ui::overlay
         // WINDOW_TYPE&, caller, hideCaller, KeyValues*) 0x1000AC00 (thiscall); WT_AUDIOVIDEO is 3 (the in-game menu's
         // "AudioVideo" command).  Going back: as the Video page's "Back", the B button: 0x1000E950(0x73 KEY_XBUTTON_B,
         // the panel's user 0x10009B30) (cdecl), then the page's own slot 121 with that code.
+        // The blur behind it: CBaseModPanel's per-frame update (0x1000D2D0) fades the game's view behind the menus in and
+        // out through IVEngineClient slot 165 (engine 0x1005E3A0) -> the client's CHLClient slot 78 SetBlurFade
+        // (0x100ABB60) -> TerrorClientMode +0x90, drawn with dev/fade_blur (0x101C7FE0).  Whether the active window
+        // blurs comes from its type through a byte table at 0x1000D4CC (at 0x1000D35D: `cmp eax, 15h / ja / movzx ecx,
+        // byte ptr [eax+0x1000D4CC] / jmp [ecx*4+0x1000D4C4]`; 0 no blur, 1 blur), where WT_NONE, WT_AUDIOVIDEO (3) and
+        // 19-21 have 0.  While the page is the mod's, its entry is 1, as the Video page's (type 4) is.
 
         struct PageSetting
         {
@@ -495,6 +503,7 @@ namespace ui::overlay
                                  k_rva_base_layout = 0xFC680;
         constexpr int k_wt_audio_video = 3;
         constexpr std::uintptr_t k_off_flyout_listener = 0x2BC;
+        constexpr std::uintptr_t k_rva_blur_switch = 0xD35D, k_rva_blur_table = 0xD4CC;
 
         using GetSingletonFn = void*(__cdecl*)();
         using OpenWindowFn = void*(__thiscall*)(void* panel, const int* type, void* caller, bool hide_caller, void* params);
@@ -518,11 +527,53 @@ namespace ui::overlay
             void* original = nullptr;
         };
         PageSlot g_page_slots[] = {
-            {88, 0x25A00, 0xF660},  {96, 0x25430, 0},       {101, 0x25220, 0xFC680}, {121, 0x25EE0, 0xEB80},
+            {88, 0x25A00, 0x25A00}, {96, 0x25430, 0},       {101, 0x25220, 0xFC680}, {121, 0x25EE0, 0xEB80},
             {127, 0x259E0, 0},      {238, 0x25CA0, 0},      {282, 0x25850, 0xF580},
         };
 
         template <class F> F gameui_fn(std::uintptr_t rva) { return reinterpret_cast<F>(g_gameui + rva); }
+
+        // The page's entry in the blur table (see above): the byte, and what it was (-1: not patched).  The table is
+        // in .text, among the code: the page stays executable.
+        std::uint8_t* g_page_blur = nullptr;
+        int g_page_blur_old = -1;
+
+        bool patch_byte(std::uint8_t* at, std::uint8_t value)
+        {
+            DWORD old = 0;
+            if (!VirtualProtect(at, 1, PAGE_EXECUTE_READWRITE, &old))
+                return false;
+            *at = value;
+            VirtualProtect(at, 1, old, &old);
+            return true;
+        }
+
+        void install_page_blur()
+        {
+            const std::uintptr_t at = g_gameui + k_rva_blur_switch;
+            if (game::mem::find_pattern(at, 15, "83 F8 15 77 ?? 0F B6 88 ?? ?? ?? ?? FF 24 8D") != at ||
+                game::mem::read_or<std::uintptr_t>(at + 8) != g_gameui + k_rva_blur_table ||
+                game::mem::read_or<std::uint8_t>(g_gameui + k_rva_blur_table + k_wt_audio_video, 0xFF) > 1)
+            {
+                INV_LOG("overlay: GameUI's menu blur does not look as expected: the page has no blur behind it");
+                return;
+            }
+            auto* entry = reinterpret_cast<std::uint8_t*>(g_gameui + k_rva_blur_table + k_wt_audio_video);
+            const std::uint8_t old = *entry;
+            if (patch_byte(entry, 1))
+            {
+                g_page_blur = entry;
+                g_page_blur_old = old;
+            }
+        }
+
+        void uninstall_page_blur()
+        {
+            if (g_page_blur != nullptr && g_page_blur_old >= 0)
+                patch_byte(g_page_blur, static_cast<std::uint8_t>(g_page_blur_old));
+            g_page_blur = nullptr;
+            g_page_blur_old = -1;
+        }
 
         void __fastcall page_title(void* self, void*)
         {
@@ -643,6 +694,7 @@ namespace ui::overlay
                 s.original = reinterpret_cast<void*>(g_gameui + s.own_rva);
                 patch_slot(vtable + s.slot, mine[i] != nullptr ? mine[i] : reinterpret_cast<void*>(g_gameui + s.base_rva));
             }
+            install_page_blur();
             g_page_ready = true;
             hud::set_settings_page(true);
         }
@@ -654,6 +706,7 @@ namespace ui::overlay
             void** vtable = reinterpret_cast<void**>(g_gameui + k_rva_page_vtable);
             for (const PageSlot& s : g_page_slots)
                 patch_slot(vtable + s.slot, s.original);
+            uninstall_page_blur();
             g_page_ready = false;
             hud::set_settings_page(false);
         }
