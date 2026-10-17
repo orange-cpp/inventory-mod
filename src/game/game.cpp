@@ -1362,8 +1362,9 @@ namespace game
         // its Precache (slot 26, 0x1029F5A0) precaches models/props/terror/ammo_stack.mdl, its model (slot 239,
         // 0x1029F560) is the "model" keyvalue or that one, its Use (slot 106, 0x1029F5F0) is its own (the refill).
         // The pile is its round type's own ammo pack, models/inv_mod/rounds_<kind>.mdl, when the game has it: the addon
-        // inventory_mod_rounds.vpk in left4dead2/addons (tools/make_rounds_addon.py: the incendiary pack with the
-        // texture of assets/textures for that type).  Without it (or for a type with no pack: the M60, the chainsaw) it
+        // inventory_mod_rounds.vpk in the addons folder next to the DLL, which the mod mounts (see mount_addons), or in
+        // left4dead2/addons (tools/make_rounds_addon.py: the incendiary pack with the texture of assets/textures for
+        // that type).  Without it (or for a type with no pack: the M60, the chainsaw) it
         // is the closed incendiary ammo pack (the upgrade pack's world model, loaded with every map), tinted the colour of
         // its round type (inv::ammo_color, the entity's "rendercolor" as "r g b 255": three numbers leave the alpha 0 and
         // it is invisible); ammo_stack.mdl when that cannot be precached.  Every player needs the addon to see the packs:
@@ -1374,6 +1375,57 @@ namespace game
         // scope "CBaseFileSystem::FileExists").  The same file in the game and the dedicated server.
         constexpr int k_vt_file_exists = 10;
         using FileExistsFn = bool(__thiscall*)(void* fs, const char* name, const char* path_id);
+
+        // The mod's addons, every .vpk in the addons folder next to the DLL (inventory_mod_rounds.vpk, the ammo packs:
+        // tools/make_rounds_addon.py), are mounted as the game mounts an addon, so they need no copy in
+        // left4dead2/addons: filesystem_stdio.dll "VFileSystem018" (its one CFileSystem_Stdio, 0x10052608, vtable
+        // 0x10047E44) slot 107 AddVPKFile(name, addType) 0x1000A110 (thiscall, ret 8): the name made absolute; one
+        // already in its list of VPKs (+0x1CC, count +0x1D8) is left alone, else a CPackedStore is opened for it (an
+        // empty or unreadable one is dropped) and put at the tail (1) or the head (0).  AddSearchPath's internal function
+        // (0x1000C630) calls it for a folder's pakNN_dir.vpk.  Slot 108 RemoveVPKFile(name) 0x100068B0 would take one
+        // out; the mod leaves them mounted when it unloads (models read from them stay in use), and mounting them again
+        // when the mod loads again changes nothing.
+        constexpr int k_vt_add_vpk_file = 107;
+        using AddVpkFileFn = void(__thiscall*)(void* fs, const char* name, int add_type);
+
+        bool game_file_exists(const char* name);
+
+        void mount_addons()
+        {
+            const std::wstring folder = std::wstring(core::module_dir()) + L"addons\\";
+            WIN32_FIND_DATAW found{};
+            HANDLE search = FindFirstFileW((folder + L"*.vpk").c_str(), &found);
+            if (search == INVALID_HANDLE_VALUE)
+            {
+                INV_LOG("game: no addons next to the DLL (addons\\*.vpk): dropped rounds are the incendiary pack, unless "
+                        "inventory_mod_rounds.vpk is in left4dead2/addons");
+                return;
+            }
+            HMODULE module = GetModuleHandleW(L"filesystem_stdio.dll");
+            const auto create =
+                module != nullptr ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface")) : nullptr;
+            void* fs = create != nullptr ? create("VFileSystem018", nullptr) : nullptr;
+            const std::uintptr_t at = fs != nullptr ? mem::vslot(fs, k_vt_add_vpk_file) : 0;
+            if (at == 0 || mem::find_pattern(at, 10, "55 8B EC 81 EC 0C 01 00 00 A1") != at)
+            {
+                INV_LOG("game: the file system's AddVPKFile does not look as expected: the mod's addons are not mounted");
+                FindClose(search);
+                return;
+            }
+            do
+            {
+                if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                    continue;
+                const std::wstring path = folder + found.cFileName;
+                char name[MAX_PATH * 2] = {};
+                if (WideCharToMultiByte(CP_ACP, 0, path.c_str(), -1, name, sizeof(name), nullptr, nullptr) == 0)
+                    continue;
+                const bool ok = mem::guarded([&] { reinterpret_cast<AddVpkFileFn>(at)(fs, name, 1); });
+                INV_LOG("game: mounted %s%s", name, ok ? "" : " (the call failed)");
+            } while (FindNextFileW(search, &found));
+            FindClose(search);
+            INV_LOG("game: the ammo packs %s", game_file_exists("models/inv_mod/rounds_smg.mdl") ? "are there" : "are not found");
+        }
 
         // The game can load `name` (its own files, the addons): main thread.
         bool game_file_exists(const char* name)
@@ -3990,6 +4042,7 @@ namespace game
     bool init(bool dedicated)
     {
         g_dedicated = dedicated;
+        mount_addons(); // (every copy of the mod: the host, a player on a server, the dedicated server)
         if (!mem::module_info(L"server.dll", g.server))
         {
             INV_LOG("game: server.dll is not loaded");

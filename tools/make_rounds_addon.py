@@ -1,4 +1,5 @@
-"""Builds the addon with the ammo pack of each round type: inventory_mod_rounds.vpk, for left4dead2/addons.
+"""Builds the addon with the ammo pack of each round type, inventory_mod_rounds.vpk, in the addons folder next to the
+mod's DLL.
 
     python -I tools/make_rounds_addon.py [--game <Left 4 Dead 2 folder>] [--out <file.vpk>] [--install]
 
@@ -11,7 +12,8 @@ For each texture in assets/textures (KINDS below: file -> round type) it makes
 The model files and the shine mask are read from the game's own VPKs (they are Valve's, not in this repository).  The
 copies are the game's files with two strings changed in place (the model's name and its texture's path, both
 shorter than before), so nothing is recompiled and the checksums the .vvd / .vtx carry still match.
---install copies the addon into the game's left4dead2/addons (the game mounts addons when it starts).
+It goes to out/Release/addons: the mod mounts every .vpk in the addons folder next to its DLL when it loads (game.cpp,
+mount_addons), so the game needs no copy.  --install also copies it into the game's left4dead2/addons (mounted when the game starts).
 The mod uses models/inv_mod/rounds_<kind>.mdl for a pile of that type when the game can find it (see game.cpp).
 """
 import io
@@ -144,7 +146,7 @@ def make_vpk(files):
 
 def main(argv):
     game = GAME
-    out = os.path.join(ROOT, "out", "addon", "inventory_mod_rounds.vpk")
+    out = os.path.join(ROOT, "out", "Release", "addons", "inventory_mod_rounds.vpk")
     install = False
     i = 1
     while i < len(argv):

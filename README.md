@@ -105,9 +105,10 @@ The reserve rounds you carry weigh, by `[round_weight]` in the host's `inventory
 360 weigh 3.6; SMG 0.006; shotgun shell 0.04; sniper and hunting rifle 0.02; grenade 0.15; 0 makes a type weightless).
 The window's Items tab lists each type you carry with what it weighs, and drops it a magazine's worth at a time
 ("Drop 50") or all of it: the rounds land as an ammo pile that holds exactly those rounds, which anyone (not the bots)
-takes back with E, as many as fit; the rest stays in the pile. With the addon `inventory_mod_rounds.vpk` in
-`left4dead2/addons` each round type is its own ammo pack (the textures in `assets/textures`, built by
-`python -I tools/make_rounds_addon.py --install`); without it, and for M60 rounds and chainsaw fuel, the pile is the
+takes back with E, as many as fit; the rest stays in the pile. With the addon `inventory_mod_rounds.vpk` in the
+`addons` folder next to the DLL (the mod mounts every `.vpk` there when it loads; in `left4dead2/addons` it works too)
+each round type is its own ammo pack (the textures in `assets/textures`, built into `out/Release/addons` by
+`python -I tools/make_rounds_addon.py`); without it, and for M60 rounds and chainsaw fuel, the pile is the
 incendiary ammo pack tinted the type's colour. Every player needs the addon to see the packs. An ammo pile of the map, or a gun picked up, fills you
 only up to the weight limit.
 

@@ -165,6 +165,12 @@ function Inject-Server {
     $dir = "$script:Root\out\Server"
     New-Item -ItemType Directory -Force $dir | Out-Null
     Copy-Item "$script:Root\out\Release\inventory_mod.dll" $dir -Force
+    # the mod's addons (the ammo packs), mounted by the mod from the addons folder next to the DLL (a copy in use is
+    # left as it is: it stays mounted)
+    if (Test-Path "$script:Root\out\Release\addons") {
+        New-Item -ItemType Directory -Force "$dir\addons" | Out-Null
+        Copy-Item "$script:Root\out\Release\addons\*.vpk" "$dir\addons" -Force -ErrorAction SilentlyContinue
+    }
     if (-not (Test-Path "$dir\inventory_mod_settings.toml") -and (Test-Path "$script:Root\out\Release\inventory_mod_settings.toml")) {
         Copy-Item "$script:Root\out\Release\inventory_mod_settings.toml" $dir
     }
