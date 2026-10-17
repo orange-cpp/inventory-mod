@@ -45,7 +45,8 @@ namespace hud
                 Use,
                 Drop,
                 Store,
-                Pickup
+                Pickup,
+                Unload
             } kind;
             int slot;
             int count;
@@ -98,7 +99,8 @@ namespace hud
                     {"Use item:", &c.key_use},
                     {"Drop item:", &c.key_drop},
                     {"Store held item:", &c.key_store},
-                    {"Pick up nearby:", &c.key_pickup}};
+                    {"Pick up nearby:", &c.key_pickup},
+                    {"Unload gun:", &c.key_unload}};
         }
 
         // The hotbar entry for a key of the keyboard's top row.  Replacing the game's panel: 1..9 -> entries 0..8 and
@@ -122,7 +124,8 @@ namespace hud
         {
             const core::Config& c = core::config();
             return vk != 0 && (digit_slot(vk) >= 0 || vk == c.key_toggle || vk == c.key_prev || vk == c.key_next || vk == c.key_use ||
-                               vk == c.key_drop || vk == c.key_store || vk == c.key_pickup);
+                               vk == c.key_drop || vk == c.key_store || vk == c.key_pickup ||
+                               vk == c.key_unload);
         }
 
         void run(const Intent& intent)
@@ -141,6 +144,9 @@ namespace hud
                 break;
             case Intent::Pickup:
                 backend.pickup_nearby();
+                break;
+            case Intent::Unload:
+                backend.unload_weapon();
                 break;
             }
         }
@@ -1365,6 +1371,10 @@ namespace hud
             if (nc::Button("Pick up nearby", ImVec2(110.f, 0.f)))
                 g.intents.push_back({Intent::Pickup, 0, 0});
             nc::SetItemTooltip("Takes the item in front of you from the ground into the inventory.");
+            ImGui::SameLine();
+            if (nc::Button("Unload gun", ImVec2(90.f, 0.f)))
+                g.intents.push_back({Intent::Unload, 0, 0});
+            nc::SetItemTooltip("Empties the gun in your hands (or the one on the ground you look at) into your reserve.");
             if (nc::Button("Use selected", ImVec2(120.f, 0.f)))
                 g.intents.push_back({Intent::Use, inventory.selected(), 1});
 
@@ -1688,6 +1698,7 @@ namespace hud
                 else if (key == "key_drop") cfg.key_drop = std::atoi(value.c_str());
                 else if (key == "key_store") cfg.key_store = std::atoi(value.c_str());
                 else if (key == "key_pickup") cfg.key_pickup = std::atoi(value.c_str());
+                else if (key == "key_unload") cfg.key_unload = std::atoi(value.c_str());
                 else if (key == "slots") cfg.slots = std::clamp(std::atoi(value.c_str()), 1, 24);
                 else if (key == "weapon_slots") cfg.weapon_slots = std::clamp(std::atoi(value.c_str()), 0, 8);
                 else if (key == "max_weight") cfg.max_weight = std::max(0.f, number);
@@ -1941,6 +1952,11 @@ namespace hud
         if (vk == cfg.key_pickup)
         {
             run({Intent::Pickup, 0, 0});
+            return true;
+        }
+        if (vk == cfg.key_unload)
+        {
+            run({Intent::Unload, 0, 0});
             return true;
         }
 

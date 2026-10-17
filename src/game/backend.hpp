@@ -94,6 +94,10 @@ namespace game
         virtual void drop(int slot, int count) = 0; // put it on the ground in front of the player
         virtual void store_held() = 0; // take the item the player holds into the inventory
         virtual void pickup_nearby() = 0; // take the item the player is looking at from the world into the inventory
+        // Empty the gun in the player's hands, or the one on the ground they look at: its magazine into their reserve.
+        virtual void unload_weapon()
+        {
+        }
         // Drag and drop in the window: the HUD has moved it in the session already; a remote inventory moves it too.
         virtual void move(int /*from*/, int /*to*/)
         {

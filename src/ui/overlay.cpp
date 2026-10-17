@@ -453,6 +453,7 @@ namespace ui::overlay
             {"key_drop", PageSetting::Int, {}},
             {"key_store", PageSetting::Int, {}},
             {"key_pickup", PageSetting::Int, {}},
+            {"key_unload", PageSetting::Int, {}},
             {"slots", PageSetting::Float, {4.f, 6.f, 8.f, 10.f, 12.f, 16.f, 20.f, 24.f}},
             {"weapon_slots", PageSetting::Float, {0.f, 1.f, 2.f, 3.f, 4.f, 6.f, 8.f}},
             {"max_weight", PageSetting::Float, {0.f, 10.f, 15.f, 20.f, 25.f, 30.f, 40.f, 50.f}},
@@ -484,6 +485,7 @@ namespace ui::overlay
             else if (k == "key_drop") number = static_cast<float>(c.key_drop);
             else if (k == "key_store") number = static_cast<float>(c.key_store);
             else if (k == "key_pickup") number = static_cast<float>(c.key_pickup);
+            else if (k == "key_unload") number = static_cast<float>(c.key_unload);
             else if (k == "slots") number = static_cast<float>(c.slots);
             else if (k == "weapon_slots") number = static_cast<float>(c.weapon_slots);
             else if (k == "max_weight") number = c.max_weight;

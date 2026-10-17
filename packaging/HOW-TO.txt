@@ -46,6 +46,10 @@ Keys (rebind them in the window's Settings tab)
   3 .. 9, 0         take inventory box 1 .. 8 in hand
   ;                 store what is in your hands (items and weapons)
   H                 pick up the item / weapon in front of you into the inventory
+  U                 unload the gun in your hands (or the gun on the ground you look at, also a map's weapon
+                    spot): its rounds go into your reserve, what does not fit is dropped as a pack. The gun stays
+                    empty until you reload (R) or fire. (U is also the game's team chat
+                    key: the mod's key wins while you play; rebind one of them if you need both.)
   G                 drop what is in your hands
   E                 (the game's use) on an item or weapon whose game slot you already fill: it goes into the inventory
   Ctrl+End          unload the mod

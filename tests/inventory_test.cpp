@@ -411,6 +411,29 @@ molotov = 1
         inv::apply_rules("");
         CHECK(inv::round_weight("assaultrifle") == 0.01f); // back to the default
 
+        // unloading: which guns, and where the magazine's rounds go
+        CHECK(inv::unloadable("weapon_rifle_ak47") && inv::unloadable("weapon_sniper_awp") &&
+              inv::unloadable("weapon_grenade_launcher"));
+        CHECK(!inv::unloadable("weapon_rifle_m60") && !inv::unloadable("weapon_chainsaw") &&
+              !inv::unloadable("weapon_pistol") && !inv::unloadable("weapon_melee") && !inv::unloadable("weapon_gascan"));
+        const inv::UnloadSplit all_in = inv::split_unload("assaultrifle", 50, 100, -1.f);
+        CHECK(all_in.to_reserve == 50 && all_in.to_ground == 0);
+        const inv::UnloadSplit near_max = inv::split_unload("assaultrifle", 50, 340, -1.f); // the most is 360
+        CHECK(near_max.to_reserve == 20 && near_max.to_ground == 30);
+        const inv::UnloadSplit at_max = inv::split_unload("assaultrifle", 50, 400, -1.f); // over it already (a rules change)
+        CHECK(at_max.to_reserve == 0 && at_max.to_ground == 50);
+        const inv::UnloadSplit heavy = inv::split_unload("sniperrifle", 30, 0, 0.25f); // 0.02 each: 12 fit
+        CHECK(heavy.to_reserve == 12 && heavy.to_ground == 18);
+        const inv::UnloadSplit exact = inv::split_unload("shotgun", 8, 0, 0.32f); // 0.04 each, exactly 8
+        CHECK(exact.to_reserve == 8 && exact.to_ground == 0);
+        const inv::UnloadSplit no_room = inv::split_unload("smg", 50, 0, 0.f);
+        CHECK(no_room.to_reserve == 0 && no_room.to_ground == 50);
+        const inv::UnloadSplit empty = inv::split_unload("smg", 0, 0, -1.f);
+        CHECK(empty.to_reserve == 0 && empty.to_ground == 0);
+        inv::apply_rules("[ammo]\nassault_rifle = 60\n");
+        CHECK(inv::split_unload("assaultrifle", 40, 30, -1.f).to_reserve == 30); // [ammo] counts
+        inv::set_ammo_max("assaultrifle", -1);
+
         inv::set_item_weight("weapon_first_aid_kit", medkit_weight);
         inv::set_item_weight("weapon_pain_pills", 1.f);
         inv::set_item_stack("weapon_molotov", molotov_stack);

@@ -1,5 +1,8 @@
 #include "inv/items.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace inv
 {
 
@@ -169,7 +172,7 @@ namespace inv
     bool set_ammo_max(std::string_view kind, int rounds)
     {
         AmmoKind* a = find_ammo(kind);
-        if (a == nullptr || rounds < 0)
+        if (a == nullptr || rounds < -1) // -1: not set, the game's default again
             return false;
         a->max = rounds;
         return true;
@@ -229,6 +232,27 @@ namespace inv
             if (pool[a.index] > 0)
                 w += static_cast<float>(pool[a.index]) * (a.weight >= 0.f ? a.weight : a.default_weight);
         return w;
+    }
+
+    bool unloadable(std::string_view classname)
+    {
+        const char* kind = ammo_kind(classname);
+        return kind != nullptr && std::string_view(kind) != "m60" && std::string_view(kind) != "chainsaw";
+    }
+
+    UnloadSplit split_unload(std::string_view kind, int rounds, int reserve, float weight_room)
+    {
+        UnloadSplit split;
+        if (rounds <= 0)
+            return split;
+        const int max = ammo_max(kind);
+        int fit = max >= 0 ? std::max(0, max - std::max(0, reserve)) : rounds;
+        const float each = round_weight(kind);
+        if (weight_room >= 0.f && each > 0.f)
+            fit = std::min(fit, static_cast<int>(std::floor(weight_room / each + 1e-4f)));
+        split.to_reserve = std::clamp(fit, 0, rounds);
+        split.to_ground = rounds - split.to_reserve;
+        return split;
     }
 
     bool set_item_weight(std::string_view classname, float weight)

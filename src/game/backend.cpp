@@ -62,6 +62,10 @@ namespace game
             {
                 notify("No game connection: nothing to pick up");
             }
+            void unload_weapon() override
+            {
+                notify("No game connection: nothing to unload");
+            }
         };
 
         StubBackend g_stub;

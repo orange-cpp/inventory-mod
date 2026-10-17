@@ -14,6 +14,12 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
 - A **hotbar** (always on) and an **inventory window** (grid, tooltips, right-click menu, drag and drop).
 - **Store**: takes the item or weapon in your hands into the inventory.
 - **Pick up nearby**: takes the item or weapon lying in front of you into the inventory.
+- **Unload** (`U`): empties the gun in your hands, or the gun on the ground you look straight at, completely: its
+  magazine goes into your reserve of its round type, as many rounds as fit (the type's most, the weight limit); the
+  rest is dropped in front of you as a pack of those rounds. Incendiary / explosive rounds come out as plain rounds (the
+  laser sight stays). Not the pistols, the M60 or the chainsaw. A gun on the ground stays there, empty; a map's gun
+  spawner gives up one gun, which lies there empty (the spawner goes when it had one left). A gun unloaded in your hands
+  stays empty until you reload or fire.
 - **Use**: puts the selected item in your hands, if the player's slot for it is free.
 - **Drop**: puts the selected item on the ground in front of you, like `ent_create` does.
 - **Auto-store**: pressing +use (E) on a supported item while your slot for it is full puts it into the inventory
@@ -181,6 +187,7 @@ Settings tab is back (it also rebinds a key to any key at all).
 | `G` | beside the game's panel: drop what is in your hands (stored items are dropped from the window). With `replace_native=1`: drop the selected entry, an inventory item or a weapon / item you carry in the game's own slots |
 | `;` | store the item in your hands |
 | `H` | pick up the item in front of you |
+| `U` | unload the gun in your hands (or the one on the ground you look at) into your reserve. U is the game's team chat key by default: while you play, the mod's key wins; rebind one of them if you need both |
 | `Ctrl+End` | unload the DLL |
 
 ## Build

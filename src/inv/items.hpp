@@ -57,7 +57,7 @@ namespace inv
     int ammo_index(std::string_view kind);
     // Whether the rules file set `kind` (so the game's setting is to be changed to it).
     bool ammo_max_set(std::string_view kind);
-    bool set_ammo_max(std::string_view kind, int rounds);
+    bool set_ammo_max(std::string_view kind, int rounds); // -1: not set (the game's default)
 
     // What one round of `kind` weighs (the rules file's [round_weight], else the default: a rifle round 0.01, so 360 weigh
     // 3.6; a shotgun shell 0.04; a grenade 0.15 ...); 0 for an unknown kind.
@@ -75,5 +75,19 @@ namespace inv
     const char* ammo_kind_at(int index);
     // What a player's reserve weighs: `pool` is m_iAmmo, the rounds of each of the game's 32 ammo types.
     float ammo_weight(const int (&pool)[32]);
+
+    // Unloading a gun (the unload key): its magazine goes into the player's reserve of its ammo type.  Only guns whose
+    // rounds a player can carry: not the M60 (its reserve's most is 0, the game refuses it any ammo) or the chainsaw
+    // (fuel), and not the pistols or melee weapons (no ammo kind).
+    bool unloadable(std::string_view classname);
+    // Where the `rounds` of `kind` that come out of a magazine go: into the reserve as many as fit (the type's most, less
+    // the `reserve` the player has; and `weight_room`, what the player can still carry, < 0 for no limit), the rest on
+    // the ground as a pile of rounds.  Nothing stays in the gun.
+    struct UnloadSplit
+    {
+        int to_reserve = 0;
+        int to_ground = 0;
+    };
+    UnloadSplit split_unload(std::string_view kind, int rounds, int reserve, float weight_room);
 
 } // namespace inv

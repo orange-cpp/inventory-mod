@@ -87,6 +87,7 @@ namespace core
             c.key_drop = keys["drop"].value_or(c.key_drop);
             c.key_store = keys["store"].value_or(c.key_store);
             c.key_pickup = keys["pickup"].value_or(c.key_pickup);
+            c.key_unload = keys["unload"].value_or(c.key_unload);
 
             const toml::node_view hud = root["hud"];
             c.show_hotbar = hud["show"].value_or(c.show_hotbar);
@@ -273,6 +274,7 @@ namespace core
         key("drop", c.key_drop);
         key("store", c.key_store);
         key("pickup", c.key_pickup);
+        key("unload", c.key_unload);
         fprintf(f, "\n[hud]\n");
         fprintf(f, "show = %s                    # the boxes under the game's panel (or the hotbar)\n",
                 c.show_hotbar ? "true" : "false");

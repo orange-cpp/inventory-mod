@@ -36,7 +36,7 @@ WINDOW_COMMAND = "InventoryModWindow"
 ON_OFF = [("1", "On"), ("0", "Off")]
 # The keys a key can be (Windows virtual-key codes, as inventory_mod_settings.toml has them): the letters the game does
 # not use for moving, use, reload, the last weapon or chat, some punctuation and the editing keys.
-KEYS = [("0", "None")] + [(str(ord(c)), c) for c in "BCFGHIJKLMNOPTVXZ"] + [
+KEYS = [("0", "None")] + [(str(ord(c)), c) for c in "BCFGHIJKLMNOPTUVXZ"] + [
     ("219", "["), ("221", "]"), ("220", "Backslash"), ("186", ";"), ("222", "'"), ("188", ","), ("190", "."), ("191", "/"),
     ("45", "Insert"), ("46", "Delete"), ("36", "Home"), ("33", "Page Up"), ("34", "Page Down")]
 KEY_COLUMNS = 3
@@ -67,6 +67,7 @@ SETTINGS = [
     ("key_drop", "Key: drop", "Drops what is in your hands (or the selected box's item).", KEYS),
     ("key_store", "Key: store", "Stores the item or weapon in your hands.", KEYS),
     ("key_pickup", "Key: pick up", "Takes the item or weapon in front of you into the inventory.", KEYS),
+    ("key_unload", "Key: unload gun", "Empties the gun in your hands (or the one you look at) into your reserve.", KEYS),
     ("slots", "Item boxes", "The most item boxes." + LIMIT_NOTE,
      [(str(n), str(n)) for n in (4, 6, 8, 10, 12, 16, 20, 24)]),
     ("weapon_slots", "Weapon boxes", "The most boxes for stored guns and melee weapons." + LIMIT_NOTE,
@@ -75,7 +76,7 @@ SETTINGS = [
      [("0", "None")] + [(str(n), str(n)) for n in (10, 15, 20, 25, 30, 40, 50)]),
 ]
 # the right-hand column: the keys and the limits
-RIGHT = {"key_toggle", "key_prev", "key_next", "key_use", "key_drop", "key_store", "key_pickup", "slots", "weapon_slots",
+RIGHT = {"key_toggle", "key_prev", "key_next", "key_use", "key_drop", "key_store", "key_pickup", "key_unload", "slots", "weapon_slots",
          "max_weight"}
 
 FLYOUT_BUTTON = '''
