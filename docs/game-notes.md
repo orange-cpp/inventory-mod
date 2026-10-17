@@ -4,6 +4,7 @@ Everything here was read out of the game's DLLs with `tools/re/pe_tools.py` (cap
 the running game. It is for **one build**: game 2.2.4.3, `server.dll` PE timestamp `0x6A440E53`
 (sha256 `a93ec916...`). `game::init()` refuses to run on any other `server.dll`, so a game update fails closed.
 Addresses are RVAs from the preferred base `0x10000000`; the mod itself finds them at run time (see "how it is found").
+In the code they are declared in `src/game/sdk.hpp`.
 
 ## Tool
 

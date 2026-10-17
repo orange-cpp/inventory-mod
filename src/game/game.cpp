@@ -1,27 +1,7 @@
 // The real backend: puts items into the player's hands, onto the ground and back into the inventory.
 //
-// Everything here was read out of server.dll build 2.2.4.3 (PE timestamp 0x6A440E53) with tools/re/pe_tools.py; init()
-// refuses to run on any other build.  What each number is:
-//
-//   IServerTools ("VSERVERTOOLS001", server.dll's CreateInterface), vtable slots
-//       7 FirstEntity     (its body loads &gEntList: `6A 00 B9 <gEntList> E8`)
-//      10 GetKeyValue(ent, field, buf, len)     13 SetKeyValue(ent, field, const char*)
-//         (MSVC puts overloads in the vtable last first: 11 is SetKeyValue(ent, field, const Vector&), 0x104CF140,
-//         which calls the entity's KeyValue(field, Vector) (slot 32, 0x1006D4D0: sprintf "%f %f %f"); 12 the float
-//         one; 13, 0x104CF100, the entity's KeyValue(field, const char*) (slot 34, 0x10070670: "rendercolor" ...).
-//         Slot 11 was used until 2026-10-16: every key got a string's bytes as three floats, "1775...e19 ...")
-//      14 CreateEntityByName(classname)         15 DispatchSpawn(ent)
-//      16 DestroyEntityByHammerId, whose body is `... 50 E8 <UTIL_Remove> 83 C4 04 B0 01`
-//   gEntList: the entity list.  Entry i is at gEntList + 4 + 16 * i = {entity, serial, prev, next}; an EHANDLE is
-//       index | serial << 12 (index 12 bits).  Entity index 1 is the first player slot: the host on a listen server.
-//   CTerrorPlayer: primary vtable at server.dll + 0x6973B4 (587 slots), slot 431 GiveNamedItem(name, 0, 0, 0) (the
-//       `give` console command calls it exactly so), 140 EyePosition(Vector* out), 141 EyeAngles().
-//   Netprops of CBaseCombatCharacter (SendProp definitions in server.dll): m_hMyWeapons at +0x18F4, 56 EHANDLEs;
-//       m_hActiveWeapon at +0x19D4.
-//   UTIL_Remove(CBaseEntity*) is cdecl.
-//   Spawning an item the way the `ent_create` console command does (callback at server.dll + 0x57690): create,
-//       entity vtable slot 26 Precache(), DispatchSpawn, slot 118 Teleport(&pos, 0, 0), then UTIL_DropToFloor(ent,
-//       0x200400B, 0) (cdecl; found by its call inside ent_create).
+// Every address, vtable slot, offset and function signature it uses is declared in game/sdk.hpp (build 2.2.4.3 only:
+// init() refuses to run on any other server.dll); why each is used stays next to the code below.
 //
 // The game's code is not thread safe: every call into it happens in pump(), which runs on the game's main thread
 // (the window procedure gets k_msg_pump).
@@ -33,6 +13,7 @@
 #include "core/log.hpp"
 #include "game/backend.hpp"
 #include "game/mem.hpp"
+#include "game/sdk.hpp"
 #include "inv/rules.hpp"
 
 #include <algorithm>
@@ -55,72 +36,9 @@ namespace game
 
     namespace
     {
-        constexpr std::uint32_t k_server_timestamp = 0x6A440E53;
-        constexpr std::uintptr_t k_rva_player_vtable = 0x6973B4;
-        constexpr std::uintptr_t k_rva_ent_create = 0x57690;
-        // client.dll: CHudWeaponSelection's CHudElement vtable and its ShouldDraw (slot 12)
-        constexpr std::uintptr_t k_rva_weapon_select_vtable = 0x5D5A84;
-        constexpr std::uintptr_t k_rva_weapon_select_should_draw = 0x2CE900;
-        constexpr std::uintptr_t k_rva_weapon_select_panel_vtable = 0x5D5734; // its vgui::Panel part
-        constexpr std::uintptr_t k_rva_weapon_select_paint = 0x2D11E0; // slot 128 of that vtable
-        constexpr int k_vt_use_pickup = 426;
-        // map item spawners (weapon_*_spawn): see "Map item spawners" in docs/game-notes.md
-        constexpr std::uintptr_t k_rva_spawn_vtable = 0x6796E4; // CWeaponSpawn (CWeaponSpawnConfigurable shares its Use)
-        constexpr int k_vt_entity_use = 106; // CBaseEntity::Use(activator, caller, type, value)
-        constexpr int k_vt_spawn_weapon_id = 240; // the spawner's weapon ID
-        constexpr std::uintptr_t k_rva_weapon_get_slot = 0x2C98F0; // CTerrorPlayer: the carried weapon of a weapon ID's slot
-        constexpr std::uintptr_t k_rva_weapon_id_name = 0x24EB70; // cdecl: weapon ID -> "weapon_first_aid_kit"
-        constexpr int k_vt_tools_set_key_value = 13; // IServerTools::SetKeyValue(entity, field, const char*)
-        constexpr int k_vt_precache = 26;
-        constexpr int k_vt_teleport = 118;
-        constexpr std::uintptr_t k_off_my_weapons = 0x18F4;
-        constexpr int k_max_weapons = 56;
-        constexpr std::uintptr_t k_off_active_weapon = 0x19D4;
-        constexpr std::uintptr_t k_off_weapon_owner = 0x13E8; // CBaseCombatWeapon::m_hOwner (SendProp: push 0x13E8 / "m_hOwner")
-        constexpr int k_vt_give_named_item = 431;
-        constexpr int k_vt_weapon_drop = 283; // Weapon_Drop(weapon, target, velocity): the VScript DropItem calls it so (0x102FBCD0)
-        constexpr int k_vt_cannot_drop = 401; // checked first by DropItem: non-zero means no
-        constexpr int k_vt_select_item = 429; // what the `use <weapon>` console command calls (server.dll 0x1008ED30)
-        constexpr int k_vt_eye_position = 140;
-        constexpr int k_vt_eye_angles = 141;
-        constexpr std::uint32_t k_invalid_handle = 0xFFFFFFFFu;
-        constexpr std::uintptr_t k_off_origin = 0x388; // CBaseEntity::m_vecOrigin (the SendProps: push 0x388 / push 0xC)
-        // A weapon's rounds (SendProp / datamap definitions: push <offset> / push "<name>"), for storing guns:
-        constexpr std::uintptr_t k_off_clip = 0x1414; // CBaseCombatWeapon::m_iClip1
-        constexpr std::uintptr_t k_off_ammo_type = 0x140C; // CBaseCombatWeapon::m_iPrimaryAmmoType
-        constexpr std::uintptr_t k_off_extra_ammo = 0x14F4; // CTerrorGun::m_iExtraPrimaryAmmo: a gun's reserve while it lies
-        constexpr std::uintptr_t k_off_player_ammo = 0x1874; // CBasePlayer::m_iAmmo[32]: the reserve of each ammo type
-        // A gun's upgrades (SendProps: push 0x17E0 / "m_upgradeBitVec" in CTerrorGun's table; push 0x1788 /
-        // "m_nUpgradedPrimaryAmmoLoaded" in CTerrorWeapon's LocalL4DWeaponData): 1 incendiary, 2 explosive, 4 laser
-        // sight, and the incendiary / explosive rounds still loaded.
-        constexpr std::uintptr_t k_off_upgrades = 0x17E0;
-        constexpr std::uintptr_t k_off_special_loaded = 0x1788;
-        // CTerrorMeleeWeapon::m_strMapSetScriptName (datamap entry 0x107BDF20: FIELD_STRING, keyvalue
-        // "melee_script_name"): which melee weapon it is, "fireaxe", "katana" ...
-        constexpr std::uintptr_t k_off_melee_name = 0x17E0;
+        using namespace sdk;
+
         constexpr float k_pickup_reach = 160.f;
-
-        struct Vec3
-        {
-            float x, y, z;
-        };
-
-        using CreateInterfaceFn = void*(__cdecl*)(const char* name, int* return_code);
-        using GetKeyValueFn = bool(__thiscall*)(void* tools, void* entity, const char* field, char* out, int length);
-        using SetKeyValueFn = bool(__thiscall*)(void* tools, void* entity, const char* field, const char* value);
-        using CreateEntityFn = void*(__thiscall*)(void* tools, const char* classname);
-        using DispatchSpawnFn = void(__thiscall*)(void* tools, void* entity);
-        using RemoveFn = void(__cdecl*)(void* entity);
-        using PrecacheFn = void(__thiscall*)(void* entity);
-        using TeleportFn = void(__thiscall*)(void* entity, const Vec3* position, const Vec3* angles,
-                                             const Vec3* velocity);
-        using DropToFloorFn = int(__cdecl*)(void* entity, unsigned mask, void* ignore);
-        using GiveFn = void*(__thiscall*)(void* player, const char* name, int a, int b, int c);
-        using WeaponDropFn = void(__thiscall*)(void* player, void* weapon, const Vec3* target, const Vec3* velocity);
-        using CannotDropFn = int(__thiscall*)(void* player);
-        using SelectItemFn = void*(__thiscall*)(void* player, const char* classname, int subtype);
-        using EyePositionFn = Vec3*(__thiscall*)(void* player, Vec3* out);
-        using EyeAnglesFn = const Vec3*(__thiscall*)(void* player);
 
         struct Env
         {
@@ -139,14 +57,6 @@ namespace game
         } g;
 
         // ---- entities -----------------------------------------------------------------------------------------------
-
-        struct EntInfo
-        {
-            void* entity;
-            std::uint32_t serial;
-            void* prev;
-            void* next;
-        };
 
         void* entity_at_index(int index)
         {
@@ -535,7 +445,6 @@ namespace game
         // cookie), ret 0xC.  The server's code checks the result for null and then skips firing.  While the mod swaps
         // items the events the game creates for it ("item_pickup", ...) are not real pickups, and the client answers
         // them with item icons floating in the world, so they are not created at all.
-        using CreateEventFn = void*(__fastcall*)(void* self, void* edx, const char* name, bool force, int* cookie);
         core::Hook<CreateEventFn> g_create_event;
 
         void* __fastcall hk_create_event(void* self, void* edx, const char* name, bool force, int* cookie)
@@ -1052,10 +961,8 @@ namespace game
         // It asks slot 280 (Weapon_CanUse, 0x10300600), on success equips with slot 281 and fires "weapon_given"; it
         // returns false when the weapon is refused, e.g. when the player's slot for it is already taken.  That is where
         // the inventory steps in.
-        using BumpWeaponFn = bool(__fastcall*)(void* player, void* edx, void* weapon);
         core::Hook<BumpWeaponFn> g_bump_weapon;
 
-        using ShouldDrawFn = bool(__fastcall*)(void* self, void* edx);
         core::Hook<ShouldDrawFn> g_weapon_select;
 
         bool __fastcall hk_weapon_select_should_draw(void* self, void* edx)
@@ -1081,7 +988,6 @@ namespace game
         // statement boundaries in the same function).
         volatile bool g_hide_item_boxes = false;
         std::uintptr_t g_item_boxes_end = 0;
-        using ItemBoxesFn = void (*)();
         core::Hook<ItemBoxesFn> g_item_boxes;
         std::uintptr_t g_item_boxes_original = 0;
 
@@ -1568,7 +1474,6 @@ namespace game
 
         constexpr char k_pile_prefix[] = "inv_rounds_"; // a pile a player dropped
         constexpr char k_map_pile_prefix[] = "inv_maprounds_"; // one the mod put on the map ([ammo_piles], see place_map_packs)
-        constexpr std::uintptr_t k_off_entity_name = 0x140; // CBaseEntity::m_iName (targetname)
         // weapon_ammo_spawn is CWeaponAmmoSpawn (vtable 0x10682CF4, set by its factory 0x102A22F0 over CWeaponSpawn's):
         // its Precache (slot 26, 0x1029F5A0) precaches models/props/terror/ammo_stack.mdl, its model (slot 239,
         // 0x1029F560) is the "model" keyvalue or that one, its Use (slot 106, 0x1029F5F0) is its own (the refill).
@@ -1606,9 +1511,6 @@ namespace game
             return nullptr;
         }
 
-        constexpr int k_vt_file_exists = 10;
-        using FileExistsFn = bool(__thiscall*)(void* fs, const char* name, const char* path_id);
-
         // The mod's addons, every .vpk in the addons folder next to the DLL (inventory_mod_rounds.vpk, the ammo packs:
         // tools/make_rounds_addon.py), are mounted as the game mounts an addon, so they need no copy in
         // left4dead2/addons: filesystem_stdio.dll "VFileSystem018" (its one CFileSystem_Stdio, 0x10052608, vtable
@@ -1618,8 +1520,6 @@ namespace game
         // (0x1000C630) calls it for a folder's pakNN_dir.vpk.  Slot 108 RemoveVPKFile(name) 0x100068B0 would take one
         // out; the mod leaves them mounted when it unloads (models read from them stay in use), and mounting them again
         // when the mod loads again changes nothing.
-        constexpr int k_vt_add_vpk_file = 107;
-        using AddVpkFileFn = void(__thiscall*)(void* fs, const char* name, int add_type);
 
         bool game_file_exists(const char* name);
 
@@ -1678,13 +1578,7 @@ namespace game
                 mem::guarded([&] { found = file_exists(fs, name, "GAME"); });
             return found;
         }
-        constexpr int k_vt_is_model_precached = 9; // VEngineServer022 IsModelPrecached(name)
-        using IsModelPrecachedFn = bool(__thiscall*)(void* engine, const char* name);
         constexpr const char* k_pile_model_fallback = "models/props/terror/ammo_stack.mdl";
-        // server.dll CBaseEntity::PrecacheModel (0x1006B690, cdecl int (const char*): engine slot 5 PrecacheModel(name,
-        // true), with a warning when it is late)
-        constexpr std::uintptr_t k_rva_precache_model = 0x6B690;
-        using PrecacheModelFn = int(__cdecl*)(const char* name);
 
         PrecacheModelFn precache_model_fn()
         {
@@ -1986,10 +1880,6 @@ namespace game
         // gives nothing, so the +use pickup hook never runs.  While the spawner serves the local player an item the
         // inventory takes (slot full, or auto_store), that one question answers "nothing there": the spawner then gives
         // through GiveNamedItem as for an empty slot, the +use hook stores the copy, and the spawner counts it.
-        using SpawnUseFn = void(__fastcall*)(void* spawner, void* edx, void* activator, void* caller, int type, float value);
-        using GetSlotFn = void*(__fastcall*)(void* player, void* edx, int weapon_id);
-        using WeaponIdFn = int(__thiscall*)(void* spawner);
-        using WeaponIdNameFn = const char*(__cdecl*)(int weapon_id);
         core::Hook<SpawnUseFn> g_spawn_use;
         core::Hook<GetSlotFn> g_get_slot;
         WeaponIdNameFn g_weapon_id_name = nullptr;
@@ -2129,18 +2019,10 @@ namespace game
         //       argv[] at +0x408.
 
         constexpr char k_state_marker[] = "@inv@";
-        constexpr std::uintptr_t k_off_edict = 0x28;
-        constexpr std::uintptr_t k_rva_client_command = 0x90C80;
-        constexpr std::uintptr_t k_off_args_argv = 0x408;
-
-        using NetworkIdFn = const char*(__thiscall*)(void* engine, void* edict);
-        using ClientPrintfFn = void(__thiscall*)(void* engine, void* edict, const char* text);
-        using ClientCommandFn = void(__cdecl*)(void* player, const void* args);
 
         NetworkIdFn g_network_id = nullptr;
         ClientPrintfFn g_client_printf = nullptr;
         core::Hook<ClientCommandFn> g_client_command;
-        using ServerCommandFn = void(__thiscall*)(void* engine, const char* command);
         ServerCommandFn g_server_command = nullptr;
         bool g_ammo_limits_set = false;
 
@@ -2426,7 +2308,6 @@ namespace game
         // CTerrorGun::Use (0x103E8700, slot 106 of every gun's vtable; thiscall (activator, caller, type, value),
         // ret 0x10), which equips it with Weapon_Equip (player slot 281) and so swaps out, and drops, the gun in the
         // hands.  It gets the same choice (weapon_pickup).
-        constexpr std::uintptr_t k_rva_gun_use = 0x3E8700;
         core::Hook<SpawnUseFn> g_gun_use;
 
         void gun_use(void* gun, void* edx, void* activator, void* caller, int type, float value)
@@ -2463,8 +2344,6 @@ namespace game
         // +use on an ammo pile: CWeaponAmmoSpawn::Use (0x1029F5F0, slot 106 of its vtable 0x10682CF4; thiscall
         // (activator, caller, type, value), ret 0x10) is its own, not CWeaponSpawn's.  A pile of rounds the mod dropped
         // gives its rounds (take_pile), never the endless refill; any other pile is the game's.
-        constexpr std::uintptr_t k_rva_ammo_spawn_use = 0x29F5F0;
-        constexpr std::uintptr_t k_rva_ammo_spawn_vtable = 0x682CF4;
         core::Hook<SpawnUseFn> g_ammo_spawn_use;
 
         // ---- unloading a gun (the unload key) ---------------------------------------------------------------------------
@@ -2479,10 +2358,6 @@ namespace game
         // CBaseCombatWeapon::ScriptSetClip1(int) (server.dll 0x103F0650, the VScript "SetClip1": registered at 0x103F2F1C
         // with the name "SetClip1"): thiscall, ret 4; it writes m_iClip1 (+0x1414) and marks the edict changed, as the
         // game's own writes of it do.
-        constexpr std::uintptr_t k_rva_set_clip1 = 0x3F0650;
-        using SetClip1Fn = void(__thiscall*)(void* weapon, int clip);
-        // CBaseCombatWeapon::m_bInReload (SendProp at 0x1004C5A6: push 0x144D / push "m_bInReload")
-        constexpr std::uintptr_t k_off_in_reload = 0x144D;
 
         SetClip1Fn set_clip1_fn()
         {
@@ -2503,12 +2378,6 @@ namespace game
         // CTerrorGun::Reload (0x103E8860, slot 281 of CTerrorGun's vtable 0x106D5544 and of every rifle, SMG, sniper
         // rifle's ...) and the shotguns' (0x103C2F80, slot 281 of CPumpShotgun 0x106CC994, CShotgun_Chrome, CAutoShotgun,
         // CShotgun_SPAS).  Both are bool __thiscall Reload().  A gun nobody holds any more is let go.
-        constexpr std::uintptr_t k_off_buttons = 0x1CB4; // CBasePlayer::m_nButtons (datamap)
-        constexpr int k_in_attack = 0x1, k_in_reload = 0x2000;
-        constexpr int k_vt_reload = 281;
-        constexpr std::uintptr_t k_rva_gun_reload = 0x3E8860, k_rva_shotgun_reload = 0x3C2F80;
-        constexpr std::uintptr_t k_rva_pump_shotgun_vtable = 0x6CC994;
-        using ReloadFn = bool(__fastcall*)(void* gun, void* edx);
         core::Hook<ReloadFn> g_gun_reload, g_shotgun_reload;
         std::vector<std::uint32_t> g_unloaded_guns; // EHANDLEs; main thread (Reload runs there too)
 
@@ -2552,9 +2421,6 @@ namespace game
         // first when the magazine is empty and the owner has rounds of the gun's type: fire reloads at once, on both sides
         // alike.  (The "ghost shot" seen while this was worked out was the client's reload hook on the wrong function;
         // see the client's half of reload_held_back.  Fire went straight to the reload once that was fixed, with this.)
-        constexpr std::uintptr_t k_off_fire_on_empty = 0x144E;
-        constexpr std::uintptr_t k_rva_fire_on_empty = 0x4ABD0;
-        using FireOnEmptyFn = void(__fastcall*)(void* weapon, void* edx);
         core::Hook<FireOnEmptyFn> g_fire_on_empty;
 
         void __fastcall hk_fire_on_empty(void* weapon, void* edx)
@@ -2649,11 +2515,6 @@ namespace game
             }
             return best;
         }
-
-        // A spawner's spawn count (CWeaponSpawn +0x1444, 0: endless; see "Map item spawners") and its rotation
-        // (CBaseEntity::m_angRotation +0x394).
-        constexpr std::uintptr_t k_off_spawn_count = 0x1444;
-        constexpr std::uintptr_t k_off_spawner_angles = 0x394;
 
         // One gun out of a map's spawner, as a real gun lying on the map that the unload key then empties: it is made
         // with "origin" and "angles" set before DispatchSpawn (never moved: see the vphysics notes), with the magazine
@@ -2927,7 +2788,6 @@ namespace game
         // They are piles as a drop makes them (spawn_pile), named "inv_maprounds_<kind>_<rounds>": anyone takes from them,
         // a bot too (rounds for a gun it has).
 
-        constexpr std::uintptr_t k_off_angles = 0x394; // CBaseEntity::m_angRotation (SendProp: push 0x394 / "m_angRotation")
         ULONGLONG g_place_packs_at = 0; // main thread: when place_map_packs runs (0: not due)
 
         void place_map_packs()
@@ -3165,21 +3025,7 @@ namespace game
         //       stops) calling for that dead survivor ("(RESCUE) Rescue spot at ... activated").
         //   CBaseEntity m_iTeamNum +0x238 (2 survivors, 3 infected), CBasePlayer m_lifeState +0xF0 (0 alive).
 
-        constexpr std::uintptr_t k_off_team = 0x238;
-        constexpr std::uintptr_t k_off_life_state = 0xF0;
-        constexpr int k_vt_commit_suicide = 476;
-        constexpr std::uintptr_t k_rva_script_command = 0x21CB90;
-        constexpr std::uintptr_t k_rva_rescue_set_survivor = 0x2CEAF0;
         constexpr char k_infection_marker[] = "@inf@";
-
-        using EventNameFn = const char*(__thiscall*)(void* event);
-        using EventIntFn = int(__thiscall*)(void* event, const char* key, int fallback);
-        using FireEventFn = bool(__fastcall*)(void* self, void* edx, void* event, bool dont_broadcast);
-        using GameFrameFn = void(__fastcall*)(void* self, void* edx, bool simulating);
-        using UserIdFn = int(__thiscall*)(void* engine, void* edict);
-        using CommitSuicideFn = void(__thiscall*)(void* player, bool explode, bool force);
-        using ScriptCommandFn = void(__cdecl*)(const void* command);
-        using SetRescueSurvivorFn = void(__fastcall*)(void* rescue, void* edx, void* survivor);
 
         core::Hook<FireEventFn> g_fire_event;
         core::Hook<GameFrameFn> g_game_frame;
@@ -3414,7 +3260,6 @@ namespace game
         // CBaseEntity::m_ModelName +0x24C (datamap "m_ModelName", FIELD_MODELNAME 18: a pointer to
         // "models/survivors/survivor_gambler.mdl" ...; IServerTools GetKeyValue "model" gives that pointer's bytes, not
         // the text).  An error goes to left4dead2/ems/inv_insane_error.txt.
-        constexpr std::uintptr_t k_off_model_name = 0x24C;
         struct InsaneVoice
         {
             const char* model; // a part of the model's name
@@ -3613,31 +3458,11 @@ namespace game
         //       bytes (its copy constructor 0x10010140): m_hInflictor +0x30, m_hAttacker +0x34 (what its GetAttacker,
         //       0x1003D4B0, reads), m_hWeapon +0x38, m_flDamage +0x3C, m_bitsDamageType +0x48.
 
-        constexpr std::uintptr_t k_off_flags = 0x13C;
-        constexpr std::uintptr_t k_off_velocity = 0x2D8;
-        constexpr std::uintptr_t k_off_lagged_movement = 0x20D0;
-        constexpr std::uintptr_t k_off_next_primary = 0x13F0;
-        constexpr std::uintptr_t k_off_next_secondary = 0x13F4;
-        constexpr std::uintptr_t k_off_curtime = 0xC;
-        // CBasePlayer::m_nButtons (datamap): k_off_buttons, see "unloading a gun"
-        constexpr std::uintptr_t k_off_abs_velocity = 0x260; // CBaseEntity::m_vecAbsVelocity (datamap)
-        constexpr std::uintptr_t k_off_shove_penalty = 0x2CF0; // CTerrorPlayer::m_iShovePenalty (SendProp)
-        constexpr std::uintptr_t k_rva_set_shove_penalty = 0x2CB750;
-        constexpr std::uintptr_t k_rva_server_engine = 0x7F7698; // server.dll's own IVEngineServer pointer
-        constexpr std::uintptr_t k_rva_change_accessor_call = 0xED4B0;
-        constexpr int k_vt_change_accessor = 97;
-        constexpr int k_in_attack2 = 1 << 11;
-        constexpr std::uintptr_t k_rva_take_damage = 0x55C70;
-        constexpr std::size_t k_damage_info_size = 0x60;
-        constexpr std::uintptr_t k_off_damage_inflictor = 0x30, k_off_damage_attacker = 0x34, k_off_damage_weapon = 0x38,
-                                 k_off_damage = 0x3C;
         constexpr float k_run_speed = 130.f; // faster than this on the ground is running (a walk is 85, a run 220, a limp 150)
         constexpr char k_stamina_marker[] = "@sta@";
 
-        using TakeDamageFn = int(__fastcall*)(void* self, void* edx, const void* info);
         core::Hook<TakeDamageFn> g_take_damage;
         void* g_globals = nullptr; // CGlobalVars
-        using SetShovePenaltyFn = void(__thiscall*)(void* player, int penalty);
         SetShovePenaltyFn g_set_shove_penalty = nullptr;
 
         struct Stamina
@@ -3670,7 +3495,6 @@ namespace game
         // game's own setters do (CBaseEdict::StateChanged: m_fStateFlags |= FL_EDICT_CHANGED | FL_FULL_EDICT_CHANGED,
         // and the change accessor's serial number 0; VEngineServer022 slot 97 GetChangeAccessor(edict), what
         // SetShovePenalty, 0x102CB750, calls through 0x100ED4B0).
-        using ChangeAccessorFn = void*(__thiscall*)(void* engine, void* edict);
         ChangeAccessorFn g_change_accessor = nullptr;
 
         void state_changed(void* entity)
@@ -3963,8 +3787,6 @@ namespace game
         // "maps/%s_commentary.txt", with "" for null).  The inventories: the host's (the local one) and every one the
         // server keeps; a player's file not loaded yet that was last written before the new game is not read
         // (g_new_game, see server_player).
-
-        constexpr std::uintptr_t k_off_mapname = 0x3C;
 
         struct Death
         {
@@ -4558,14 +4380,6 @@ namespace game
         //   engine.dll 0x10052100 CBaseClientState::ProcessPrint(SVC_Print*), thiscall, ret 4: ConMsg("%s", msg + 0x54).
         //       The state line is taken out there, before it reaches the console.
 
-        constexpr std::uintptr_t k_rva_process_print = 0x52100;
-        constexpr std::uintptr_t k_off_print_text = 0x54;
-        constexpr std::uint32_t k_engine_timestamp = 0x6A440ED6;
-
-        using IsInGameFn = bool(__thiscall*)(void* engine);
-        using ClientCmdFn = void(__thiscall*)(void* engine, const char* text);
-        using ProcessPrintFn = bool(__fastcall*)(void* state, void* edx, void* msg);
-
         void* g_engine_client = nullptr;
         IsInGameFn g_is_in_game = nullptr;
         ClientCmdFn g_client_cmd = nullptr;
@@ -4761,20 +4575,6 @@ namespace game
         //   survivors), m_lifeState +0x147 (byte, 0: alive), m_iObserverMode +0x1450 (0: not spectating),
         //   m_hActiveWeapon +0x1084, m_iAmmo +0xF24 (32 ints); weapon m_iPrimaryAmmoType +0x97C, m_iClip1 +0x984.
 
-        constexpr std::uintptr_t k_c_team = 0xE4;
-        constexpr std::uintptr_t k_c_life_state = 0x147;
-        constexpr std::uintptr_t k_c_observer_mode = 0x1450;
-        constexpr std::uintptr_t k_c_active_weapon = 0x1084;
-        constexpr std::uintptr_t k_c_ammo = 0xF24;
-        constexpr std::uintptr_t k_cw_ammo_type = 0x97C;
-        constexpr std::uintptr_t k_cw_clip = 0x984;
-        constexpr int k_team_survivors = 2;
-
-        using GetClientEntityFn = void*(__thiscall*)(void* list, int index);
-        using GetClientEntityFromHandleFn = void*(__thiscall*)(void* list, std::uint32_t handle);
-        using GetLocalPlayerFn = int(__thiscall*)(void* engine);
-        using GameUiVisibleFn = bool(__thiscall*)(void* vgui);
-
         void* g_client_entities = nullptr;
         GetClientEntityFn g_get_client_entity = nullptr;
         GetClientEntityFromHandleFn g_get_client_entity_from_handle = nullptr;
@@ -4844,10 +4644,6 @@ namespace game
         // bool __thiscall Reload().  The rule is the server's: the gun in the hands when the unload key was pressed,
         // until the local player's m_nButtons (client datamap: "m_nButtons", FIELD_INTEGER, +0x13A4, entry at
         // 0x106C1664) has IN_ATTACK or IN_RELOAD.
-        constexpr std::uintptr_t k_c_buttons = 0x13A4;
-        constexpr std::uintptr_t k_rva_c_gun_vtable = 0x609034, k_rva_c_pump_vtable = 0x5FF6FC;
-        constexpr std::uintptr_t k_rva_c_gun_reload = 0x30C150, k_rva_c_shotgun_reload = 0x2F1CF0;
-        constexpr int k_c_vt_reload = 269;
         core::Hook<ReloadFn> g_c_gun_reload, g_c_shotgun_reload;
         struct ClientUnloaded
         {
@@ -4911,8 +4707,6 @@ namespace game
         }
 
         // The client's half of hk_fire_on_empty (see k_off_fire_on_empty), for the local player's gun.
-        constexpr std::uintptr_t k_rva_c_fire_on_empty = 0x156D0;
-        constexpr std::uintptr_t k_cw_fire_on_empty = 0x9BE;
         core::Hook<FireOnEmptyFn> g_c_fire_on_empty;
 
         void __fastcall hk_c_fire_on_empty(void* weapon, void* edx)

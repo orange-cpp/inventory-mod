@@ -47,6 +47,8 @@ Crash dumps go to the game folder (`left4dead2_crash_*.mdmp`); `tools/mdmp_summa
 - `src/game/backend.hpp` is the seam between the UI and the game.
 - `src/game/game.cpp` is the real backend: every hook and game call, in one large file organised in `// ---- topic`
   sections.
+- `src/game/sdk.hpp` declares what the mod knows of the game's binaries: build stamps, RVAs, vtable slots, offsets and
+  function signatures (`game::sdk`). The reasons and the finding narrative stay with the code that uses them.
 - `src/ui` is the client side: `overlay.cpp` (D3D9 Present/Reset hooks, window procedure, cursor), `hud.cpp` (boxes,
   radial wheel, window, Settings and Debug tabs), `postfx.cpp` (infection and stamina shaders), `audio.cpp`,
   `icons.cpp` (the game's VTF icon sheets).
@@ -89,8 +91,8 @@ content).
 - Tools: `tools/re/pe_tools.py <dll> strings|xrefs|rtti|vtable|disasm|func`, `tools/re/vpk.py`,
   `tools/re/mdl_to_smd.py`, `tools/re/vtf_to_png.py`. Addresses are at the DLL's preferred base (0x10000000); code uses
   RVAs.
-- Record every new address, slot or offset, and how it was found, in docs/game-notes.md. Note when it was seen working
-  in game.
+- Declare every new address, slot, offset or function signature in `src/game/sdk.hpp`, and record it, and how it was
+  found, in docs/game-notes.md. Note when it was seen working in game.
 - `IServerTools::SetKeyValue(const char*)` is slot 13; slot 11 is the `Vector` overload, because MSVC orders overloads
   in reverse. `GetKeyValue` of a string field returns pointer bytes, so read `m_iName` (+0x140) and `m_ModelName`
   (+0x24C) directly.

@@ -100,6 +100,7 @@ add_library(inventory_mod SHARED
     src/game/backend.hpp
     src/game/game.cpp
     src/game/game.hpp
+    src/game/sdk.hpp
     src/game/mem.cpp
     src/game/mem.hpp
     src/ui/overlay.cpp
