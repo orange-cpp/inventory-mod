@@ -453,7 +453,10 @@ namespace icons
         std::map<std::string, Rect> g_rects; // classname -> rectangle
         std::map<std::string, Sheet> g_sheets; // "vgui/hud/iconsheet" -> image / texture
         std::map<std::string, Icon> g_icons; // classname -> resolved icon (render thread)
-        std::thread g_thread;
+        // The loader runs detached: a std::thread still joinable when the game exits (the DLL's statics destroyed at
+        // process detach, with no unload before) calls std::terminate, and the game's exit became a crash
+        std::atomic<bool> g_started{false};
+        std::atomic<bool> g_loading{false};
         std::atomic<bool> g_ready{false};
         IDirect3DDevice9* g_device = nullptr;
 
@@ -552,8 +555,13 @@ namespace icons
 
     void start()
     {
-        if (!g_thread.joinable())
-            g_thread = std::thread(load);
+        if (g_started.exchange(true))
+            return;
+        g_loading = true;
+        std::thread([] {
+            load();
+            g_loading = false;
+        }).detach();
     }
 
     void set_device(IDirect3DDevice9* device)
@@ -628,8 +636,8 @@ namespace icons
 
     void shutdown()
     {
-        if (g_thread.joinable())
-            g_thread.join();
+        for (int i = 0; i < 400 && g_loading.load(); ++i)
+            Sleep(25); // (the loader reads the game's files: it is done within seconds)
         release_textures();
         g_device = nullptr;
     }
