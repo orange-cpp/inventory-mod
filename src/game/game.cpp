@@ -1361,10 +1361,40 @@ namespace game
         // weapon_ammo_spawn is CWeaponAmmoSpawn (vtable 0x10682CF4, set by its factory 0x102A22F0 over CWeaponSpawn's):
         // its Precache (slot 26, 0x1029F5A0) precaches models/props/terror/ammo_stack.mdl, its model (slot 239,
         // 0x1029F560) is the "model" keyvalue or that one, its Use (slot 106, 0x1029F5F0) is its own (the refill).
-        // The pile looks like a closed incendiary ammo pack (the upgrade pack's world model, loaded with every map), tinted
-        // the colour of its round type (inv::ammo_color, the entity's "rendercolor" as "r g b 255": three numbers leave
-        // the alpha 0 and it is invisible); ammo_stack.mdl when it cannot be precached.
+        // The pile is its round type's own ammo pack, models/inv_mod/rounds_<kind>.mdl, when the game has it: the addon
+        // inventory_mod_rounds.vpk in left4dead2/addons (tools/make_rounds_addon.py: the incendiary pack with the
+        // texture of assets/textures for that type).  Without it (or for a type with no pack: the M60, the chainsaw) it
+        // is the closed incendiary ammo pack (the upgrade pack's world model, loaded with every map), tinted the colour of
+        // its round type (inv::ammo_color, the entity's "rendercolor" as "r g b 255": three numbers leave the alpha 0 and
+        // it is invisible); ammo_stack.mdl when that cannot be precached.  Every player needs the addon to see the packs:
+        // a model the server has and a player does not is the ERROR model for that player.
         constexpr const char* k_pile_model = "models/w_models/weapons/w_eq_incendiary_ammopack.mdl";
+        // filesystem_stdio.dll "VBaseFileSystem012": the IBaseFileSystem of its one CFileSystem_Stdio (0x1005260C, vtable
+        // 0x10047DFC, set at 0x10045509); slot 10 FileExists(name, pathID) 0x1000E340 (thiscall, ret 8, the profiler
+        // scope "CBaseFileSystem::FileExists").  The same file in the game and the dedicated server.
+        constexpr int k_vt_file_exists = 10;
+        using FileExistsFn = bool(__thiscall*)(void* fs, const char* name, const char* path_id);
+
+        // The game can load `name` (its own files, the addons): main thread.
+        bool game_file_exists(const char* name)
+        {
+            static void* fs = nullptr;
+            static FileExistsFn file_exists = [] {
+                HMODULE module = GetModuleHandleW(L"filesystem_stdio.dll");
+                const auto create =
+                    module != nullptr ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface")) : nullptr;
+                fs = create != nullptr ? create("VBaseFileSystem012", nullptr) : nullptr;
+                const std::uintptr_t at = fs != nullptr ? mem::vslot(fs, k_vt_file_exists) : 0;
+                if (at != 0 && mem::find_pattern(at, 9, "55 8B EC 81 EC 7C 01 00 00") == at)
+                    return reinterpret_cast<FileExistsFn>(at);
+                INV_LOG("game: the file system's FileExists does not look as expected: piles are the incendiary pack");
+                return static_cast<FileExistsFn>(nullptr);
+            }();
+            bool found = false;
+            if (file_exists != nullptr)
+                mem::guarded([&] { found = file_exists(fs, name, "GAME"); });
+            return found;
+        }
         constexpr int k_vt_is_model_precached = 9; // VEngineServer022 IsModelPrecached(name)
         using IsModelPrecachedFn = bool(__thiscall*)(void* engine, const char* name);
         constexpr const char* k_pile_model_fallback = "models/props/terror/ammo_stack.mdl";
@@ -1516,7 +1546,9 @@ namespace game
                 notify("Cannot drop rounds: the game's PrecacheModel does not look as expected");
                 return;
             }
-            const char* model = k_pile_model;
+            const std::string own_model = "models/inv_mod/rounds_" + kind + ".mdl";
+            const bool own = game_file_exists(own_model.c_str()); // its type's pack (the addon)
+            const char* model = own ? own_model.c_str() : k_pile_model;
             bool loaded = false; // by the map already (else it is precached now, in the middle of the round)
             if (const auto is_precached = g_engine_server != nullptr
                                               ? reinterpret_cast<IsModelPrecachedFn>(mem::vslot(g_engine_server, k_vt_is_model_precached))
@@ -1524,6 +1556,11 @@ namespace game
                 mem::guarded([&] { loaded = is_precached(g_engine_server, model); });
             int model_index = -1;
             mem::guarded([&] { model_index = precache_model(model); });
+            if (model_index < 0 && own)
+            {
+                model = k_pile_model;
+                mem::guarded([&] { model_index = precache_model(model); });
+            }
             if (model_index < 0)
             {
                 model = k_pile_model_fallback;
@@ -1534,7 +1571,7 @@ namespace game
                 notify(std::string("Could not drop ") + title + ": no ammo pile model");
                 return;
             }
-            const unsigned color = inv::ammo_color(kind);
+            const unsigned color = own ? 0xFFFFFFu : inv::ammo_color(kind); // (its own pack has its colour)
             char tint[16];
             std::snprintf(tint, sizeof(tint), "%u %u %u 255", (color >> 16) & 255u, (color >> 8) & 255u, color & 255u); // (a missing alpha is 0: invisible)
             char angles[32];
