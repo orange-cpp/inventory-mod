@@ -92,8 +92,10 @@ content).
   in reverse. `GetKeyValue` of a string field returns pointer bytes, so read `m_iName` (+0x140) and `m_ModelName`
   (+0x24C) directly.
 - An entity created with `CreateEntityByName` gets only the keyvalues the mod sets. Copy what a real map entity has:
-  read it from a BSP entity lump (BSP v21's `lump_t` is `{version, offset, length, fourCC}`). A `CWeaponSpawn` without
-  `"solid" "6"` crashed vphysics.dll at +0xF3B1C a minute or two later.
+  read it from a BSP entity lump (BSP v21's `lump_t` is `{version, offset, length, fourCC}`). Set `"origin"` before
+  `DispatchSpawn` and never move a spawner afterwards: its physics object is static. A moved one (Teleport,
+  DropToFloor) crashed vphysics.dll at +0xF3B1C a few seconds later. To find the floor, drop a throwaway `info_target`
+  first (`on_floor`).
 - After changing an entity's networked field, mark the edict changed (`state_changed`).
 
 ## Conventions
