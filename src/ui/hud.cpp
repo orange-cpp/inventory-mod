@@ -724,7 +724,10 @@ namespace hud
                 return;
             if (postfx::ready())
             {
-                postfx::set_infection(severity, std::min(pulse, 1.f), last);
+                const postfx::Layer layer = !cfg.infection_cover_game_hud ? postfx::Layer::UnderGameHud
+                                            : !cfg.infection_cover_mod_hud ? postfx::Layer::UnderModHud
+                                                                           : postfx::Layer::OverAll;
+                postfx::set_infection(severity, std::min(pulse, 1.f), last, layer);
                 return;
             }
 
@@ -1454,6 +1457,17 @@ namespace hud
             if (nc::BeginGroupBox("Infection", ImVec2(0, 0)))
             {
                 changed |= nc::Checkbox("Screen effect", &cfg.infection_effect);
+                if (cfg.infection_effect)
+                {
+                    changed |= nc::Checkbox("Effect covers the game's HUD", &cfg.infection_cover_game_hud);
+                    nc::SetItemTooltip("Off: the effect is on the game's picture only; the game's HUD (health, teammates,\n"
+                                       "crosshair) and the mod's boxes stay clear over it.");
+                    if (cfg.infection_cover_game_hud)
+                    {
+                        changed |= nc::Checkbox("Effect covers the mod's HUD", &cfg.infection_cover_mod_hud);
+                        nc::SetItemTooltip("The mod's boxes, wheel and this window. Off: they stay clear over the effect.");
+                    }
+                }
                 changed |= nc::Checkbox("Sound distortion and heartbeat", &cfg.infection_sound);
                 changed |= nc::Checkbox("Screamer when the clock runs out", &cfg.infection_screamer);
                 if (cfg.infection_screamer)

@@ -317,6 +317,19 @@ pre-transformed quads over the frame and the mod's UI: black backdrop, the pictu
 white flash) before its pass, and the pass runs at severity 0.92
 over it; with the effect off it goes on ImGui's foreground draw list.
 
+## The infection's effect under the HUD
+
+The infection's shader can go under the game's HUD (settings `[infection] cover_game_hud = false`): it then runs from
+the game's own rendering, just before the HUD is drawn, instead of at `Present` (see `overlay.cpp`).
+
+| What | Where / how |
+|---|---|
+| where the HUD is drawn | `client.dll` `CTerrorViewRender` (RTTI), vtable `0x105C1424` (also `CCSViewRender` `0x105A45C4`, `CViewRender` `0x1058CA6C`). Slot 6 `0x101D6D80` renders a view: the VPROF scope "2D Client Rendering", `render->Push2DView` (`IVRenderView` `[0x10735E48]` slot 42), slot 37, then `whatToDraw & 2` and the "VGui_DrawHud" scope |
+| the hook | slot 37 `Render2DEffectsPreHUD(const CViewSetup&)`, thiscall `ret 4`: `CViewRender`'s is `ret 4` (`0x101CA100`), `CCSViewRender`'s `0x1022ECD0` (`55 8B EC 5D E9`) jumps to `0x1022E5D0` (night vision). The mod writes its function into the slot (the vtable is read-only data: `VirtualProtect`) and puts it back when it unloads |
+| the render thread | `materialsystem.dll` "VMaterialSystem080" slot 96 `GetRenderContext` `0x1000D960` (`56 57 8B F9 B9`: the thread's context, a reference added; the client's own use: `0x1022E763`, then slot 2 `BeginRender`, slot 3 `EndRender`, slot 1 `Release`). The context's slot 142 `GetCallQueue`: `CMatQueuedRenderContext` (vtable `0x1009BF9C`) `0x10023CD0` `lea eax, [ecx+2A4h]` (its `CCallQueueExternal`, vtable `0x1009A9F8`, written at `0x10014336`), `CMatRenderContext` (`0x1009EB6C`) `0x10022990` `xor eax, eax`. The queue's slot 0 `QueueFunctorInternal(CFunctor*)` `0x10010600` (`55 8B EC 56 8B 75 08 8B 06 8B 10`: AddRef, into the context's `CCallQueue`, Release) |
+| a functor | `CMemberFunctor1<...>` vtable `0x1009C3B4`: 0 AddRef (`inc [ecx+0Ch]`), 1 Release, 2 the deleting destructor, 3 `operator()`. The mod's is a static object with that layout whose AddRef / Release do nothing |
+| the pass | on the render thread (or right away without queued rendering): the current render target 0 copied, the shader drawn over it (sRGB writes off, as at Present), the D3D state captured and put back with a state block of its own. It uses the infection the previous frame's HUD set (the HUD sets it at Present, after the game has drawn) |
+
 ## Stamina
 
 Server side, in the GameFrame hook, for each living survivor (see "stamina" in game.cpp). All of it read out of

@@ -100,7 +100,9 @@ The sound goes too: the game's own mix gets more muffled and warped (its pitch b
 under it in time with the picture, the ears ring past a third of the way and the sound crushes near the end. When the
 clock runs out a screamer jumps at the player: a face over the whole screen, lunging and shaking, with a scream. Each
 player chooses for themselves in the Settings tab ("Infection") or under `[infection]` in `inventory_mod_settings.toml`:
-`effect`, `sound`, `screamer` (true / false), `screamer_chance` (how likely the screamer is each time the clock runs
+`effect`, `sound`, `screamer` (true / false), `cover_game_hud` and `cover_mod_hud` (whether the effect also covers
+the game's HUD, and the mod's boxes, wheel and window; off, they stay clear over it: "Effect covers the game's HUD" /
+"... the mod's HUD"; the mod's HUD is covered only together with the game's), `screamer_chance` (how likely the screamer is each time the clock runs
 out: 0 never, 1 always, 0.3 about one time in three), and `screamer_image` (next to the DLL or a full path; PNG, JPEG, BMP;
 `inventory_mod_screamer.jpg` by default, shipped with the mod) and `screamer_sound` (a 16-bit PCM .wav under the game's
 `left4dead2/sound`, next to the DLL or a full path; the witch's scream by default). The Debug tab has "Screamer (test)".

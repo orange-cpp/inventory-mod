@@ -3,6 +3,7 @@
 #include "core/hook.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "game/mem.hpp"
 #include "ui/audio.hpp"
 #include "ui/icons.hpp"
 #include "ui/hud.hpp"
@@ -180,7 +181,41 @@ namespace ui::overlay
             return CallWindowProcW(g_orig_wndproc, hwnd, msg, wparam, lparam);
         }
 
-        // ---- ImGui --------------------------------------------------------------------------------------------------
+        // ---- the infection under the game's HUD ----------------------------------------------------------------------
+        //
+        // With [infection] cover_game_hud = false (settings) the infection's effect goes on the game's 3D picture only:
+        // it runs from the game's own rendering, just before the game draws its HUD.  client.dll's CTerrorViewRender
+        // (RTTI; vtable 0x105C1424) renders a view in slot 6 (0x101D6D80: "2D Client Rendering", Push2DView, then slot 37,
+        // then "VGui_DrawHud" when the HUD is drawn); slot 37 is Render2DEffectsPreHUD(const CViewSetup&) (thiscall, ret
+        // 4; CViewRender's own is an empty `ret 4` at 0x101CA100, CCSViewRender's 0x1022ECD0 jumps to 0x1022E5D0, the
+        // night vision).  The mod puts its own function in that slot: the original runs, then the pass.
+        //
+        // That runs on the game's main thread, and with queued rendering (mat_queue_mode) the D3D work happens on the
+        // render thread later, in order: the pass is queued there as a CFunctor.  materialsystem.dll VMaterialSystem080
+        // (CMaterialSystem, vtable 0x1009C824) slot 96 GetRenderContext (0x1000D960: the thread's render context, a
+        // reference added); the context's slot 142 GetCallQueue (the queued context's 0x10023CD0 `lea eax, [ecx+2A4h]`:
+        // its CCallQueueExternal, vtable 0x1009A9F8; the plain context's 0x10022990 `xor eax, eax`: none, the pass runs
+        // right away) and slot 1 Release; the queue's slot 0 QueueFunctorInternal(CFunctor*) (0x10010600).  A CFunctor's
+        // vtable (CMemberFunctor1's 0x1009C3B4): 0 AddRef, 1 Release, 2 the deleting destructor, 3 operator().  The mod's
+        // functor is one static object whose reference count does nothing.
+
+        constexpr std::uintptr_t k_rva_terror_view_render_vtable = 0x5C1424;
+        constexpr int k_vt_render_2d_effects_pre_hud = 37;
+        constexpr std::uintptr_t k_rva_pre_hud = 0x22ECD0;
+        constexpr int k_vt_get_render_context = 96;
+        constexpr int k_vt_context_release = 1;
+        constexpr int k_vt_context_get_call_queue = 142;
+
+        using PreHudFn = void(__fastcall*)(void* self, void* edx, const void* view);
+        using GetRenderContextFn = void*(__thiscall*)(void* materials);
+        using ContextFn = void*(__thiscall*)(void* context);
+        using QueueFunctorFn = void(__thiscall*)(void* queue, void* functor);
+        using CreateInterfaceFn = void*(__cdecl*)(const char* name, int* return_code);
+
+        void** g_pre_hud_slot = nullptr; // the vtable entry (in client.dll's read-only data)
+        PreHudFn g_pre_hud_original = nullptr;
+        void* g_materials = nullptr;
+        IDirect3DStateBlock9* g_pre_hud_state = nullptr; // render thread
 
         void release_state_block()
         {
@@ -189,7 +224,126 @@ namespace ui::overlay
                 g_state->Release();
                 g_state = nullptr;
             }
+            if (g_pre_hud_state != nullptr)
+            {
+                g_pre_hud_state->Release();
+                g_pre_hud_state = nullptr;
+            }
         }
+
+        // The render thread (or the main thread, without queued rendering), just before the game draws its HUD.
+        void under_game_hud()
+        {
+            IDirect3DDevice9* device = g_device;
+            if (!g_ready || g_broken || device == nullptr || g_shutdown_requested.load())
+                return;
+            if (g_pre_hud_state == nullptr && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_pre_hud_state)))
+                return;
+            IDirect3DSurface9* target = nullptr;
+            if (FAILED(device->GetRenderTarget(0, &target)) || target == nullptr)
+                return;
+            g_pre_hud_state->Capture();
+            device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE); // (as at Present: the picture is already in gamma)
+            device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                                                               D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+            postfx::render(device, target, postfx::Layer::UnderGameHud);
+            g_pre_hud_state->Apply();
+            target->Release();
+        }
+
+        void under_game_hud_guarded()
+        {
+            if (!game::mem::guarded([] { under_game_hud(); }))
+            {
+                g_broken = true;
+                INV_LOG("fault in the pass under the game's HUD: overlay disabled");
+            }
+        }
+
+        // the functor the render thread runs
+        int __fastcall functor_add_ref(void*, void*) { return 1; }
+        int __fastcall functor_release(void*, void*) { return 1; }
+        void* __fastcall functor_destroy(void* self, void*, int) { return self; }
+        void __fastcall functor_run(void*, void*) { under_game_hud_guarded(); }
+        void* g_functor_vtable[4] = {reinterpret_cast<void*>(functor_add_ref), reinterpret_cast<void*>(functor_release),
+                                     reinterpret_cast<void*>(functor_destroy), reinterpret_cast<void*>(functor_run)};
+        struct Functor
+        {
+            void** vtable;
+        } g_functor{g_functor_vtable};
+
+        void __fastcall hk_pre_hud(void* self, void* edx, const void* view)
+        {
+            g_pre_hud_original(self, edx, view);
+            if (!postfx::wants_under_game_hud() || g_materials == nullptr || g_shutdown_requested.load())
+                return;
+            game::mem::guarded([] {
+                const auto get_context = reinterpret_cast<GetRenderContextFn>(game::mem::vslot(g_materials, k_vt_get_render_context));
+                void* context = get_context(g_materials);
+                if (context == nullptr)
+                    return;
+                const std::uintptr_t get_queue = game::mem::vslot(context, k_vt_context_get_call_queue);
+                // the two GetCallQueue there are: the queued context's (its queue) and the plain one's (none)
+                const bool queued = game::mem::find_pattern(get_queue, 7, "8D 81 A4 02 00 00 C3") == get_queue;
+                const bool plain = game::mem::find_pattern(get_queue, 3, "33 C0 C3") == get_queue;
+                void* queue = queued ? reinterpret_cast<ContextFn>(get_queue)(context) : nullptr;
+                if (queue != nullptr)
+                    reinterpret_cast<QueueFunctorFn>(game::mem::vslot(queue, 0))(queue, &g_functor);
+                else if (plain)
+                    under_game_hud_guarded();
+                reinterpret_cast<ContextFn>(game::mem::vslot(context, k_vt_context_release))(context);
+            });
+        }
+
+        // Main thread or render thread, once: the slot and the material system, checked.
+        void install_pre_hud()
+        {
+            const auto client = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"client.dll"));
+            HMODULE materials_dll = GetModuleHandleW(L"materialsystem.dll");
+            const auto create = materials_dll != nullptr
+                                    ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(materials_dll, "CreateInterface"))
+                                    : nullptr;
+            void* materials = create != nullptr ? create("VMaterialSystem080", nullptr) : nullptr;
+            void** slot = client != 0 ? reinterpret_cast<void**>(client + k_rva_terror_view_render_vtable +
+                                                                  4u * k_vt_render_2d_effects_pre_hud)
+                                      : nullptr;
+            const std::uintptr_t pre_hud = slot != nullptr ? game::mem::read_or<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(slot)) : 0;
+            const std::uintptr_t get_context = materials != nullptr ? game::mem::vslot(materials, k_vt_get_render_context) : 0;
+            const std::uintptr_t queue_vtable = materials_dll != nullptr ? reinterpret_cast<std::uintptr_t>(materials_dll) + 0x9A9F8 : 0;
+            const std::uintptr_t queue_functor = queue_vtable != 0 ? game::mem::read_or<std::uintptr_t>(queue_vtable) : 0;
+            if (pre_hud == 0 || pre_hud != client + k_rva_pre_hud || game::mem::find_pattern(pre_hud, 5, "55 8B EC 5D E9") != pre_hud ||
+                get_context == 0 || game::mem::find_pattern(get_context, 5, "56 57 8B F9 B9") != get_context || queue_functor == 0 ||
+                game::mem::find_pattern(queue_functor, 11, "55 8B EC 56 8B 75 08 8B 06 8B 10") != queue_functor)
+            {
+                INV_LOG("overlay: the game's rendering does not look as expected: the infection always covers the game's HUD");
+                return;
+            }
+            DWORD old = 0;
+            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old))
+                return;
+            g_materials = materials;
+            g_pre_hud_original = reinterpret_cast<PreHudFn>(pre_hud);
+            g_pre_hud_slot = slot;
+            *slot = reinterpret_cast<void*>(hk_pre_hud);
+            VirtualProtect(slot, sizeof(void*), old, &old);
+            INV_LOG("overlay: the infection can go under the game's HUD (Render2DEffectsPreHUD %p, materials %p)",
+                    reinterpret_cast<void*>(pre_hud), materials);
+        }
+
+        void uninstall_pre_hud()
+        {
+            if (g_pre_hud_slot == nullptr)
+                return;
+            DWORD old = 0;
+            if (VirtualProtect(g_pre_hud_slot, sizeof(void*), PAGE_READWRITE, &old))
+            {
+                *g_pre_hud_slot = reinterpret_cast<void*>(g_pre_hud_original);
+                VirtualProtect(g_pre_hud_slot, sizeof(void*), old, &old);
+            }
+            g_pre_hud_slot = nullptr;
+        }
+
+        // ---- ImGui --------------------------------------------------------------------------------------------------
 
         bool init_imgui(IDirect3DDevice9* device)
         {
@@ -225,6 +379,7 @@ namespace ui::overlay
             icons::start();
             icons::set_device(device);
             postfx::init(device);
+            install_pre_hud();
             audio::install();
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
@@ -292,8 +447,9 @@ namespace ui::overlay
             g_capture = capture;
             ImGui::EndFrame();
             ImGui::Render();
+            postfx::render(device, back_buffer, postfx::Layer::UnderModHud); // (an infection that leaves the mod's HUD clear)
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-            postfx::render(device, back_buffer); // the infection, over the game's frame and the mod's HUD and window
+            postfx::render(device, back_buffer, postfx::Layer::OverAll); // the screamer, the stamina, the infection over all
 
             if (g_state != nullptr)
                 g_state->Apply();
@@ -399,6 +555,7 @@ namespace ui::overlay
 
     void uninstall()
     {
+        uninstall_pre_hud(); // first: a pass queued already still finds the DLL (the waits below)
         g_shutdown_requested = true;
         for (int i = 0; i < 40 && !g_shutdown_done.load(); ++i)
             Sleep(50); // the render thread tears ImGui down in its next Present

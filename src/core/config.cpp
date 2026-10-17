@@ -101,6 +101,8 @@ namespace core
 
             const toml::node_view infection = root["infection"];
             c.infection_effect = infection["effect"].value_or(c.infection_effect);
+            c.infection_cover_game_hud = infection["cover_game_hud"].value_or(c.infection_cover_game_hud);
+            c.infection_cover_mod_hud = infection["cover_mod_hud"].value_or(c.infection_cover_mod_hud);
             c.infection_sound = infection["sound"].value_or(c.infection_sound);
             c.infection_screamer = infection["screamer"].value_or(c.infection_screamer);
             c.screamer_chance = static_cast<float>(
@@ -284,6 +286,10 @@ namespace core
                 c.auto_store ? "true" : "false");
         fprintf(f, "\n[infection]   # how the infection looks and sounds to you (the host's inventory_mod.toml turns it on)\n");
         fprintf(f, "effect = %s     # the screen effect\n", c.infection_effect ? "true" : "false");
+        fprintf(f, "cover_game_hud = %s   # the effect over the game's HUD too (false: under it)\n",
+                c.infection_cover_game_hud ? "true" : "false");
+        fprintf(f, "cover_mod_hud = %s    # and over the mod's boxes, wheel and window (only with cover_game_hud)\n",
+                c.infection_cover_mod_hud ? "true" : "false");
         fprintf(f, "sound = %s      # the sound muffled and warped, a heartbeat, ringing\n", c.infection_sound ? "true" : "false");
         fprintf(f, "screamer = %s   # a face and a scream when the clock runs out\n", c.infection_screamer ? "true" : "false");
         fprintf(f, "screamer_chance = %.2f   # how likely it is each time: 0 never .. 1 always\n", c.screamer_chance);

@@ -38,6 +38,8 @@ namespace core
         float hud_scale = 1.f;
         // The infection as this player sees and hears it (whether there is one is the host's inventory_mod.toml).
         bool infection_effect = true; // the screen shader (postfx)
+        bool infection_cover_game_hud = true; // the effect over the game's HUD too (false: under it, on the 3D picture)
+        bool infection_cover_mod_hud = true; // ... and over the mod's boxes, wheel and window (only with the game's HUD)
         bool infection_sound = true; // the game's sound muffled and warped, a heartbeat, ringing (audio)
         bool infection_screamer = true; // a face and a scream when the clock runs out
         float screamer_chance = 1.f; // how likely the screamer is each time: 0 never .. 1 always
