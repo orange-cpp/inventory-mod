@@ -1,3 +1,5 @@
+# Git LFS: images and game files (the textures in assets/textures, the screamer picture; built VPKs and models
+# if one is ever added)
 *.png filter=lfs diff=lfs merge=lfs -text
 *.jpg filter=lfs diff=lfs merge=lfs -text
 *.jpeg filter=lfs diff=lfs merge=lfs -text
