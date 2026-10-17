@@ -444,7 +444,7 @@ namespace hud
         }
 
         // Beside the game's own weapon panel (replace_native=0) the panel shows only the gun and the melee / pistol (its
-        // throwable, kit and pills boxes are not drawn, see game.cpp hk_item_boxes); under them the mod draws the
+        // throwable, kit and pills boxes are not drawn, see game/weapon_panel.cpp hk_item_boxes); under them the mod draws the
         // inventory, three boxes per row.  What the player carries in those game slots lives in its own inventory box
         // (Stack::held: refresh_native gives an item picked up in the game a box), green while in the hands, so every
         // item has one place.
@@ -1320,7 +1320,7 @@ namespace hud
             }
         }
 
-        // The reserve rounds (see game.cpp "rounds"): each ammo type the player carries, what it weighs, and its drops
+        // The reserve rounds (see game/rounds.cpp): each ammo type the player carries, what it weighs, and its drops
         // (a magazine's worth, or all of it).  `pool` is the player's m_iAmmo, by the game's index.
         void rounds_rows(const int (&pool)[32])
         {

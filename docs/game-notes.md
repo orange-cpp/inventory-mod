@@ -96,7 +96,7 @@ Slot 426's flow: arg null -> flags; else `this->vt[0x460/4 = 280](arg)` (CanUse)
 (`[0x107F7F6C]->vt[0x148/4](this, arg)`); on success it equips through slot 281 and fires `weapon_given`; on refusal it
 jumps to `0x1031D5DA` and returns 0. With the slot for the item already taken, CanUse is what says no.
 
-The hook (`hk_bump_weapon` in `src/game/game.cpp`) does, for the local player (entity 1) and a catalogue item only:
+The hook (`hk_bump_weapon` in `src/game/pickup.cpp`) does, for the local player (entity 1) and a catalogue item only:
 `full = player_has_slot(...)`; if `full || auto_store`, add one to the inventory, `UTIL_Remove` the world entity, notify
 `Stored <item>` and return false (the game must not equip it as well); otherwise call the original. It runs on the
 main thread, so the game calls need no queueing. `init()` installs it only when slot 426 of the player vtable still
@@ -235,7 +235,7 @@ inventory and the pistol in game slot 2. (The server binds to the LAN address, s
 
 ## The infection
 
-Server side, on the main thread (see "the infection" in game.cpp):
+Server side, on the main thread (see `src/game/infection.cpp`):
 
 | What | Where / how |
 |---|---|
@@ -349,7 +349,7 @@ the game's own rendering, just before the HUD is drawn, instead of at `Present` 
 
 ## Stamina
 
-Server side, in the GameFrame hook, for each living survivor (see "stamina" in game.cpp). All of it read out of
+Server side, in the GameFrame hook, for each living survivor (see `src/game/stamina.cpp`). All of it read out of
 server.dll's SendProp / datamap definitions (`push <offset> / push "<name>"`, or the datamap's `mov [..], "<name>" /
 mov [..], <offset>`) and checked in the game:
 

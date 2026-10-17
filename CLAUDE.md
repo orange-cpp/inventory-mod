@@ -45,8 +45,14 @@ Crash dumps go to the game folder (`left4dead2_crash_*.mdmp`); `tools/mdmp_summa
 **Layers.**
 - `src/inv` is the model: items, inventory, the TOML rules. It has no Windows or ImGui code and is tested alone.
 - `src/game/backend.hpp` is the seam between the UI and the game.
-- `src/game/game.cpp` is the real backend: every hook and game call, in one large file organised in `// ---- topic`
-  sections.
+- `src/game/game.cpp` is the real backend: it queues the HUD's requests, runs them in `pump()`, and `init()` calls
+  each module's `install_*` in order.
+- The hooks and game calls live in `game::detail` modules, one per topic, each with a header that declares what other
+  modules use: `entities` (Env, the entity list, players), `weapons` (use, drop, store, pick up), `native_slots`,
+  `pickup` (+use hooks, spawners), `weapon_panel` (client HUD hooks), `map_guns`, `rounds`, `addons`, `players`
+  (other players, `Activation`), `unload`, `ammo_piles`, `infection`, `stamina`, `lifecycle` (deaths, new games, the
+  FireEvent and GameFrame hooks that dispatch to the others), `client_remote`, `client_view`. A module checks and hooks
+  its own functions.
 - `src/game/sdk.hpp` declares what the mod knows of the game's binaries: build stamps, RVAs, vtable slots, offsets and
   function signatures (`game::sdk`). The reasons and the finding narrative stay with the code that uses them.
 - `src/ui` is the client side: `overlay.cpp` (D3D9 Present/Reset hooks, window procedure, cursor), `hud.cpp` (boxes,

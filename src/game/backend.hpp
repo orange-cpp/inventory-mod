@@ -25,7 +25,7 @@ namespace game
     };
 
     // A player's inventory: on a game client the local player's, shared by the HUD (render thread) and the game code (main
-    // thread); in a dedicated server one per connected player (see game.cpp, "Dedicated server").
+    // thread); in a dedicated server one per connected player (see game/players.cpp).
     struct Session
     {
         std::mutex mutex;

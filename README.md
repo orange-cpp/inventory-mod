@@ -240,8 +240,10 @@ src/core/      log, config, MinHook wrapper
 src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel, window), icons.cpp (the game's
                own weapon and item icons, read from its VTF sheets), postfx.cpp (the infection and stamina shaders),
                audio.cpp (the infection's sound)
-src/game/      backend.hpp (the seam), game.cpp (the real backend), sdk.hpp (the game's
-               addresses, offsets and signatures), mem.cpp (guarded reads and calls)
+src/game/      backend.hpp (the seam), game.cpp (the real backend: the request queue and init),
+               one module per topic (entities, weapons, pickup, rounds, players, infection,
+               stamina, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets
+               and signatures), mem.cpp (guarded reads and calls)
 tests/         inventory_test.cpp
 assets/        the screamer picture, textures/ (each round type's ammo pack)
 packaging/     what the release adds: HOW-TO.txt (for players), load-mod.bat

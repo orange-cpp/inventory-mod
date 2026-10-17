@@ -96,13 +96,45 @@ add_library(inventory_mod SHARED
     src/core/hook.hpp
     src/core/config.cpp
     src/core/config.hpp
+    src/game/addons.cpp
+    src/game/addons.hpp
+    src/game/ammo_piles.cpp
+    src/game/ammo_piles.hpp
     src/game/backend.cpp
     src/game/backend.hpp
+    src/game/client_remote.cpp
+    src/game/client_remote.hpp
+    src/game/client_view.cpp
+    src/game/client_view.hpp
+    src/game/entities.cpp
+    src/game/entities.hpp
     src/game/game.cpp
     src/game/game.hpp
-    src/game/sdk.hpp
+    src/game/infection.cpp
+    src/game/infection.hpp
+    src/game/lifecycle.cpp
+    src/game/lifecycle.hpp
+    src/game/map_guns.cpp
+    src/game/map_guns.hpp
     src/game/mem.cpp
     src/game/mem.hpp
+    src/game/native_slots.cpp
+    src/game/native_slots.hpp
+    src/game/pickup.cpp
+    src/game/pickup.hpp
+    src/game/players.cpp
+    src/game/players.hpp
+    src/game/rounds.cpp
+    src/game/rounds.hpp
+    src/game/stamina.cpp
+    src/game/stamina.hpp
+    src/game/unload.cpp
+    src/game/unload.hpp
+    src/game/weapon_panel.cpp
+    src/game/weapon_panel.hpp
+    src/game/weapons.cpp
+    src/game/weapons.hpp
+    src/game/sdk.hpp
     src/ui/overlay.cpp
     src/ui/overlay.hpp
     src/ui/hud.cpp
