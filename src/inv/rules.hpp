@@ -108,4 +108,42 @@ namespace inv
     // The last apply_rules' [stamina] (the defaults, disabled, without one).
     const StaminaRules& stamina_rules();
 
+    // [ammo_piles]: a map's ammo pile is not endless.  It holds a random ammo type of `kinds`, from min_magazines to
+    // max_magazines magazines of it; anyone takes as many as they can carry (a bot: only for a gun it has), the rest
+    // stays, and an empty pile is gone.
+    //
+    //   [ammo_piles]
+    //   enabled = true
+    //   min_magazines = 1
+    //   max_magazines = 3
+    //   kinds = ["assault_rifle", "smg", "shotgun", "auto_shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
+    struct AmmoPileRules
+    {
+        bool enabled = false;
+        int min_magazines = 1;
+        int max_magazines = 3;
+        std::vector<std::string> kinds{"assaultrifle", "smg",         "shotgun",        "autoshotgun",
+                                       "huntingrifle", "sniperrifle", "grenadelauncher"}; // (inv::ammo_index names)
+    };
+    // The last apply_rules' [ammo_piles] (the defaults, disabled, without one).
+    const AmmoPileRules& ammo_pile_rules();
+
+    // [map_guns]: a gun nobody has held yet (lying in the map, or from a weapon spawner) has only a part of its
+    // magazine when it is first picked up: from min_clip to max_clip % of it.  A gun someone has held keeps its own.
+    //
+    //   [map_guns]
+    //   enabled = true
+    //   min_clip = 10
+    //   max_clip = 60
+    //   spawners_once = true         # a weapon spawner (guns, melee weapons) gives one, then it is gone
+    struct MapGunRules
+    {
+        bool enabled = false;
+        int min_clip = 10;
+        int max_clip = 60;
+        bool spawners_once = true;
+    };
+    // The last apply_rules' [map_guns] (the defaults, disabled, without one).
+    const MapGunRules& map_gun_rules();
+
 } // namespace inv

@@ -45,6 +45,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -165,6 +166,18 @@ namespace game
             return info.serial == (handle >> 12) ? info.entity : nullptr;
         }
 
+        // An entity's EHANDLE, by a scan of the list (k_invalid_handle: not there).
+        std::uint32_t handle_of(void* entity)
+        {
+            for (int index = 0; index < 0x1000; ++index)
+            {
+                EntInfo info{};
+                if (mem::read(g.ent_list + 4 + static_cast<std::uintptr_t>(index) * sizeof(EntInfo), info) && info.entity == entity)
+                    return static_cast<std::uint32_t>(index) | (info.serial << 12);
+            }
+            return k_invalid_handle;
+        }
+
         // The game code works on "the local player".  That is the host on a listen server (entity 1).  While it serves
         // another player (every player in a dedicated server, a guest on a listen server; see "Other players" below)
         // it is that player.  Main thread only.
@@ -282,6 +295,8 @@ namespace game
         }
 
         void state_changed(void* entity); // see "stamina"
+        void know_gun(void* weapon); // see "the map's guns"
+        int team_of(void* entity); // see "the infection"
 
         // A gun's upgrades and special rounds onto `weapon` (one just given, or dropped into the world).
         void write_upgrades(void* weapon, const inv::ItemDef& def, const inv::WeaponState& state)
@@ -879,6 +894,8 @@ namespace game
                     }
                     write_upgrades(entity, *def, state);
                 });
+                if (ok && entity != nullptr && def->weapon())
+                    know_gun(entity);
                 if (!ok || entity == nullptr)
                 {
                     notify(std::string("Could not drop ") + def->name);
@@ -1200,8 +1217,84 @@ namespace game
             return weapon_too_heavy(weapon) ? WeaponPickup::Refused : WeaponPickup::Game;
         }
 
+        // ---- the map's guns, a part of a magazine ([map_guns]) ---------------------------------------------------------
+        //
+        // With [map_guns] on, a gun nobody has held yet (one lying in the map, or a spawner's fresh copy) has only
+        // min_clip..max_clip % of its magazine (m_iClip1, full on such a gun) when a survivor first picks it up.  A gun
+        // is known once anyone has held it (every survivor's m_hMyWeapons, ten times a second: see cap_reserves), the
+        // mod dropped it from a box or gave it out, or it was cut down here; a known gun keeps its magazine.  By EHANDLE;
+        // the clock going back (a new map) forgets them.
+
+        std::set<std::uint32_t> g_known_guns; // main thread only
+        float g_known_guns_time = 0.f;
+
+        float game_time();
+
+        void known_guns_clock()
+        {
+            const float now = game_time();
+            if (now < g_known_guns_time)
+                g_known_guns.clear(); // a new map
+            g_known_guns_time = now;
+        }
+
+        void know_gun(void* weapon)
+        {
+            if (weapon == nullptr || !inv::map_gun_rules().enabled)
+                return;
+            known_guns_clock();
+            if (const std::uint32_t handle = handle_of(weapon); handle != k_invalid_handle)
+                g_known_guns.insert(handle);
+        }
+
+        // Every gun a survivor holds is known (cap_reserves).
+        void know_held_guns(void* player)
+        {
+            if (!inv::map_gun_rules().enabled)
+                return;
+            known_guns_clock();
+            for (int i = 0; i < k_max_weapons; ++i)
+            {
+                const std::uint32_t handle = handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i));
+                if (handle != k_invalid_handle && entity_from_handle(handle) != nullptr)
+                    g_known_guns.insert(handle);
+            }
+        }
+
+        // A survivor is picking `weapon` up: a gun nobody has held gets a part of its magazine.
+        void cut_map_gun(void* player, void* weapon)
+        {
+            const inv::MapGunRules& rules = inv::map_gun_rules();
+            if (!rules.enabled || weapon == nullptr || player == nullptr || team_of(player) != 2)
+                return;
+            if (g_giving)
+            {
+                know_gun(weapon);
+                return;
+            }
+            char name[64];
+            const char* kind = classname_of(weapon, name, sizeof(name)) ? inv::ammo_kind(name) : nullptr;
+            if (kind == nullptr || std::strcmp(kind, "chainsaw") == 0)
+                return; // (not a gun with rounds: a melee weapon, a pistol, an item)
+            known_guns_clock();
+            const std::uint32_t handle = handle_of(weapon);
+            if (handle == k_invalid_handle || !g_known_guns.insert(handle).second)
+                return; // known
+            const auto at = reinterpret_cast<std::uintptr_t>(weapon) + k_off_clip;
+            const int full = mem::read_or<int>(at, -1);
+            if (full <= 0)
+                return;
+            static std::minstd_rand random(static_cast<unsigned>(GetTickCount64() * 3266489917u));
+            const int percent = rules.min_clip + static_cast<int>(random() % static_cast<unsigned>(rules.max_clip - rules.min_clip + 1));
+            const int clip = std::clamp(static_cast<int>(std::lround(full * percent / 100.0)), 0, full);
+            mem::guarded([&] { *reinterpret_cast<int*>(at) = clip; });
+            state_changed(weapon);
+            INV_LOG("map gun %s (%p): %d of %d in the magazine (%d%%)", name, weapon, clip, full, percent);
+        }
+
         bool bump_weapon(void* player, void* edx, void* weapon)
         {
+            cut_map_gun(player, weapon);
             const inv::ItemDef* def = nullptr;
             const bool local = !g_giving && player != nullptr && player == local_player();
             if (local)
@@ -1347,6 +1440,16 @@ namespace game
             return std::max(0, n);
         }
 
+        // The piles dropped this map (by EHANDLE: a removed one, or one of another map, is no entity any more), with where
+        // they were put: rounds dropped next to a pile of their type join it, and a new pile is put beside the others,
+        // not into them.
+        struct DroppedPile
+        {
+            std::uint32_t handle;
+            Vec3 at;
+        };
+        std::vector<DroppedPile> g_dropped_piles; // main thread only
+
         // Drops `count` (0: all) of the player's reserve of `kind` in front of them, as an ammo pile.
         void do_drop_ammo(const std::string& kind, int count)
         {
@@ -1371,7 +1474,42 @@ namespace game
                 notify(std::string("No ") + title + " to drop");
                 return;
             }
-            const Vec3 position{eye.x + forward.x * 48.f, eye.y + forward.y * 48.f, eye.z + forward.z * 48.f - 14.f};
+            Vec3 position{eye.x + forward.x * 48.f, eye.y + forward.y * 48.f, eye.z + forward.z * 48.f - 14.f};
+
+            // a pile of this type close by takes them; the piles that are gone are forgotten
+            g_dropped_piles.erase(std::remove_if(g_dropped_piles.begin(), g_dropped_piles.end(),
+                                                 [](const DroppedPile& d) { return entity_from_handle(d.handle) == nullptr; }),
+                                  g_dropped_piles.end());
+            const auto close_to = [](const Vec3& a, const Vec3& b, float radius) {
+                const float dx = a.x - b.x, dy = a.y - b.y;
+                return dx * dx + dy * dy < radius * radius && std::fabs(a.z - b.z) < 72.f;
+            };
+            for (const DroppedPile& d : g_dropped_piles)
+            {
+                std::string held;
+                int rounds = 0;
+                void* other = entity_from_handle(d.handle);
+                if (!close_to(d.at, position, 40.f) || !pile_contents(other, held, rounds) || held != kind)
+                    continue;
+                set_pile_contents(other, kind, rounds + n);
+                mem::guarded([&] { *reserve_of(player, type) = have - n; });
+                state_changed(player);
+                INV_LOG("rounds: dropped %d %s (%d left) onto pile %p, which holds %d now", n, kind.c_str(), have - n, other, rounds + n);
+                notify("Dropped " + std::to_string(n) + " " + title + " (onto the pile there)");
+                return;
+            }
+            // not into another pile (piles inside each other crashed the game's physics, see below): beside it
+            for (int step = 1; step <= 8; ++step)
+            {
+                bool clear = true;
+                for (const DroppedPile& d : g_dropped_piles)
+                    clear = clear && !close_to(d.at, position, 22.f);
+                if (clear)
+                    break;
+                const float side = (step % 2 == 1 ? 1.f : -1.f) * 24.f * static_cast<float>((step + 1) / 2);
+                position = Vec3{eye.x + forward.x * 48.f - forward.y * side, eye.y + forward.y * 48.f + forward.x * side,
+                                eye.z + forward.z * 48.f - 14.f};
+            }
             const PrecacheModelFn precache_model = precache_model_fn();
             if (precache_model == nullptr)
             {
@@ -1399,6 +1537,8 @@ namespace game
             const unsigned color = inv::ammo_color(kind);
             char tint[16];
             std::snprintf(tint, sizeof(tint), "%u %u %u 255", (color >> 16) & 255u, (color >> 8) & 255u, color & 255u); // (a missing alpha is 0: invisible)
+            char angles[32];
+            std::snprintf(angles, sizeof(angles), "0 %.0f 0", std::atan2(forward.y, forward.x) * 57.29578f);
             void* pile = nullptr;
             mem::guarded([&] {
                 pile = g.create_entity(g.tools, "weapon_ammo_spawn");
@@ -1406,6 +1546,13 @@ namespace game
                     return;
                 g.set_key_value(g.tools, pile, "model", model);
                 g.set_key_value(g.tools, pile, "rendercolor", tint);
+                // what a map's own pile has (c2m1_highway: "solid" "6", "spawnflags" "2", "disableshadows" "1"): without
+                // "solid" the game crashed in vphysics.dll (+0xF3B1C, a null edge in IVP's collision code) a while later,
+                // as with a spawner made by ent_create
+                g.set_key_value(g.tools, pile, "solid", "6");
+                g.set_key_value(g.tools, pile, "spawnflags", "2");
+                g.set_key_value(g.tools, pile, "disableshadows", "1");
+                g.set_key_value(g.tools, pile, "angles", angles);
                 set_pile_contents(pile, kind, n);
                 if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(pile, k_vt_precache)))
                     precache(pile);
@@ -1420,6 +1567,8 @@ namespace game
                 notify(std::string("Could not drop ") + title);
                 return;
             }
+            if (const std::uint32_t handle = handle_of(pile); handle != k_invalid_handle)
+                g_dropped_piles.push_back({handle, position});
             mem::guarded([&] { *reserve_of(player, type) = have - n; });
             state_changed(player);
             INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s, %s, tint %s) at %.1f %.1f %.1f", n, kind.c_str(), have - n,
@@ -1476,19 +1625,56 @@ namespace game
             return g_get_slot.original()(player, edx, weapon_id);
         }
 
+        // The weapons a player holds (their EHANDLEs), sorted.
+        std::vector<std::uint32_t> held_handles(void* player)
+        {
+            std::vector<std::uint32_t> out;
+            for (int i = 0; i < k_max_weapons; ++i)
+            {
+                const std::uint32_t handle = handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i));
+                if (handle != k_invalid_handle && entity_from_handle(handle) != nullptr)
+                    out.push_back(handle);
+            }
+            std::sort(out.begin(), out.end());
+            return out;
+        }
+
         void spawn_use(void* spawner, void* edx, void* activator, void* caller, int type, float value)
         {
             int weapon_id = 0;
             const inv::ItemDef* def = nullptr;
-            if (activator != nullptr && activator == local_player() && g_weapon_id_name != nullptr)
+            char item[64] = {};
+            const bool survivor = activator != nullptr && team_of(activator) == 2;
+            if (survivor && g_weapon_id_name != nullptr)
             {
                 const auto id_of = reinterpret_cast<WeaponIdFn>(mem::vslot(spawner, k_vt_spawn_weapon_id));
                 mem::guarded([&] {
                     weapon_id = id_of != nullptr ? id_of(spawner) : 0;
                     if (const char* name = weapon_id > 0 ? g_weapon_id_name(weapon_id) : nullptr)
-                        def = inv::find_item(name);
+                    {
+                        mem::safe_copy(item, name, sizeof(item) - 1);
+                        def = inv::find_item(item);
+                    }
                 });
             }
+            // [map_guns] spawners_once: a weapon spawner (a gun, a melee weapon: not an item) is gone once it has given one
+            const bool once = survivor && item[0] != '\0' && inv::map_gun_rules().enabled && inv::map_gun_rules().spawners_once &&
+                              (def == nullptr || def->weapon());
+            const bool local = activator != nullptr && activator == local_player();
+            std::vector<std::uint32_t> before;
+            int stored_before = 0;
+            if (once)
+            {
+                before = held_handles(activator);
+                if (local && def != nullptr)
+                {
+                    Session& s = session();
+                    std::lock_guard lock(s.mutex);
+                    stored_before = s.inventory.count_of(*def);
+                }
+            }
+            if (!local)
+                def = nullptr; // (what follows is the inventory's: the local or served player's)
             bool take = false;
             if (def != nullptr && !def->weapon() && player_has_slot(activator, def->game_slot))
             {
@@ -1505,6 +1691,26 @@ namespace game
             }
             g_spawn_use.original()(spawner, edx, activator, caller, type, value);
             g_hidden_weapon_id = 0;
+            if (once)
+            {
+                // given: a weapon in the hands that was not there, or a copy stored in a box
+                const std::vector<std::uint32_t> after = held_handles(activator);
+                bool given = false;
+                for (const std::uint32_t handle : after)
+                    given |= !std::binary_search(before.begin(), before.end(), handle);
+                if (!given && local)
+                    if (const inv::ItemDef* stored = inv::find_item(item))
+                    {
+                        Session& s = session();
+                        std::lock_guard lock(s.mutex);
+                        given = s.inventory.count_of(*stored) > stored_before;
+                    }
+                if (given)
+                {
+                    INV_LOG("spawner %p (%s): gave one, it is gone (spawners_once)", spawner, item);
+                    mem::guarded([&] { g.util_remove(spawner); });
+                }
+            }
         }
 
         // ---- other players: a dedicated server, guests on a listen server -----------------------------------------
@@ -1819,6 +2025,7 @@ namespace game
 
         void gun_use(void* gun, void* edx, void* activator, void* caller, int type, float value)
         {
+            cut_map_gun(activator, gun);
             if (!g_giving && activator != nullptr && activator == local_player())
             {
                 const WeaponPickup pickup = weapon_pickup(activator, gun, item_of(gun));
@@ -1851,13 +2058,113 @@ namespace game
         constexpr std::uintptr_t k_rva_ammo_spawn_vtable = 0x682CF4;
         core::Hook<SpawnUseFn> g_ammo_spawn_use;
 
+        // ---- the map's ammo piles, finite ([ammo_piles]) ---------------------------------------------------------------
+        //
+        // With [ammo_piles] on, a map's ammo pile (not one of dropped rounds) holds a set amount: on its first +use it
+        // gets a random ammo type of ammo_piles.kinds and min..max magazines of it (inv::ammo_magazine), and it is tinted
+        // that type's colour.  Anyone takes as many as fit (take_pile's rule: the type's most, the weight limit; one
+        // survivor can empty it), the rest stays; empty, it is removed.  A bot takes only rounds for a gun it carries.
+        // What is left is kept here by pile, with its EHANDLE (another entity made at the same address is a new pile);
+        // the clock going back (a new map) forgets it all.
+
+        struct FinitePile
+        {
+            std::uint32_t handle = k_invalid_handle;
+            std::string kind;
+            int rounds = 0; // left
+        };
+        std::map<void*, FinitePile> g_finite_piles; // main thread only
+        float g_finite_piles_time = 0.f;
+
+        std::minstd_rand& pile_random()
+        {
+            static std::minstd_rand random(static_cast<unsigned>(GetTickCount64() * 2246822519u));
+            return random;
+        }
+
+        // The player carries a gun that shoots ammo type `type`.
+        bool carries_ammo_type(void* player, int type)
+        {
+            for (int i = 0; i < k_max_weapons; ++i)
+                if (void* weapon = entity_from_handle(handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i))))
+                    if (ammo_type_of(weapon) == type)
+                        return true;
+            return false;
+        }
+
+        void use_finite_pile(void* pile, void* activator)
+        {
+            if (activator == nullptr || team_of(activator) != 2)
+                return;
+            const inv::AmmoPileRules& rules = inv::ammo_pile_rules();
+            const float now = game_time();
+            if (now < g_finite_piles_time)
+                g_finite_piles.clear(); // a new map
+            g_finite_piles_time = now;
+            const std::uint32_t handle = handle_of(pile);
+            FinitePile& state = g_finite_piles[pile];
+            if (state.handle != handle || state.kind.empty())
+            {
+                // its first +use: what it holds
+                std::minstd_rand& random = pile_random();
+                const std::string& kind = rules.kinds[random() % rules.kinds.size()];
+                const int magazines =
+                    rules.min_magazines + static_cast<int>(random() % static_cast<unsigned>(rules.max_magazines - rules.min_magazines + 1));
+                state = FinitePile{handle, kind, magazines * std::max(1, inv::ammo_magazine(kind))};
+                const unsigned color = inv::ammo_color(kind);
+                char tint[16];
+                std::snprintf(tint, sizeof(tint), "%u %u %u 255", (color >> 16) & 255u, (color >> 8) & 255u, color & 255u);
+                mem::guarded([&] { g.set_key_value(g.tools, pile, "rendercolor", tint); });
+                INV_LOG("ammo pile %p: holds %d %s (%d magazine(s))", pile, state.rounds, kind.c_str(), magazines);
+            }
+
+            const int type = inv::ammo_index(state.kind);
+            const char* title = inv::ammo_title(state.kind);
+            const bool bot = is_bot(activator);
+            const bool own = !bot && activator == local_player(); // the host, or the player being served: their weight counts
+            if (bot && !carries_ammo_type(activator, type))
+                return; // (no gun for these rounds)
+            const int n = rounds_that_fit(activator, state.kind, state.rounds, own);
+            if (n <= 0)
+            {
+                const int have = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(reserve_of(activator, type)), 0);
+                if (own)
+                    notify(have >= inv::ammo_max(state.kind) ? std::string("You carry all the ") + title + " you can"
+                                                             : std::string("Too heavy for more ") + title);
+                return;
+            }
+            mem::guarded([&] { *reserve_of(activator, type) += n; });
+            state_changed(activator);
+            state.rounds -= n;
+            INV_LOG("ammo pile %p: %s took %d %s, %d left", pile, bot ? "a bot" : "a survivor", n, state.kind.c_str(), state.rounds);
+            if (own)
+                notify("Took " + std::to_string(n) + " " + title +
+                       (state.rounds > 0 ? " (" + std::to_string(state.rounds) + " left in the pile)" : std::string()));
+            if (state.rounds <= 0)
+            {
+                mem::guarded([&] { g.util_remove(pile); });
+                g_finite_piles.erase(pile);
+            }
+        }
+
         void __fastcall hk_ammo_spawn_use(void* pile, void* edx, void* activator, void* caller, int type, float value)
         {
             std::string kind;
             int rounds = 0;
             if (!pile_contents(pile, kind, rounds))
             {
-                g_ammo_spawn_use.original()(pile, edx, activator, caller, type, value);
+                if (!inv::ammo_pile_rules().enabled)
+                {
+                    g_ammo_spawn_use.original()(pile, edx, activator, caller, type, value);
+                    return;
+                }
+                if (served_remotely(activator) && !is_bot(activator))
+                {
+                    Activation active(activator); // (their weight counts when it is theirs)
+                    use_finite_pile(pile, activator);
+                    return;
+                }
+                use_finite_pile(pile, activator);
                 return;
             }
             if (served_remotely(activator))
@@ -2742,6 +3049,27 @@ namespace game
             return g_take_damage.original()(self, edx, info);
         }
 
+        // Nobody is infected any more: a new round or map, the escape.  The host's own effect goes in any case (the host
+        // may not be a player yet, or any more).
+        void infection_all_clear(const char* why)
+        {
+            if (!g_infections.empty() || !g_no_rescue.empty())
+                INV_LOG("infection: %s, all clear", why);
+            for (const auto& [user_id, infection] : g_infections)
+                if (void* player = player_by_user_id(user_id))
+                    tell_infection(player, nullptr);
+            g_infections.clear();
+            g_no_rescue.clear();
+            g_body_removals.clear();
+            if (!g_dedicated)
+            {
+                Session& s = local_session();
+                std::lock_guard lock(s.mutex);
+                s.infection_until = 0;
+                s.infection_total_ms = 0;
+            }
+        }
+
         void on_game_event(void* event)
         {
             if (!inv::infection_rules().enabled)
@@ -2789,17 +3117,9 @@ namespace game
                     if (void* player = player_by_user_id(user_id))
                         tell_infection(player, nullptr);
             }
-            else if (n == "round_start" || n == "map_transition" || n == "round_end")
-            {
-                if (!g_infections.empty() || !g_no_rescue.empty())
-                    INV_LOG("infection: %s, all clear", name);
-                for (const auto& [user_id, infection] : g_infections)
-                    if (void* player = player_by_user_id(user_id))
-                        tell_infection(player, nullptr);
-                g_infections.clear();
-                g_no_rescue.clear();
-                g_body_removals.clear();
-            }
+            else if (n == "round_start" || n == "map_transition" || n == "round_end" || n == "mission_lost" ||
+                     n == "finale_vehicle_leaving" || n == "finale_win") // (the last two: the escape, its cutscene)
+                infection_all_clear(name);
         }
 
         bool __fastcall hk_fire_event(void* self, void* edx, void* event, bool dont_broadcast)
@@ -2881,6 +3201,7 @@ namespace game
                 if (player == nullptr || !classname_of(player, name, sizeof(name)) || std::strcmp(name, "player") != 0 ||
                     team_of(player) != 2 || !alive(player))
                     continue;
+                know_held_guns(player);
                 Session* s = nullptr;
                 if (player == host)
                     s = &local_session();
@@ -2900,6 +3221,15 @@ namespace game
                     stamina_frame();
                     cap_reserves();
                 });
+            // a new map without the events above (a new campaign from the menu): the game's clock went back
+            static float last_time = 0.f;
+            if (g_globals != nullptr)
+            {
+                const float time = game_time();
+                if (time + 1.f < last_time && (!g_infections.empty() || !g_no_rescue.empty()))
+                    infection_all_clear("a new map");
+                last_time = time;
+            }
             if (g_infections.empty() && g_body_removals.empty())
                 return;
             const ULONGLONG now = GetTickCount64();
@@ -3368,12 +3698,13 @@ namespace game
         {
             if (g_get_client_entity == nullptr || g_is_in_game == nullptr)
                 return; // not found: the hotbar always shows, as before
-            bool playing = false;
+            bool playing = false, in_game = false;
             int clip = -1;
             int reserve = -1;
             int pool[32] = {};
             mem::guarded([&] {
-                if (!g_is_in_game(g_engine_client) || g_game_ui_visible(g_engine_vgui))
+                in_game = g_is_in_game(g_engine_client);
+                if (!in_game || g_game_ui_visible(g_engine_vgui))
                     return;
                 void* player = g_get_client_entity(g_client_entities, g_get_local_player(g_engine_client));
                 if (player == nullptr)
@@ -3399,6 +3730,16 @@ namespace game
             s.ammo_clip = clip;
             s.ammo_reserve = reserve;
             std::memcpy(s.ammo_pool, pool, sizeof(pool));
+            // out of a game (quit, or loading the next map): no infection, no stamina to show; a server that still has
+            // them says so again
+            if (!in_game && (s.infection_until != 0 || s.stamina >= 0.f))
+            {
+                INV_LOG("not in a game: the infection and stamina effects are off");
+                s.infection_until = 0;
+                s.infection_total_ms = 0;
+                s.stamina = -1.f;
+                s.stamina_exhausted = false;
+            }
         }
 
         // ---- the backend --------------------------------------------------------------------------------------------

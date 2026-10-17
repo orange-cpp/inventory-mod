@@ -339,6 +339,38 @@ molotov = 1
         inv::apply_rules("");
         CHECK(!inv::stamina_rules().enabled);
 
+        // [ammo_piles]
+        CHECK(!inv::ammo_pile_rules().enabled && inv::ammo_pile_rules().kinds.size() == 7);
+        CHECK(inv::apply_rules("[ammo_piles]\n").errors.empty() && inv::ammo_pile_rules().enabled &&
+              inv::ammo_pile_rules().min_magazines == 1 && inv::ammo_pile_rules().max_magazines == 3);
+        const inv::Rules piles =
+            inv::apply_rules("[ammo_piles]\nmin_magazines = 2\nmax_magazines = 4\nkinds = [\"smg\", \"auto_shotgun\", \"laser\"]\n");
+        CHECK(piles.errors.size() == 1); // no "laser"
+        CHECK(inv::ammo_pile_rules().min_magazines == 2 && inv::ammo_pile_rules().max_magazines == 4);
+        CHECK((inv::ammo_pile_rules().kinds == std::vector<std::string>{"smg", "autoshotgun"}));
+        CHECK(inv::apply_rules("[ammo_piles]\nmin_magazines = 3\nmax_magazines = 2\n").errors.size() == 1 &&
+              inv::ammo_pile_rules().max_magazines == 3);
+        CHECK(!inv::apply_rules("[ammo_piles]\nmax_magazines = 0\n").errors.empty());
+        CHECK(!inv::apply_rules("[ammo_piles]\nmin_magazines = 1.5\n").errors.empty());
+        CHECK(inv::apply_rules("[ammo_piles]\nenabled = false\n").errors.empty() && !inv::ammo_pile_rules().enabled);
+        inv::apply_rules("");
+        CHECK(!inv::ammo_pile_rules().enabled);
+
+        // [map_guns]
+        CHECK(!inv::map_gun_rules().enabled);
+        CHECK(inv::apply_rules("[map_guns]\nmin_clip = 0\nmax_clip = 100\n").errors.empty() && inv::map_gun_rules().enabled &&
+              inv::map_gun_rules().min_clip == 0 && inv::map_gun_rules().max_clip == 100);
+        CHECK(inv::apply_rules("[map_guns]\n").errors.empty() && inv::map_gun_rules().min_clip == 10 &&
+              inv::map_gun_rules().max_clip == 60);
+        CHECK(inv::apply_rules("[map_guns]\nmin_clip = 70\nmax_clip = 20\n").errors.size() == 1 && inv::map_gun_rules().max_clip == 70);
+        CHECK(!inv::apply_rules("[map_guns]\nmax_clip = 150\n").errors.empty());
+        CHECK(!inv::apply_rules("[map_guns]\nclip = 5\n").errors.empty());
+        CHECK(inv::apply_rules("[map_guns]\n").errors.empty() && inv::map_gun_rules().spawners_once);
+        CHECK(inv::apply_rules("[map_guns]\nspawners_once = false\n").errors.empty() && !inv::map_gun_rules().spawners_once);
+        CHECK(!inv::apply_rules("[map_guns]\nspawners_once = 1\n").errors.empty());
+        inv::apply_rules("");
+        CHECK(!inv::map_gun_rules().enabled);
+
         // [ammo]: the most reserve rounds per ammo type
         CHECK(std::string(inv::ammo_kind("weapon_rifle_desert")) == "assaultrifle" && inv::ammo_kind("weapon_melee") == nullptr);
         CHECK(inv::ammo_max("assaultrifle") == 360 && !inv::ammo_max_set("assaultrifle")); // the game's default

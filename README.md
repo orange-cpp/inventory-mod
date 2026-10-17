@@ -63,8 +63,8 @@ carry of that type. That maximum is the rules file's `[ammo]` table (`assault_ri
 own `ammo_<type>_max` to it, so ammo piles stop there too. A stored gun shows its magazine and the reserve it would use
 (your reserve of its type, e.g. "50 / 290"). The store key stores the gun or melee weapon in your
 hands, the pick-up key takes one off the ground, and taking one out (the wheel, double click in the window) swaps it
-with the one in that game slot, which goes into the same box. The wheel goes gun, melee, stored weapons, then the
-items. E on a weapon puts it in your hands when that game slot is empty; when you already have one there, it goes into
+with the one in that game slot, which goes into the same box. The wheel shows the weapons, then the items, each
+keeping the place it first had (a swap does not move them). E on a weapon puts it in your hands when that game slot is empty; when you already have one there, it goes into
 a free weapon box with its rounds; with no free box (or too heavy for one) it is the game's own swap, if that is not
 too heavy.
 
@@ -107,6 +107,16 @@ The window's Items tab lists each type you carry with what it weighs, and drops 
 ("Drop 50") or all of it: the rounds land as an ammo pile that holds exactly those rounds, which anyone (not the bots)
 takes back with E, as many as fit; the rest stays in the pile. An ammo pile of the map, or a gun picked up, fills you
 only up to the weight limit.
+
+With `[ammo_piles]` in the host's `inventory_mod.toml` (on in the example) the map's ammo piles are not endless: a pile
+holds `min_magazines` to `max_magazines` magazines (1 to 3) of a random ammo type of `kinds`, rolled the first time
+someone uses it (it then takes that type's colour). Anyone takes as many as they can carry, the rest stays in the
+pile, and an empty pile is gone. A bot takes only rounds for a gun it has.
+
+With `[map_guns]` (on in the example) a gun nobody has held yet, lying in the map or from a weapon spawner, has only
+`min_clip` to `max_clip` % of its magazine (10 to 60) when it is first picked up. A gun someone has held, or one
+dropped from a box, keeps what it had. With `spawners_once` (on) a weapon spawner of the map, for guns or melee
+weapons, gives one and is gone; item spawners (pills, kits) are the game's.
 
 ## Stamina
 

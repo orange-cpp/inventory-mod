@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <imgui.h>
 #include <imgui_nullcore/imgui_nullcore.hpp>
+#include <map>
 #include <mutex>
 #include <random>
 #include <string>
@@ -919,7 +920,7 @@ namespace hud
         // ---- the radial wheel (hold the middle mouse button) ---------------------------------------------------------
         //
         // Like No More Room in Hell's inventory wheel: everything the player carries around the middle of the screen,
-        // in the wheel's order (gun, melee / pistol, stored weapons, items); the segment the cursor points at (by its
+        // weapons first, then items, each in the place it first had (a swap does not move them); the segment the cursor points at (by its
         // direction from the middle) is taken in hand when the button is let go or on a left click, dropped on a right
         // click.  After them the reserve rounds, one segment per type in its colour: a right click drops a magazine's
         // worth, the right button held half a second all of them (they cannot be taken in hand).  Each segment's share of the circle grows with what it weighs (a part
@@ -988,6 +989,28 @@ namespace hud
                 w.detail = text;
                 out.push_back(std::move(w));
             }
+            // Each weapon and item keeps its place: in the grid's order a gun taken out of a box goes first (the hands)
+            // and the one it replaces into that box, so the two traded places.  The places are the order they were first
+            // seen in (by kind, a second one of the same kind after the first), weapons before items.
+            static std::vector<std::string> order;
+            std::map<std::string, int> seen;
+            std::vector<std::pair<int, std::size_t>> rank; // (weapon 0 / item 1) * big + place, index
+            for (std::size_t i = 0; i < out.size(); ++i)
+            {
+                const WheelEntry& w = out[i];
+                const bool item = !w.entry.native && !session.inventory.slot(w.entry.index).def->weapon();
+                const std::string key = w.classname + "|" + w.icon + "#" + std::to_string(seen[w.classname + "|" + w.icon]++);
+                auto at = std::find(order.begin(), order.end(), key);
+                if (at == order.end())
+                    at = order.insert(order.end(), key);
+                rank.emplace_back((item ? 1 << 20 : 0) + static_cast<int>(at - order.begin()), i);
+            }
+            std::stable_sort(rank.begin(), rank.end());
+            std::vector<WheelEntry> placed;
+            placed.reserve(out.size());
+            for (const auto& [place, i] : rank)
+                placed.push_back(std::move(out[i]));
+            out = std::move(placed);
             // the reserve rounds, one segment per type carried
             for (const char* kind : inv::ammo_kinds())
             {

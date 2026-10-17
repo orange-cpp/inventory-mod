@@ -112,3 +112,20 @@ slow = 60              # exhausted: % of the normal speed
 swing_speed = 60       # exhausted: % of the normal swing and shove rate
 damage = 50            # exhausted: % of the normal melee damage
 bots = false           # the survivor bots too
+
+# Ammo piles: a map's ammo pile is not endless. It holds a random ammo type of `kinds`, min_magazines to max_magazines
+# magazines of it (rolled on its first use, then it is tinted that type's colour). Anyone takes as many as they can
+# carry (the type's most, the weight limit; a bot only for a gun it has), the rest stays; an empty pile is gone.
+[ammo_piles]
+enabled = true
+min_magazines = 1
+max_magazines = 3
+kinds = ["assault_rifle", "smg", "shotgun", "auto_shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
+
+# Map guns: a gun nobody has held yet (lying in the map, or from a weapon spawner) has only min_clip to max_clip % of
+# its magazine when it is first picked up. A gun someone has held keeps its own.
+[map_guns]
+enabled = true
+min_clip = 10
+max_clip = 60
+spawners_once = true   # a weapon spawner (guns, melee weapons) gives one, then it is gone
