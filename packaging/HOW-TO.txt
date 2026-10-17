@@ -1,0 +1,92 @@
+Inventory mod for Left 4 Dead 2 (game version 2.2.4.3)
+=====================================================
+
+What is in this folder
+  inventory_mod.dll           the mod
+  injector.exe                loads the mod into the running game
+  load-mod.bat                runs the injector for you
+  inventory_mod.example.toml  rules (box count, weight limit, item weights), for whoever hosts
+  inventory_mod_screamer.jpg  the infection's screamer picture
+  addons\                     the mod's addons, which the mod loads from there (keep the folder next to the DLL):
+    inventory_mod_rounds.vpk  the ammo pack of each round type
+
+
+1. Start the game in insecure mode (important)
+   Steam > Library > right click Left 4 Dead 2 > Properties > General > Launch options:
+       -insecure
+   The mod is a DLL loaded into the game. Never use it on VAC-secured servers: that can get your account banned.
+   With -insecure the game only lists / joins insecure servers, so that cannot happen by accident.
+
+2. Start Left 4 Dead 2 and wait for the main menu.
+
+3. Double-click load-mod.bat
+   It prints "loaded ... into left4dead2.exe". The mod writes inventory_mod.log next to the DLL.
+   Windows Defender or another antivirus may complain about injector.exe (loading a DLL into another program is
+   what cheats do too). Allow it, or run it once from "More info > Run anyway".
+   Do it again every time you start the game (the mod is not installed into the game, nothing is changed on disk).
+   With addons\inventory_mod_rounds.vpk, dropped rounds look like an ammo pack of their type (rifle, SMG,
+   shotgun, ...). Everyone in the game needs the mod with that file: whoever lacks it sees a red ERROR model.
+
+4. Join the game
+   The inventory lives on the server, so the one who hosts must run the mod as well:
+     - a game hosted by a friend who runs the mod (listen server): just join it;
+     - a dedicated server (srcds.exe) that runs the mod: join it (it must be started with -insecure too).
+   On a server without the mod, the panel stays empty.
+   Playing alone or hosting yourself works too: then your own game keeps the inventory.
+
+Keys (rebind them in the window's Settings tab)
+  I                 open / close the inventory window (Settings, Debug, drag and drop, right click menu)
+  middle mouse      hold: the radial wheel. Point at something and let go to take it in hand,
+                    right click drops it. You can keep walking while it is open.
+  mouse wheel, [ ]  step through gun, melee, stored weapons, then the items
+  3 .. 9, 0         take inventory box 1 .. 8 in hand
+  ;                 store what is in your hands (items and weapons)
+  H                 pick up the item / weapon in front of you into the inventory
+  G                 drop what is in your hands
+  E                 (the game's use) on an item or weapon whose game slot you already fill: it goes into the inventory
+  Ctrl+End          unload the mod
+
+Slots, wheel or both
+  Settings tab > Inventory view: "Slots and wheel" (default), "Slots only" (the middle mouse button stays the game's)
+  or "Wheel only" (no item boxes under the game's gun and melee at all, the wheel shows everything; the number keys
+  and the mouse wheel work the game's way again; hold the middle mouse button for the wheel).
+
+The weight
+  Everything you carry counts (stored items, the items in your slots, your gun and melee, your reserve rounds). The
+  bar under the boxes turns red when nothing more fits. The host's inventory_mod.toml decides the limit and what things
+  weigh; copy inventory_mod.example.toml to inventory_mod.toml next to the DLL and edit it if you host.
+
+Rounds
+  The window's Items tab (I) lists the rounds you carry and what they weigh. "Drop 50" (a magazine's worth) or
+  "Drop all" puts them on the ground as an ammo pack, tinted the colour of the round type, with exactly those rounds;
+  anyone takes them back with E. With addons\inventory_mod_rounds.vpk each round type is its own ammo pack. The wheel (middle mouse) shows them too, in their colours: right click there drops
+  a magazine's worth, holding the right button half a second drops all of that type. An ammo pile only fills you up to the weight limit.
+  In the wheel, each segment is as large as its share of what you carry weighs.
+  With [ammo_piles] in the host's inventory_mod.toml, a map's ammo pile holds 1 to 3 magazines of a random round
+  type (it takes that type's colour once used). Take what you can carry; the rest stays, and an empty pile is gone.
+  With [map_guns], a gun found in the map has only part of its magazine (10 to 60 %) the first time it is picked up,
+  and a weapon spot of the map gives one weapon, then it is gone.
+
+The infection (when the host's inventory_mod.toml has [infection])
+  Knocked down by the infected, grabbed by a special or vomited on by a boomer, you are infected. There is no clock on
+  the screen: your sight gets sicker (sway, blur, veins, a racing heartbeat) as time runs out. Every new hit takes time
+  off. Pain pills do not cure it, they put the clock back to the start. If it runs out you die, a special infected rises where you stood, and you only come back next chapter
+  (no defibrillator, no rescue closet).
+  You cough now and then (everyone hears it), more often as the clock runs out. Near the end you go insane: you
+  laugh for no reason or scream at things that are not there.
+  The sound gets muffled and warped with a heartbeat under it, and when the clock runs out a screamer jumps at you.
+  Turn any of it off in the window's Settings tab ("Infection"): screen effect, sound, screamer. "Screamer chance"
+  makes the screamer random: 0 never, 1 always, 0.5 half the time.
+  inventory_mod_screamer.jpg (next to the DLL) is the screamer's picture; put another picture there to change it.
+
+Stamina (when the host's inventory_mod.toml has [stamina])
+  Running, jumping, melee swings and shoves use stamina; it comes back when you rest a moment. Run out and you are
+  exhausted until it is back to about a third: you move slower, swing and shove slower, and your melee hits do less
+  damage. The game's own shove tiredness is off meanwhile: stamina is the limit.
+  A thin bar under the crosshair shows it while it is not full, and the screen's edges darken as it runs low. Turn
+  either off in the window's Settings tab ("Stamina").
+
+Files the mod writes next to the DLL
+  inventory_mod_settings.toml  your settings and keys (the Settings tab writes it)
+  inventory_mod.inventory  your inventory when you play alone / host (on someone else's server it is kept there)
+  inventory_mod.log        what it did, for when something goes wrong

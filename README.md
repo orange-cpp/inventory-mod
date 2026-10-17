@@ -19,7 +19,13 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
 - **Auto-store**: pressing +use (E) on a supported item while your slot for it is full puts it into the inventory
   instead of leaving it on the floor. With `auto_store = true` (`[play]` in `inventory_mod_settings.toml`) (or "Store items on use" in Settings)
   every such +use stores the item, even when you could carry it.
-- Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory`.
+- Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory` (a
+  dedicated server keeps one file per player, `inventory_<name>.inventory`).
+- **Multiplayer**: the inventory lives on the server, so whoever hosts runs the mod (a listen server, or a dedicated
+  server with the mod injected into `srcds.exe`). Every player who also runs the mod gets an inventory of their own:
+  their HUD sends its requests as console commands and the server answers with their inventory. A player without the
+  mod has no inventory, but the host's rules (infection, stamina, the finite ammo piles and map guns) apply to them
+  too.
 - **Rules file** `inventory_mod.toml` next to the DLL (start from [inventory_mod.example.toml](inventory_mod.example.toml)):
   the boxes per player, the carry limit (`max_weight`), each item's weight and stack size, and each gun's and melee
   weapon's weight. On a dedicated server
@@ -105,12 +111,12 @@ The reserve rounds you carry weigh, by `[round_weight]` in the host's `inventory
 360 weigh 3.6; SMG 0.006; shotgun shell 0.04; sniper and hunting rifle 0.02; grenade 0.15; 0 makes a type weightless).
 The window's Items tab lists each type you carry with what it weighs, and drops it a magazine's worth at a time
 ("Drop 50") or all of it: the rounds land as an ammo pile that holds exactly those rounds, which anyone (not the bots)
-takes back with E, as many as fit; the rest stays in the pile. With the addon `inventory_mod_rounds.vpk` in the
-`addons` folder next to the DLL (the mod mounts every `.vpk` there when it loads; in `left4dead2/addons` it works too)
-each round type is its own ammo pack (the textures in `assets/textures`, built into `out/Release/addons` by
-`python -I tools/make_rounds_addon.py`); without it, and for M60 rounds and chainsaw fuel, the pile is the
-incendiary ammo pack tinted the type's colour. Every player needs the addon to see the packs. An ammo pile of the map, or a gun picked up, fills you
-only up to the weight limit.
+takes back with E, as many as fit; the rest stays in the pile; rounds dropped next to a pile of their type join it. Each
+round type is its own ammo pack (the textures in `assets/textures`) when the addon `inventory_mod_rounds.vpk` is in the
+`addons` folder next to the DLL: the mod mounts every `.vpk` there when it loads, so nothing is copied into the game
+(in `left4dead2/addons` it works too). Without it, and for M60 rounds and chainsaw fuel, the pile is the incendiary
+ammo pack tinted the type's colour. Every player needs the addon to see the packs (whoever lacks it sees the ERROR
+model). An ammo pile of the map, or a gun picked up, fills you only up to the weight limit.
 
 With `[ammo_piles]` in the host's `inventory_mod.toml` (on in the example) the map's ammo piles are not endless: a pile
 holds `min_magazines` to `max_magazines` magazines (1 to 3) of a random ammo type of `kinds`, rolled the first time
@@ -169,10 +175,28 @@ build folder configured before vcpkg needs a fresh configure (delete `build\x86-
 
 Outputs in `out\Release`: `inventory_mod.dll`, `injector.exe`, `inventory_tests.exe` (the inventory model's tests).
 
+The ammo packs' addon is built apart, by `python -I tools/make_rounds_addon.py` (Python 3 with Pillow, and the game
+installed: it reads the game's own ammo pack model from its VPKs) into `out\Release\addons\inventory_mod_rounds.vpk`.
+The addon in use by a running game cannot be replaced; the game keeps it open until it closes.
+
+## Release
+
+```
+make_dist.bat                # build, test, then dist\inventory-mod and dist\inventory-mod-<date>.zip
+make_dist.bat -SkipBuild     # the DLL already built (e.g. while the game has it loaded)
+```
+
+[tools/make_dist.ps1](tools/make_dist.ps1) runs `build.bat Release` and the tests (it stops on a failure, or when the
+game has the DLL loaded: unload it with `Ctrl+End` first), builds the addon into the release, and puts together
+`inventory_mod.dll`, `injector.exe`, `load-mod.bat` and `HOW-TO.txt` (from [packaging](packaging), the players'
+instructions), `inventory_mod.example.toml`, `inventory_mod_screamer.jpg` and `addons\inventory_mod_rounds.vpk`, then
+zips the folder. `dist` is not in git.
+
 ## Run
 
 1. Start the game with `-insecure` (add `-windowed -w 1280 -h 720` for development) and load a map.
-2. `out\Release\injector.exe` loads `inventory_mod.dll` into the game (or use your own injector).
+2. `out\Release\injector.exe` loads `inventory_mod.dll` into the game (or use your own injector). With
+   `out\Release\addons\inventory_mod_rounds.vpk` built, dropped rounds are their type's pack.
 3. `inventory_mod.log`, `inventory_mod_settings.toml` (settings and keys; an old `inventory_mod.ini` is moved into it once) and `inventory_mod.inventory` are written next to the DLL; `inventory_mod.toml` (the rules) is only read.
 
 The game access only turns on for game build 2.2.4.3 (`server.dll` timestamp `0x6A440E53`). On any other build the log
@@ -183,11 +207,17 @@ says why and the inventory only edits its own list.
 ```
 src/inv/       the model, no Windows or ImGui (tested on its own); rules.cpp reads inventory_mod.toml
 src/core/      log, config, MinHook wrapper
-src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (hotbar + window)
+src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel, window), icons.cpp (the game's
+               own weapon and item icons, read from its VTF sheets), postfx.cpp (the infection and stamina shaders),
+               audio.cpp (the infection's sound)
 src/game/      backend.hpp (the seam), game.cpp (the real backend), mem.cpp (guarded reads and calls)
 tests/         inventory_test.cpp
-tools/         injector.cpp, game_test.ps1 (drives a test session), re/pe_tools.py (static analysis),
-               mdmp_summary.py (reads a crash dump)
+assets/        the screamer picture, textures/ (each round type's ammo pack)
+packaging/     what the release adds: HOW-TO.txt (for players), load-mod.bat
+tools/         injector.cpp, game_test.ps1 (drives a test session, a dedicated server too), make_dist.ps1 (the
+               release), make_rounds_addon.py (the ammo packs' addon), mdmp_summary.py (reads a crash dump)
+tools/re/      pe_tools.py (static analysis), vpk.py (reads the game's VPKs), mdl_to_smd.py (a model to SMD + QC for
+               Blender Source Tools), vtf_to_png.py (a texture to PNG)
 docs/          game-notes.md: every game address / slot / offset used, and how each was found
 ```
 
@@ -207,6 +237,7 @@ rebuilds it and loads it again without restarting the game.
 ## Not done
 
 - Only the +use pickup is intercepted (not items given by the game, e.g. at a map start or from a bot).
-- No icons yet: slots show a coloured two-letter mark. Icons from the game's materials would need a VTF reader.
-- Multiplayer: the inventory is the local player's only, and nothing is synced to other players.
-- Game events (`item_pickup`, ...) are mapped in the notes but not used (they fire after a pickup, too late).
+- A player without the mod on a server that runs it has no inventory and sees the ammo packs as ERROR models.
+- The finite ammo piles, map guns and ammo packs have not been tried on the dedicated server yet.
+- The bots: whether they take ammo from the map's piles through the same +use is not known (they may refill without
+  limit).
