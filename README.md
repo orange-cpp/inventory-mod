@@ -21,6 +21,10 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   every such +use stores the item, even when you could carry it.
 - Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory` (a
   dedicated server keeps one file per player, `inventory_<name>.inventory`).
+- **The game's rules for what you carry**: the inventory goes on to the next chapter with you; a lost round or a
+  restarted chapter gives back what it held when the chapter began, as the game does with your weapons; a new campaign
+  (another map without a saferoom transition) starts with it empty. A survivor who dies drops it: the items fall where
+  they died and each round type lies there as an ammo pile, so the others can take them.
 - **Multiplayer**: the inventory lives on the server, so whoever hosts runs the mod (a listen server, or a dedicated
   server with the mod injected into `srcds.exe`). Every player who also runs the mod gets an inventory of their own:
   their HUD sends its requests as console commands and the server answers with their inventory. A player without the
@@ -118,7 +122,9 @@ round type is its own ammo pack (the textures in `assets/textures`) when the add
 `addons` folder next to the DLL: the mod mounts every `.vpk` there when it loads, so nothing is copied into the game
 (in `left4dead2/addons` it works too). Without it, and for M60 rounds and chainsaw fuel, the pile is the incendiary
 ammo pack tinted the type's colour. Every player needs the addon to see the packs (whoever lacks it sees the ERROR
-model). An ammo pile of the map, or a gun picked up, fills you only up to the weight limit.
+model). An ammo pile of the map, or a gun picked up, fills you only up to the weight limit. The rounds are yours, not
+the gun's: swapping your gun for another on the ground keeps your rounds of its type (the game would leave them in the
+dropped gun), and a gun someone dropped adds its rounds to yours (the game would replace yours with them).
 
 With `[ammo_piles]` in the host's `inventory_mod.toml` (on in the example) the map's ammo piles are not endless: a pile
 holds `min_magazines` to `max_magazines` magazines (1 to 3) of a random ammo type of `kinds`, rolled the first time

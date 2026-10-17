@@ -823,6 +823,46 @@ namespace game
 
         void do_drop_weapon(const std::string& classname);
 
+        // A stored item put into the world at `position` (and dropped to the floor): a gun with its magazine, upgrades
+        // and any reserve of its own, a melee weapon as the one it was.  nullptr when the game would not make it.
+        void* spawn_dropped(const inv::ItemDef& def, const inv::WeaponState& state, const Vec3& position)
+        {
+            void* entity = nullptr;
+            const bool ok = mem::guarded([&] {
+                entity = g.create_entity(g.tools, def.classname);
+                if (entity == nullptr)
+                    return;
+                // which melee weapon: its keyvalue, read when it spawns
+                if (def.weapon() && !state.melee.empty())
+                    g.set_key_value(g.tools, entity, "melee_script_name", state.melee.c_str());
+                if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(entity, k_vt_precache)))
+                    precache(entity);
+                g.dispatch_spawn(g.tools, entity);
+                if (const auto teleport = reinterpret_cast<TeleportFn>(mem::vslot(entity, k_vt_teleport)))
+                    teleport(entity, &position, nullptr, nullptr);
+                if (g.drop_to_floor != nullptr)
+                    g.drop_to_floor(entity, 0x200400Bu, nullptr);
+                // a gun keeps its rounds: the magazine, and the reserve the way a dropped gun keeps it
+                // (m_iClip1 is every weapon's; m_iExtraPrimaryAmmo only a CTerrorGun's: not the melee weapon, the
+                // chainsaw or the pistols, whose reserve is endless)
+                if (def.weapon() && std::strcmp(def.classname, "weapon_melee") != 0)
+                {
+                    const auto e = reinterpret_cast<std::uintptr_t>(entity);
+                    if (state.clip >= 0)
+                        *reinterpret_cast<int*>(e + k_off_clip) = state.clip;
+                    if (state.ammo >= 0 && std::strcmp(def.classname, "weapon_chainsaw") != 0 &&
+                        std::strstr(def.classname, "pistol") == nullptr)
+                        *reinterpret_cast<int*>(e + k_off_extra_ammo) = state.ammo;
+                }
+                write_upgrades(entity, def, state);
+            });
+            if (!ok)
+                return nullptr;
+            if (entity != nullptr && def.weapon())
+                know_gun(entity);
+            return entity;
+        }
+
         void do_drop(int slot, int count)
         {
             const inv::ItemDef* def = nullptr;
@@ -865,38 +905,8 @@ namespace game
                 const float distance = 48.f + 6.f * static_cast<float>(i);
                 const Vec3 position{eye.x + forward.x * distance, eye.y + forward.y * distance,
                                     eye.z + forward.z * distance - 14.f};
-                void* entity = nullptr;
-                const bool ok = mem::guarded([&] {
-                    entity = g.create_entity(g.tools, def->classname);
-                    if (entity == nullptr)
-                        return;
-                    // which melee weapon: its keyvalue, read when it spawns
-                    if (def->weapon() && !state.melee.empty())
-                        g.set_key_value(g.tools, entity, "melee_script_name", state.melee.c_str());
-                    if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(entity, k_vt_precache)))
-                        precache(entity);
-                    g.dispatch_spawn(g.tools, entity);
-                    if (const auto teleport = reinterpret_cast<TeleportFn>(mem::vslot(entity, k_vt_teleport)))
-                        teleport(entity, &position, nullptr, nullptr);
-                    if (g.drop_to_floor != nullptr)
-                        g.drop_to_floor(entity, 0x200400Bu, nullptr);
-                    // a gun keeps its rounds: the magazine, and the reserve the way a dropped gun keeps it
-                    // (m_iClip1 is every weapon's; m_iExtraPrimaryAmmo only a CTerrorGun's: not the melee weapon, the
-                    // chainsaw or the pistols, whose reserve is endless)
-                    if (def->weapon() && std::strcmp(def->classname, "weapon_melee") != 0)
-                    {
-                        const auto e = reinterpret_cast<std::uintptr_t>(entity);
-                        if (state.clip >= 0)
-                            *reinterpret_cast<int*>(e + k_off_clip) = state.clip;
-                        if (state.ammo >= 0 && std::strcmp(def->classname, "weapon_chainsaw") != 0 &&
-                            std::strstr(def->classname, "pistol") == nullptr)
-                            *reinterpret_cast<int*>(e + k_off_extra_ammo) = state.ammo;
-                    }
-                    write_upgrades(entity, *def, state);
-                });
-                if (ok && entity != nullptr && def->weapon())
-                    know_gun(entity);
-                if (!ok || entity == nullptr)
+                void* entity = spawn_dropped(*def, state, position);
+                if (entity == nullptr)
                 {
                     notify(std::string("Could not drop ") + def->name);
                     break;
@@ -1223,7 +1233,11 @@ namespace game
         // min_clip..max_clip % of its magazine (m_iClip1, full on such a gun) when a survivor first picks it up.  A gun
         // is known once anyone has held it (every survivor's m_hMyWeapons, ten times a second: see cap_reserves), the
         // mod dropped it from a box or gave it out, or it was cut down here; a known gun keeps its magazine.  By EHANDLE;
-        // the clock going back (a new map) forgets them.
+        // a round starting (on_round_start), or the clock going back by more than a second (a new map), forgets them.
+        // Not any step back: while a player's command runs (a +use, the pick-up) gpGlobals->curtime is that player's
+        // tick base, which can be a little behind the frame's clock that GameFrame sees, and forgetting on that cut the
+        // same gun again on every swap (seen in the log 2026-10-17: one auto shotgun cut 5 -> 2 -> 1 -> 0 rounds in
+        // its magazine within three seconds of swapping it back and forth).
 
         std::set<std::uint32_t> g_known_guns; // main thread only
         float g_known_guns_time = 0.f;
@@ -1233,9 +1247,13 @@ namespace game
         void known_guns_clock()
         {
             const float now = game_time();
-            if (now < g_known_guns_time)
+            if (now + 1.f < g_known_guns_time)
+            {
                 g_known_guns.clear(); // a new map
-            g_known_guns_time = now;
+                g_known_guns_time = now;
+            }
+            else
+                g_known_guns_time = std::max(now, g_known_guns_time);
         }
 
         void know_gun(void* weapon)
@@ -1298,6 +1316,107 @@ namespace game
         };
 
         MapGunReserve* g_spawn_reserve = nullptr; // main thread: a spawner's Use is running (see spawn_use)
+
+        // The rounds are the player's, not the gun's, also through the game's own pick-up and swap.  The game moves
+        // them with the guns: a gun dropped (server.dll 0x102476B0, when no other carried gun takes its ammo type) gets
+        // the player's whole reserve of its type (GetAmmoCount 0x10046DF0 -> the gun's SetExtraAmmo 0x102455E0, which
+        // writes m_iExtraPrimaryAmmo +0x14F4) and the player's goes to 0 (SetAmmoCount(count, type) 0x10046DC0); a gun
+        // picked up with rounds of its own (the slot-426 pick-up 0x1031D080 at 0x1031D186 and 0x1031D34C,
+        // CTerrorGun::Use at 0x103E87DB) has them zeroed and SETS the player's reserve of its type to them, whatever
+        // the player had.  So swapping a rifle for a shotgun lost every rifle round, and taking a dropped gun replaced
+        // the reserve with its rounds.  An object of this lives through such a pick-up or drop: the reserve is read
+        // before, and afterwards no type is below what it was; a gun's own rounds that were taken are added to what
+        // the player had (up to the type's most, as a box adds them); and a gun the player let go of lies there with
+        // its magazine only (its m_iExtraPrimaryAmmo zeroed: the rounds did not leave).  `player` nullptr: nothing.
+        struct KeepRounds
+        {
+            void* player = nullptr;
+            void* gun = nullptr; // the gun being picked up (nullptr: a drop)
+            int gun_extra = 0;
+            AmmoPool before;
+            std::uint32_t carried[k_max_weapons] = {};
+
+            // A gun with rounds of its own (a CTerrorGun: not a pistol, the chainsaw or a melee weapon).
+            static const char* gun_kind(void* weapon, char* name, int length)
+            {
+                const char* kind = weapon != nullptr && classname_of(weapon, name, length) ? inv::ammo_kind(name) : nullptr;
+                return kind != nullptr && std::strcmp(kind, "chainsaw") != 0 ? kind : nullptr;
+            }
+
+            KeepRounds(void* player_, void* gun_) : player(player_), gun(gun_)
+            {
+                if (player == nullptr)
+                    return;
+                before = read_pool(player);
+                char name[64];
+                if (gun_kind(gun, name, sizeof(name)) != nullptr)
+                    gun_extra = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(gun) + k_off_extra_ammo, 0);
+                for (int i = 0; i < k_max_weapons; ++i)
+                    carried[i] = handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i));
+            }
+            KeepRounds(const KeepRounds&) = delete;
+            KeepRounds& operator=(const KeepRounds&) = delete;
+            ~KeepRounds()
+            {
+                if (player != nullptr && before.read)
+                    mem::guarded([&] { settle(); });
+            }
+
+            void settle()
+            {
+                AmmoPool after = read_pool(player);
+                if (!after.read)
+                    return;
+                bool changed = false;
+                bool kept[32] = {};
+                for (int type = 0; type < 32; ++type)
+                    if (after.count[type] < before.count[type])
+                    {
+                        INV_LOG("rounds: the game took %d rounds of ammo type %d with a gun, they stay with the player",
+                                before.count[type] - after.count[type], type);
+                        after.count[type] = before.count[type];
+                        kept[type] = changed = true;
+                    }
+                char name[64];
+                const char* kind = gun_extra > 0 ? gun_kind(gun, name, sizeof(name)) : nullptr;
+                const int type = gun != nullptr ? ammo_type_of(gun) : -1;
+                if (kind != nullptr && type >= 0 && mem::read_or<int>(reinterpret_cast<std::uintptr_t>(gun) + k_off_extra_ammo, -1) == 0)
+                {
+                    const int max = inv::ammo_max(kind);
+                    int want = before.count[type] + gun_extra;
+                    if (max >= 0)
+                        want = std::min(want, std::max(before.count[type], max));
+                    if (after.count[type] < want)
+                    {
+                        INV_LOG("rounds: the %s's own %d rounds join the %d the player had (%d)", name, gun_extra, before.count[type], want);
+                        after.count[type] = want;
+                        changed = true;
+                    }
+                }
+                if (changed)
+                {
+                    write_pool(player, after);
+                    state_changed(player);
+                }
+                for (const std::uint32_t handle : carried)
+                {
+                    void* weapon = handle != k_invalid_handle ? entity_from_handle(handle) : nullptr;
+                    if (weapon == nullptr || gun_kind(weapon, name, sizeof(name)) == nullptr)
+                        continue;
+                    const int dropped_type = ammo_type_of(weapon);
+                    if (dropped_type < 0 || !kept[dropped_type])
+                        continue;
+                    bool still = false;
+                    for (int i = 0; i < k_max_weapons && !still; ++i)
+                        still = handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i)) == handle;
+                    if (still)
+                        continue;
+                    *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_extra_ammo) = 0;
+                    state_changed(weapon);
+                    INV_LOG("rounds: the %s let go of keeps its magazine only", name);
+                }
+            }
+        };
 
         // A survivor is picking `weapon` up: a gun nobody has held gets a part of its magazine, and `reserve` (or the
         // running spawner's) is set to limit what the pick-up adds to the reserve.
@@ -1364,6 +1483,7 @@ namespace game
                 const WeaponPickup pickup = local ? weapon_pickup(player, weapon, def) : WeaponPickup::Game;
                 if (pickup != WeaponPickup::Game)
                     return pickup == WeaponPickup::Stored;
+                KeepRounds keep(local ? player : nullptr, weapon); // (the game's pick-up or swap: its rounds stay)
                 return g_bump_weapon.original()(player, edx, weapon);
             }
 
@@ -1433,6 +1553,28 @@ namespace game
         // filesystem_stdio.dll "VBaseFileSystem012": the IBaseFileSystem of its one CFileSystem_Stdio (0x1005260C, vtable
         // 0x10047DFC, set at 0x10045509); slot 10 FileExists(name, pathID) 0x1000E340 (thiscall, ret 8, the profiler
         // scope "CBaseFileSystem::FileExists").  The same file in the game and the dedicated server.
+        // The file system's interface `name` ("VFileSystem018", "VBaseFileSystem012"): the game's filesystem_stdio.dll
+        // serves it through CreateInterface.  The dedicated server has no filesystem_stdio.dll loaded: its dedicated.dll
+        // carries the same code ("..\filesystem\filesystem_stdio.cpp"; its CFileSystem_Stdio at 0x100E6898, vtables
+        // 0x100B7C64 and 0x100B7C1C, slot 107 0x1000EB30 and slot 10 0x10012D50 with the same prologues) and hands it to
+        // the engine through a factory of its own (0x10001010), not its exported CreateInterface: "VFileSystem018" is
+        // the pointer at 0x100DE824, "VBaseFileSystem012" the one at 0x100DE828.  (The callers check the slots they use.)
+        void* filesystem_interface(const char* name)
+        {
+            if (HMODULE module = GetModuleHandleW(L"filesystem_stdio.dll"))
+            {
+                const auto create = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface"));
+                return create != nullptr ? create(name, nullptr) : nullptr;
+            }
+            if (HMODULE module = GetModuleHandleW(L"dedicated.dll"))
+            {
+                const auto base = reinterpret_cast<std::uintptr_t>(module);
+                const bool full = std::strcmp(name, "VFileSystem018") == 0;
+                return mem::read_or<void*>(base + (full ? 0xDE824 : 0xDE828));
+            }
+            return nullptr;
+        }
+
         constexpr int k_vt_file_exists = 10;
         using FileExistsFn = bool(__thiscall*)(void* fs, const char* name, const char* path_id);
 
@@ -1461,14 +1603,13 @@ namespace game
                         "inventory_mod_rounds.vpk is in left4dead2/addons");
                 return;
             }
-            HMODULE module = GetModuleHandleW(L"filesystem_stdio.dll");
-            const auto create =
-                module != nullptr ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface")) : nullptr;
-            void* fs = create != nullptr ? create("VFileSystem018", nullptr) : nullptr;
+            void* fs = filesystem_interface("VFileSystem018");
             const std::uintptr_t at = fs != nullptr ? mem::vslot(fs, k_vt_add_vpk_file) : 0;
             if (at == 0 || mem::find_pattern(at, 10, "55 8B EC 81 EC 0C 01 00 00 A1") != at)
             {
-                INV_LOG("game: the file system's AddVPKFile does not look as expected: the mod's addons are not mounted");
+                INV_LOG("game: the file system's AddVPKFile does not look as expected (file system %p, slot 107 %p): the mod's "
+                        "addons are not mounted",
+                        fs, reinterpret_cast<void*>(at));
                 FindClose(search);
                 return;
             }
@@ -1494,10 +1635,7 @@ namespace game
         {
             static void* fs = nullptr;
             static FileExistsFn file_exists = [] {
-                HMODULE module = GetModuleHandleW(L"filesystem_stdio.dll");
-                const auto create =
-                    module != nullptr ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface")) : nullptr;
-                fs = create != nullptr ? create("VBaseFileSystem012", nullptr) : nullptr;
+                fs = filesystem_interface("VBaseFileSystem012");
                 const std::uintptr_t at = fs != nullptr ? mem::vslot(fs, k_vt_file_exists) : 0;
                 if (at != 0 && mem::find_pattern(at, 9, "55 8B EC 81 EC 7C 01 00 00") == at)
                     return reinterpret_cast<FileExistsFn>(at);
@@ -2051,6 +2189,9 @@ namespace game
         };
         std::map<std::string, std::unique_ptr<ServerPlayer>> g_players;
         ServerPlayer* g_active_server_player = nullptr;
+        // When the last new game began (see "a death, a new game"; zero: none since the mod loaded): an inventory file
+        // written before then belongs to an earlier game and is not read.
+        FILETIME g_new_game{};
 
         void* edict_of(void* player)
         {
@@ -2082,7 +2223,13 @@ namespace game
                 for (const char* c = id; *c != '\0'; ++c)
                     safe += std::isalnum(static_cast<unsigned char>(*c)) ? static_cast<wchar_t>(*c) : L'_';
                 entry->file = std::wstring(core::module_dir()) + L"inventory_" + safe + L".inventory";
-                if (FILE* f = _wfopen(entry->file.c_str(), L"rb"))
+                WIN32_FILE_ATTRIBUTE_DATA file{};
+                const bool earlier = (g_new_game.dwLowDateTime != 0 || g_new_game.dwHighDateTime != 0) &&
+                                     GetFileAttributesExW(entry->file.c_str(), GetFileExInfoStandard, &file) &&
+                                     CompareFileTime(&file.ftLastWriteTime, &g_new_game) < 0;
+                if (earlier)
+                    INV_LOG("server: the inventory file of %s is from an earlier game: they start with nothing", id);
+                else if (FILE* f = _wfopen(entry->file.c_str(), L"rb"))
                 {
                     std::string text;
                     char buffer[1024];
@@ -2254,12 +2401,14 @@ namespace game
         {
             MapGunReserve map_gun;
             cut_map_gun(activator, gun, map_gun);
-            if (!g_giving && activator != nullptr && activator == local_player())
+            const bool local = !g_giving && activator != nullptr && activator == local_player();
+            if (local)
             {
                 const WeaponPickup pickup = weapon_pickup(activator, gun, item_of(gun));
                 if (pickup != WeaponPickup::Game)
                     return;
             }
+            KeepRounds keep(local ? activator : nullptr, gun); // (the game's pick-up or swap: its rounds stay)
             g_gun_use.original()(gun, edx, activator, caller, type, value);
         }
 
@@ -2325,10 +2474,16 @@ namespace game
             if (activator == nullptr || team_of(activator) != 2)
                 return;
             const inv::AmmoPileRules& rules = inv::ammo_pile_rules();
+            // (more than a second back: a new map; a player's command runs on their tick base, a little behind; see
+            // known_guns_clock.  A round starting forgets them too.)
             const float now = game_time();
-            if (now < g_finite_piles_time)
+            if (now + 1.f < g_finite_piles_time)
+            {
                 g_finite_piles.clear(); // a new map
-            g_finite_piles_time = now;
+                g_finite_piles_time = now;
+            }
+            else
+                g_finite_piles_time = std::max(now, g_finite_piles_time);
             const std::uint32_t handle = handle_of(pile);
             FinitePile& state = g_finite_piles[pile];
             if (state.handle != handle || state.kind.empty())
@@ -3406,6 +3561,184 @@ namespace game
             return g_take_damage.original()(self, edx, info);
         }
 
+        // ---- a death, a new game: the inventory follows the game's own rules --------------------------------------------
+        //
+        // A survivor who dies drops what they carried, in the game; their inventory does too.  From the next GameFrame
+        // (not inside the death's event) its items fall around the spot where they died (spawn_dropped), each ammo
+        // type of their reserve lies there as a pile of dropped rounds (spawn_pile), and the inventory and the reserve
+        // are empty: a survivor rescued from a closet, or back in the next chapter, starts with nothing of it.
+        // A round starting (the event round_start) is one of three things, as the game sees it:
+        //   - the next chapter (the event map_transition came before it): the survivors keep what they carry, and the
+        //     inventories theirs;
+        //   - the same map again (a lost round, a restarted chapter, versus' second round): the game gives the survivors
+        //     back what they had when the chapter began, and the inventories get back theirs (a copy taken then);
+        //   - another map without a transition (a new campaign, a chapter chosen in the menu, the first map after the
+        //     game started): everyone starts with nothing, and the inventories are emptied.
+        // The map is CGlobalVars::mapname (+0x3C, a string_t: the const char*; server.dll reads it so at 0x1009B903 for
+        // "maps/%s_commentary.txt", with "" for null).  The inventories: the host's (the local one) and every one the
+        // server keeps; a player's file not loaded yet that was last written before the new game is not read
+        // (g_new_game, see server_player).
+
+        constexpr std::uintptr_t k_off_mapname = 0x3C;
+
+        struct Death
+        {
+            int user_id;
+            Vec3 at; // where they died (the player's origin then: a dead player's moves with the spectator camera)
+        };
+        std::vector<Death> g_deaths; // main thread only: for the next GameFrame
+        bool g_transition = false; // map_transition came: the next round_start is the next chapter
+        std::string g_round_map; // the map of the last round_start
+        std::map<Session*, std::string> g_chapter_start; // each inventory when the chapter began (Inventory::to_text)
+
+        std::string map_name()
+        {
+            char name[64] = {};
+            const char* text = g_globals != nullptr ? mem::read_or<const char*>(reinterpret_cast<std::uintptr_t>(g_globals) + k_off_mapname)
+                                                    : nullptr;
+            if (text != nullptr)
+                mem::safe_copy(name, text, sizeof(name) - 1);
+            return name;
+        }
+
+        // Every inventory this game keeps: the local one (not while it mirrors a dedicated server's), the players'.
+        template <class F>
+        void each_session(F&& f)
+        {
+            if (Session& local = local_session(); !local.remote)
+                f(local);
+            for (auto& [id, sp] : g_players)
+                f(sp->session);
+        }
+
+        void on_round_start()
+        {
+            g_deaths.clear();
+            g_known_guns.clear(); // (the map's guns and piles are new ones)
+            g_known_guns_time = 0.f;
+            g_finite_piles.clear();
+            g_finite_piles_time = 0.f;
+            const std::string map = map_name();
+            const bool next_chapter = g_transition;
+            const bool again = !next_chapter && !map.empty() && map == g_round_map;
+            int sessions = 0;
+            each_session([&](Session& s) {
+                std::lock_guard lock(s.mutex);
+                if (again)
+                {
+                    if (const auto it = g_chapter_start.find(&s); it != g_chapter_start.end())
+                        s.inventory.from_text(it->second);
+                }
+                else if (!next_chapter)
+                    s.inventory.clear();
+                g_chapter_start[&s] = s.inventory.to_text();
+                ++sessions;
+            });
+            if (!next_chapter && !again)
+                GetSystemTimeAsFileTime(&g_new_game);
+            INV_LOG("round start on %s: %s, %d inventories %s", map.c_str(),
+                    next_chapter ? "the next chapter" : again ? "the same map again" : "a new game", sessions,
+                    next_chapter ? "kept" : again ? "back as the chapter began" : "emptied");
+            g_transition = false;
+            g_round_map = map;
+        }
+
+        // The event player_death: a survivor's inventory falls where they died, a moment later (drop_dead_inventories).
+        void on_death(int user_id)
+        {
+            void* player = player_by_user_id(user_id);
+            Vec3 at{};
+            if (player != nullptr && team_of(player) == 2 && mem::read(reinterpret_cast<std::uintptr_t>(player) + k_off_origin, at))
+                g_deaths.push_back({user_id, at});
+        }
+
+        // The active session's inventory and the player's reserve onto the ground around `at`.  Main thread.
+        void drop_inventory(void* player, const Vec3& at)
+        {
+            std::vector<std::pair<const inv::ItemDef*, inv::WeaponState>> items;
+            {
+                Session& s = session();
+                std::lock_guard lock(s.mutex);
+                for (int i = 0; i < s.inventory.total_slots(); ++i)
+                {
+                    const inv::Stack& stack = s.inventory.slot(i);
+                    for (int n = 0; !stack.empty() && n < stack.count; ++n)
+                        items.emplace_back(stack.def, stack.weapon);
+                }
+                s.inventory.clear();
+            }
+            // the items close around the spot (they are loose weapons: they may touch), the piles on a ring around them
+            // and apart from each other (piles inside each other crashed the game's physics, see spawn_pile)
+            int dropped = 0;
+            for (std::size_t i = 0; i < items.size(); ++i)
+            {
+                const float angle = static_cast<float>(i) * 2.39996f; // the golden angle: no two in one place
+                const float radius = std::min(4.f + 3.f * static_cast<float>(i), 18.f);
+                const Vec3 position{at.x + std::cos(angle) * radius, at.y + std::sin(angle) * radius, at.z + 16.f};
+                if (spawn_dropped(*items[i].first, items[i].second, position) != nullptr)
+                    ++dropped;
+                else
+                    INV_LOG("death: %s could not be dropped: it is lost", items[i].first->classname);
+            }
+            AmmoPool pool = read_pool(player);
+            std::vector<const char*> kinds;
+            for (const char* kind : inv::ammo_kinds())
+                if (const int type = inv::ammo_index(kind); pool.read && type >= 0 && pool.count[type] > 0)
+                    kinds.push_back(kind);
+            int piles = 0;
+            const float step = kinds.empty() ? 0.f : 6.28319f / static_cast<float>(kinds.size());
+            const float ring = kinds.size() < 2 ? 28.f : std::max(28.f, 12.f / std::sin(step / 2.f));
+            for (std::size_t i = 0; i < kinds.size(); ++i)
+            {
+                const std::string kind = kinds[i];
+                const int type = inv::ammo_index(kind);
+                const float angle = step * static_cast<float>(i);
+                const Vec3 position{at.x + std::cos(angle) * ring, at.y + std::sin(angle) * ring, at.z + 16.f};
+                std::string model;
+                bool loaded = false;
+                void* pile = spawn_pile(kind, pool.count[type], position, angle * 57.29578f, false, model, loaded);
+                if (pile == nullptr)
+                    continue;
+                if (const std::uint32_t handle = handle_of(pile); handle != k_invalid_handle)
+                    g_dropped_piles.push_back({handle, position});
+                INV_LOG("death: %d %s rounds as pile %p", pool.count[type], kind.c_str(), pile);
+                pool.count[type] = 0;
+                ++piles;
+            }
+            if (piles > 0)
+            {
+                write_pool(player, pool);
+                state_changed(player);
+            }
+            INV_LOG("death: userid %d dropped %d of %zu items and %d piles of rounds at %.0f %.0f %.0f", user_id_of(player), dropped,
+                    items.size(), piles, at.x, at.y, at.z);
+            if (dropped > 0 || piles > 0)
+                notify("Your inventory fell where you died");
+        }
+
+        // From GameFrame: the inventories of the survivors who died a moment ago (the host's, or a served player's).
+        void drop_dead_inventories()
+        {
+            if (g_deaths.empty())
+                return;
+            std::vector<Death> deaths;
+            deaths.swap(g_deaths);
+            for (const Death& death : deaths)
+            {
+                void* player = player_by_user_id(death.user_id);
+                if (player == nullptr || alive(player))
+                    continue;
+                if (player == host_player())
+                    drop_inventory(player, death.at);
+                else if (served_remotely(player))
+                {
+                    Activation active(player);
+                    if (active.ok())
+                        drop_inventory(player, death.at);
+                }
+            }
+        }
+
         // Nobody is infected any more: a new round or map, the escape.  The host's own effect goes in any case (the host
         // may not be a player yet, or any more).
         void infection_all_clear(const char* why)
@@ -3436,6 +3769,13 @@ namespace game
                 return;
             if (std::strcmp(name, "round_start") == 0 && inv::ammo_pile_rules().enabled)
                 g_place_packs_at = GetTickCount64() + 1500; // (the map's packs: see place_map_packs)
+            // (the inventories: see "a death, a new game")
+            if (std::strcmp(name, "round_start") == 0)
+                on_round_start();
+            else if (std::strcmp(name, "map_transition") == 0)
+                g_transition = true;
+            else if (std::strcmp(name, "player_death") == 0)
+                on_death(int_fn(event, "userid", 0));
             if (!inv::infection_rules().enabled)
                 return;
             const auto get = [&](const char* key) { return int_fn(event, key, 0); };
@@ -3578,6 +3918,7 @@ namespace game
             if (simulating)
                 mem::guarded([] {
                     stamina_frame();
+                    drop_dead_inventories();
                     cap_reserves();
                     place_map_packs_due();
                 });
@@ -3791,7 +4132,10 @@ namespace game
                 const auto drop = reinterpret_cast<WeaponDropFn>(mem::vslot(player, k_vt_weapon_drop));
                 if (drop == nullptr)
                     return;
-                drop(player, weapon, nullptr, nullptr);
+                {
+                    KeepRounds keep(player, nullptr); // the reserve stays the player's (see KeepRounds)
+                    drop(player, weapon, nullptr, nullptr);
+                }
                 INV_LOG("dropped %s", name);
                 notify(std::string("Dropped ") + describe_weapon(name).name);
                 return;
@@ -4444,13 +4788,15 @@ namespace game
                     else
                         INV_LOG("game: IGameEventManager2::CreateEvent (%p) does not look as expected: switches show icons",
                                 reinterpret_cast<void*>(create_event));
-                    // the infection's triggers: FireEvent (see "the infection")
+                    // the infection's triggers, deaths and round starts: FireEvent (see "the infection", "a death, a
+                    // new game")
                     const std::uintptr_t fire_event = mem::vslot(events, 7);
                     if (fire_event != 0 && mem::find_pattern(fire_event, 12, "55 8B EC A1 ?? ?? ?? ?? 83 78 30 00") == fire_event &&
                         g_fire_event.create("FireEvent", reinterpret_cast<void*>(fire_event), hk_fire_event))
                         g_fire_event.enable();
                     else
-                        INV_LOG("game: IGameEventManager2::FireEvent (%p) does not look as expected: no infection",
+                        INV_LOG("game: IGameEventManager2::FireEvent (%p) does not look as expected: no infection, the "
+                                "inventories do not follow deaths and new games",
                                 reinterpret_cast<void*>(fire_event));
                 }
 

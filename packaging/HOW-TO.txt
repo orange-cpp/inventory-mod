@@ -65,6 +65,7 @@ Rounds
   "Drop all" puts them on the ground as an ammo pack, tinted the colour of the round type, with exactly those rounds;
   anyone takes them back with E. With addons\inventory_mod_rounds.vpk each round type is its own ammo pack. The wheel (middle mouse) shows them too, in their colours: right click there drops
   a magazine's worth, holding the right button half a second drops all of that type. An ammo pile only fills you up to the weight limit.
+  The rounds are yours, not the gun's: swap your gun for another and you keep its rounds.
   In the wheel, each segment is as large as its share of what you carry weighs.
   With [ammo_piles] in the host's inventory_mod.toml, a map's ammo pile holds 1 to 3 magazines of a random round
   type, shown as that type's ammo pack, and a few more packs lie near the map's items. Take what you can carry; the
@@ -72,6 +73,11 @@ Rounds
   With [map_guns], a gun found in the map has only part of its magazine (10 to 60 %) the first time it is picked up
   (and at most a magazine more for your reserve),
   and a weapon spot of the map gives one weapon, then it is gone.
+
+Chapters, deaths, new campaigns
+  The inventory comes with you to the next chapter. A lost round or a restarted chapter gives back what you had when
+  the chapter began. A new campaign starts with it empty. When you die, everything in it falls where you died (your
+  rounds as ammo packs), and the others can pick it up.
 
 The infection (when the host's inventory_mod.toml has [infection])
   Knocked down by the infected, grabbed by a special or vomited on by a boomer, you are infected. There is no clock on
