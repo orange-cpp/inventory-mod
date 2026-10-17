@@ -353,6 +353,12 @@ molotov = 1
         CHECK(!inv::apply_rules("[ammo_piles]\nmax_magazines = 0\n").errors.empty());
         CHECK(!inv::apply_rules("[ammo_piles]\nmin_magazines = 1.5\n").errors.empty());
         CHECK(inv::apply_rules("[ammo_piles]\nenabled = false\n").errors.empty() && !inv::ammo_pile_rules().enabled);
+        CHECK(inv::apply_rules("[ammo_piles]\n").errors.empty() && inv::ammo_pile_rules().replace_map_piles &&
+              inv::ammo_pile_rules().extra == 4);
+        CHECK(inv::apply_rules("[ammo_piles]\nreplace_map_piles = false\nextra = 10\n").errors.empty() &&
+              !inv::ammo_pile_rules().replace_map_piles && inv::ammo_pile_rules().extra == 10);
+        CHECK(!inv::apply_rules("[ammo_piles]\nextra = 51\n").errors.empty());
+        CHECK(!inv::apply_rules("[ammo_piles]\nreplace_map_piles = 1\n").errors.empty());
         inv::apply_rules("");
         CHECK(!inv::ammo_pile_rules().enabled);
 

@@ -166,12 +166,20 @@ namespace inv
             piles.enabled = true; // a table at all switches it on, unless it says otherwise
             for (const auto& [key, node] : table)
             {
-                if (key == "enabled")
+                if (key == "enabled" || key == "replace_map_piles")
                 {
                     if (const auto on = node.value_exact<bool>())
-                        piles.enabled = *on;
+                        (key == "enabled" ? piles.enabled : piles.replace_map_piles) = *on;
                     else
-                        rules.errors.push_back(at_line(node, "ammo_piles.enabled must be true or false"));
+                        rules.errors.push_back(at_line(node, "ammo_piles." + std::string(key.str()) + " must be true or false"));
+                }
+                else if (key == "extra")
+                {
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 0 || *n > 50)
+                        rules.errors.push_back(at_line(node, "ammo_piles.extra must be a whole number from 0 to 50"));
+                    else
+                        piles.extra = static_cast<int>(*n);
                 }
                 else if (key == "min_magazines" || key == "max_magazines")
                 {

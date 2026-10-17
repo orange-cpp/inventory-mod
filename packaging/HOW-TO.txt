@@ -63,7 +63,8 @@ Rounds
   a magazine's worth, holding the right button half a second drops all of that type. An ammo pile only fills you up to the weight limit.
   In the wheel, each segment is as large as its share of what you carry weighs.
   With [ammo_piles] in the host's inventory_mod.toml, a map's ammo pile holds 1 to 3 magazines of a random round
-  type (it takes that type's colour once used). Take what you can carry; the rest stays, and an empty pile is gone.
+  type, shown as that type's ammo pack, and a few more packs lie near the map's items. Take what you can carry; the
+  rest stays, and an empty pack is gone.
   With [map_guns], a gun found in the map has only part of its magazine (10 to 60 %) the first time it is picked up,
   and a weapon spot of the map gives one weapon, then it is gone.
 

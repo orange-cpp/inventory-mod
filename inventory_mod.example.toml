@@ -121,6 +121,8 @@ enabled = true
 min_magazines = 1
 max_magazines = 3
 kinds = ["assault_rifle", "smg", "shotgun", "auto_shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
+replace_map_piles = true   # when a round starts, each of the map's piles becomes a pack of its rolled type
+extra = 4                  # and this many more packs go beside the map's item spots (pills, throwables, guns)
 
 # Map guns: a gun nobody has held yet (lying in the map, or from a weapon spawner) has only min_clip to max_clip % of
 # its magazine when it is first picked up. A gun someone has held keeps its own.

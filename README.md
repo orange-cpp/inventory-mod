@@ -123,7 +123,9 @@ model). An ammo pile of the map, or a gun picked up, fills you only up to the we
 With `[ammo_piles]` in the host's `inventory_mod.toml` (on in the example) the map's ammo piles are not endless: a pile
 holds `min_magazines` to `max_magazines` magazines (1 to 3) of a random ammo type of `kinds`, rolled the first time
 someone uses it (it then takes that type's colour). Anyone takes as many as they can carry, the rest stays in the
-pile, and an empty pile is gone. A bot takes only rounds for a gun it has.
+pile, and an empty pile is gone. A bot takes only rounds for a gun it has. With `replace_map_piles` (on) each of the
+map's piles becomes an ammo pack of its rolled type when the round starts, so what it holds shows from afar, and
+`extra` (4) more packs are put beside the map's item spots (pills, throwables, guns; not near the start).
 
 With `[map_guns]` (on in the example) a gun nobody has held yet, lying in the map or from a weapon spawner, has only
 `min_clip` to `max_clip` % of its magazine (10 to 60) when it is first picked up. A gun someone has held, or one

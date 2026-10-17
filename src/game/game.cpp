@@ -1356,7 +1356,8 @@ namespace game
         // bots do not take them.  Ammo piles and guns picked up fill a reserve as the game does; cap_reserve takes a rise
         // past the weight limit back down to what fits.
 
-        constexpr char k_pile_prefix[] = "inv_rounds_";
+        constexpr char k_pile_prefix[] = "inv_rounds_"; // a pile a player dropped
+        constexpr char k_map_pile_prefix[] = "inv_maprounds_"; // one the mod put on the map ([ammo_piles], see place_map_packs)
         constexpr std::uintptr_t k_off_entity_name = 0x140; // CBaseEntity::m_iName (targetname)
         // weapon_ammo_spawn is CWeaponAmmoSpawn (vtable 0x10682CF4, set by its factory 0x102A22F0 over CWeaponSpawn's):
         // its Precache (slot 26, 0x1029F5A0) precaches models/props/terror/ammo_stack.mdl, its model (slot 239,
@@ -1468,8 +1469,9 @@ namespace game
         int team_of(void* entity); // see "the infection"
         bool is_bot(void* player);
 
-        // What a pile the mod dropped holds; false for any other entity.
-        bool pile_contents(void* entity, std::string& kind, int& rounds)
+        // What a pile the mod made holds (`map`: one it put on the map, not one a player dropped); false for any other
+        // entity.
+        bool pile_contents(void* entity, std::string& kind, int& rounds, bool* map = nullptr)
         {
             // CBaseEntity::m_iName +0x140 (datamap "m_iName": a pooled string; IServerTools GetKeyValue "targetname"
             // gives the pointer's bytes, not the text, as for the model)
@@ -1477,9 +1479,12 @@ namespace game
             const char* text = mem::read_or<const char*>(reinterpret_cast<std::uintptr_t>(entity) + k_off_entity_name);
             if (text == nullptr || !mem::safe_copy(name, text, sizeof(name) - 1))
                 return false;
-            if (std::strncmp(name, k_pile_prefix, sizeof(k_pile_prefix) - 1) != 0)
+            const bool on_map = std::strncmp(name, k_map_pile_prefix, sizeof(k_map_pile_prefix) - 1) == 0;
+            if (!on_map && std::strncmp(name, k_pile_prefix, sizeof(k_pile_prefix) - 1) != 0)
                 return false;
-            const char* rest = name + sizeof(k_pile_prefix) - 1;
+            if (map != nullptr)
+                *map = on_map;
+            const char* rest = name + (on_map ? sizeof(k_map_pile_prefix) : sizeof(k_pile_prefix)) - 1;
             const char* separator = std::strrchr(rest, '_');
             if (separator == nullptr)
                 return false;
@@ -1488,9 +1493,9 @@ namespace game
             return inv::ammo_index(kind) >= 0 && rounds > 0;
         }
 
-        void set_pile_contents(void* entity, const std::string& kind, int rounds)
+        void set_pile_contents(void* entity, const std::string& kind, int rounds, bool map = false)
         {
-            const std::string name = k_pile_prefix + kind + "_" + std::to_string(rounds);
+            const std::string name = (map ? k_map_pile_prefix : k_pile_prefix) + kind + "_" + std::to_string(rounds);
             mem::guarded([&] { g.set_key_value(g.tools, entity, "targetname", name.c_str()); });
         }
 
@@ -1531,6 +1536,9 @@ namespace game
             Vec3 at;
         };
         std::vector<DroppedPile> g_dropped_piles; // main thread only
+
+        void* spawn_pile(const std::string& kind, int rounds, const Vec3& position, float yaw, bool map, std::string& model_used,
+                         bool& loaded, bool map_spot = false);
 
         // Drops `count` (0: all) of the player's reserve of `kind` in front of them, as an ammo pile.
         void do_drop_ammo(const std::string& kind, int count)
@@ -1592,16 +1600,64 @@ namespace game
                 position = Vec3{eye.x + forward.x * 48.f - forward.y * side, eye.y + forward.y * 48.f + forward.x * side,
                                 eye.z + forward.z * 48.f - 14.f};
             }
+            const float yaw = std::atan2(forward.y, forward.x) * 57.29578f;
+            std::string model;
+            bool loaded = false;
+            void* pile = spawn_pile(kind, n, position, yaw, false, model, loaded);
+            if (pile == nullptr)
+            {
+                notify(std::string("Could not drop ") + title);
+                return;
+            }
+            if (const std::uint32_t handle = handle_of(pile); handle != k_invalid_handle)
+                g_dropped_piles.push_back({handle, position});
+            mem::guarded([&] { *reserve_of(player, type) = have - n; });
+            state_changed(player);
+            INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s, %s) at %.1f %.1f %.1f", n, kind.c_str(), have - n, pile,
+                    model.c_str(), loaded ? "loaded with the map" : "precached now", position.x, position.y, position.z);
+            notify("Dropped " + std::to_string(n) + " " + title);
+        }
+
+        // The floor under `at` (256 units down at most), or `at` itself when there is none: a throwaway info_target (no
+        // physics) is put there and dropped to the floor (UTIL_DropToFloor: 1 when it landed).  Main thread.
+        Vec3 on_floor(const Vec3& at)
+        {
+            Vec3 floor = at;
+            if (g.drop_to_floor == nullptr)
+                return floor;
+            mem::guarded([&] {
+                void* probe = g.create_entity(g.tools, "info_target");
+                if (probe == nullptr)
+                    return;
+                char origin[64];
+                std::snprintf(origin, sizeof(origin), "%.2f %.2f %.2f", at.x, at.y, at.z);
+                g.set_key_value(g.tools, probe, "origin", origin);
+                g.dispatch_spawn(g.tools, probe);
+                Vec3 landed{};
+                if (g.drop_to_floor(probe, 0x200400Bu, nullptr) == 1 &&
+                    mem::read(reinterpret_cast<std::uintptr_t>(probe) + k_off_origin, landed))
+                    floor = landed;
+                g.util_remove(probe);
+            });
+            return floor;
+        }
+
+        // An ammo pile of `rounds` of `kind` on the floor under `position` (`map_spot`: exactly there, the spot of one of
+        // the map's piles), turned to `yaw`: its type's own pack when the game has it, else the tinted incendiary pack
+        // (see k_pile_model).  `map`: one the mod put on the map.  nullptr when it could not be made.  Main thread.
+        void* spawn_pile(const std::string& kind, int rounds, const Vec3& position, float yaw, bool map, std::string& model_used,
+                         bool& loaded, bool map_spot)
+        {
             const PrecacheModelFn precache_model = precache_model_fn();
             if (precache_model == nullptr)
             {
-                notify("Cannot drop rounds: the game's PrecacheModel does not look as expected");
-                return;
+                INV_LOG("rounds: the game's PrecacheModel does not look as expected: no pile");
+                return nullptr;
             }
             const std::string own_model = "models/inv_mod/rounds_" + kind + ".mdl";
             const bool own = game_file_exists(own_model.c_str()); // its type's pack (the addon)
             const char* model = own ? own_model.c_str() : k_pile_model;
-            bool loaded = false; // by the map already (else it is precached now, in the middle of the round)
+            loaded = false; // by the map already (else it is precached now, in the middle of the round)
             if (const auto is_precached = g_engine_server != nullptr
                                               ? reinterpret_cast<IsModelPrecachedFn>(mem::vslot(g_engine_server, k_vt_is_model_precached))
                                               : nullptr)
@@ -1620,14 +1676,22 @@ namespace game
             }
             if (model_index < 0)
             {
-                notify(std::string("Could not drop ") + title + ": no ammo pile model");
-                return;
+                INV_LOG("rounds: no ammo pile model could be precached");
+                return nullptr;
             }
             const unsigned color = own ? 0xFFFFFFu : inv::ammo_color(kind); // (its own pack has its colour)
             char tint[16];
             std::snprintf(tint, sizeof(tint), "%u %u %u 255", (color >> 16) & 255u, (color >> 8) & 255u, color & 255u); // (a missing alpha is 0: invisible)
             char angles[32];
-            std::snprintf(angles, sizeof(angles), "0 %.0f 0", std::atan2(forward.y, forward.x) * 57.29578f);
+            std::snprintf(angles, sizeof(angles), "0 %.0f 0", yaw);
+            // A pile moved after it spawned (Teleport, DropToFloor) crashed the game's physics a moment later, in
+            // vphysics.dll +0xF3B1C (IVP's collision code, a null compact edge): its physics object is a static one,
+            // made where the pile stood when it spawned (the map's origin), and a static IVP object is not meant to move.
+            // ent_create does the same to a spawner (spawn, then teleport): that crashed it too.  So the floor under
+            // `position` is found first (on_floor) and the pile is made there, the model's origin at its bottom.
+            const Vec3 at = map_spot ? position : on_floor(position);
+            char origin[64];
+            std::snprintf(origin, sizeof(origin), "%.2f %.2f %.2f", at.x, at.y, at.z + 0.3f);
             void* pile = nullptr;
             mem::guarded([&] {
                 pile = g.create_entity(g.tools, "weapon_ammo_spawn");
@@ -1642,37 +1706,31 @@ namespace game
                 g.set_key_value(g.tools, pile, "spawnflags", "2");
                 g.set_key_value(g.tools, pile, "disableshadows", "1");
                 g.set_key_value(g.tools, pile, "angles", angles);
-                set_pile_contents(pile, kind, n);
+                // where it stands, before it spawns: its physics object (static) is made there and must never move
+                g.set_key_value(g.tools, pile, "origin", origin);
+                set_pile_contents(pile, kind, rounds, map);
                 if (const auto precache = reinterpret_cast<PrecacheFn>(mem::vslot(pile, k_vt_precache)))
                     precache(pile);
                 g.dispatch_spawn(g.tools, pile);
-                if (const auto teleport = reinterpret_cast<TeleportFn>(mem::vslot(pile, k_vt_teleport)))
-                    teleport(pile, &position, nullptr, nullptr);
-                if (g.drop_to_floor != nullptr)
-                    g.drop_to_floor(pile, 0x200400Bu, nullptr);
             });
-            if (pile == nullptr)
-            {
-                notify(std::string("Could not drop ") + title);
-                return;
-            }
-            if (const std::uint32_t handle = handle_of(pile); handle != k_invalid_handle)
-                g_dropped_piles.push_back({handle, position});
-            mem::guarded([&] { *reserve_of(player, type) = have - n; });
-            state_changed(player);
-            INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s, %s, tint %s) at %.1f %.1f %.1f", n, kind.c_str(), have - n,
-                    pile, model, loaded ? "loaded with the map" : "precached now", tint, position.x, position.y, position.z);
-            notify("Dropped " + std::to_string(n) + " " + title);
+            model_used = model;
+            return pile;
         }
 
-        // +use on a pile the mod dropped: its rounds, as many as fit.
-        void take_pile(void* pile, void* player, const std::string& kind, int rounds)
+        bool carries_ammo_type(void* player, int type); // see "the map's ammo piles, finite"
+
+        // +use on a pile the mod made: its rounds, as many as fit.  A bot takes from one the mod put on the map (`map`),
+        // and only rounds for a gun it has; never what a player dropped.
+        void take_pile(void* pile, void* player, const std::string& kind, int rounds, bool map)
         {
-            if (player == nullptr || team_of(player) != 2 || is_bot(player))
+            if (player == nullptr || team_of(player) != 2)
                 return;
             const int type = inv::ammo_index(kind);
+            const bool bot = is_bot(player);
+            if (bot && (!map || !carries_ammo_type(player, type)))
+                return;
             const char* title = inv::ammo_title(kind);
-            const bool own = player == local_player(); // the host, or the player being served: their weight counts
+            const bool own = !bot && player == local_player(); // the host, or the player being served: their weight counts
             const int n = rounds_that_fit(player, kind, rounds, own);
             if (n <= 0)
             {
@@ -1687,8 +1745,8 @@ namespace game
             if (n >= rounds)
                 mem::guarded([&] { g.util_remove(pile); });
             else
-                set_pile_contents(pile, kind, rounds - n);
-            INV_LOG("rounds: took %d of the %d %s in pile %p", n, rounds, kind.c_str(), pile);
+                set_pile_contents(pile, kind, rounds - n, map);
+            INV_LOG("rounds: %s took %d of the %d %s in pile %p", bot ? "a bot" : "a survivor", n, rounds, kind.c_str(), pile);
             if (own)
                 notify("Picked up " + std::to_string(n) + " " + title + (n < rounds ? " (the rest is too much)" : ""));
         }
@@ -2236,11 +2294,140 @@ namespace game
             }
         }
 
+        // ---- the map's ammo packs ([ammo_piles] replace_map_piles, extra) -----------------------------------------------
+        //
+        // A moment after a round starts (the event round_start: a new map, or the same one again after a lost round;
+        // see place_map_packs_due), the mod puts its packs on the map, once a round (not again while a pack of its own is
+        // on the map):
+        //   replace_map_piles: every ammo pile of the map (weapon_ammo_spawn: its m_vecOrigin +0x388 and m_angRotation
+        //     +0x394, the SendProps' offsets) becomes a pack of a random type of `kinds` with min..max magazines, where it
+        //     stood; the map's pile is removed.  What it holds shows before anyone walks to it.
+        //   extra: that many more packs beside the map's item spots (weapon_*_spawn, weapon_item_spawn: not the ammo
+        //     piles), 20 units off in a random direction and dropped to the floor, none within 700 units of a survivor
+        //     (the start), 300 of another extra pack or 150 of a pile.
+        // They are piles as a drop makes them (spawn_pile), named "inv_maprounds_<kind>_<rounds>": anyone takes from them,
+        // a bot too (rounds for a gun it has).
+
+        constexpr std::uintptr_t k_off_angles = 0x394; // CBaseEntity::m_angRotation (SendProp: push 0x394 / "m_angRotation")
+        ULONGLONG g_place_packs_at = 0; // main thread: when place_map_packs runs (0: not due)
+
+        void place_map_packs()
+        {
+            const inv::AmmoPileRules& rules = inv::ammo_pile_rules();
+            if (!rules.enabled || (!rules.replace_map_piles && rules.extra <= 0) || rules.kinds.empty())
+                return;
+            struct Spot
+            {
+                void* entity;
+                Vec3 at;
+                float yaw;
+            };
+            std::vector<Spot> piles, items;
+            std::vector<Vec3> survivors;
+            for (int index = 1; index < 0x1000; ++index)
+            {
+                void* entity = entity_at_index(index);
+                char name[64];
+                if (entity == nullptr || !classname_of(entity, name, sizeof(name)))
+                    continue;
+                std::string kind;
+                int rounds = 0;
+                if (pile_contents(entity, kind, rounds))
+                {
+                    INV_LOG("map packs: the mod's piles are on the map already, nothing to place");
+                    return;
+                }
+                const auto e = reinterpret_cast<std::uintptr_t>(entity);
+                Vec3 at{}, angles{};
+                if (!mem::read(e + k_off_origin, at))
+                    continue;
+                mem::read(e + k_off_angles, angles);
+                const std::string_view cls(name);
+                if (cls == "player")
+                {
+                    if (team_of(entity) == 2)
+                        survivors.push_back(at);
+                }
+                else if (cls == "weapon_ammo_spawn")
+                    piles.push_back({entity, at, angles.y});
+                else if (cls.starts_with("weapon_") && cls.ends_with("_spawn"))
+                    items.push_back({entity, at, angles.y});
+            }
+            std::minstd_rand& random = pile_random();
+            const auto roll = [&](std::string& kind, int& rounds) {
+                kind = rules.kinds[random() % rules.kinds.size()];
+                const int magazines =
+                    rules.min_magazines + static_cast<int>(random() % static_cast<unsigned>(rules.max_magazines - rules.min_magazines + 1));
+                rounds = magazines * std::max(1, inv::ammo_magazine(kind));
+            };
+            const auto distance2 = [](const Vec3& a, const Vec3& b) {
+                const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+                return dx * dx + dy * dy + dz * dz;
+            };
+            std::vector<Vec3> placed;
+            int replaced = 0, extra = 0;
+            if (rules.replace_map_piles)
+                for (const Spot& spot : piles)
+                {
+                    std::string kind, model;
+                    int rounds = 0;
+                    bool loaded = false;
+                    roll(kind, rounds);
+                    mem::guarded([&] { g.util_remove(spot.entity); }); // (first: not two piles in one place)
+                    if (spawn_pile(kind, rounds, spot.at, spot.yaw, true, model, loaded, true) != nullptr)
+                    {
+                        ++replaced;
+                        placed.push_back(spot.at);
+                        INV_LOG("map packs: the map's pile at %.0f %.0f %.0f is %d %s", spot.at.x, spot.at.y, spot.at.z, rounds,
+                                kind.c_str());
+                    }
+                }
+            else
+                for (const Spot& spot : piles)
+                    placed.push_back(spot.at);
+            std::shuffle(items.begin(), items.end(), random);
+            std::vector<Vec3> extras;
+            for (const Spot& spot : items)
+            {
+                if (extra >= rules.extra)
+                    break;
+                const float angle = static_cast<float>(random() % 360u) * 0.0174533f;
+                const Vec3 at{spot.at.x + 20.f * std::cos(angle), spot.at.y + 20.f * std::sin(angle), spot.at.z + 8.f};
+                const auto near_any = [&](const std::vector<Vec3>& list, float radius) {
+                    return std::any_of(list.begin(), list.end(), [&](const Vec3& v) { return distance2(v, at) < radius * radius; });
+                };
+                if (near_any(survivors, 700.f) || near_any(extras, 300.f) || near_any(placed, 150.f))
+                    continue;
+                std::string kind, model;
+                int rounds = 0;
+                bool loaded = false;
+                roll(kind, rounds);
+                if (spawn_pile(kind, rounds, at, static_cast<float>(random() % 360u), true, model, loaded) != nullptr)
+                {
+                    ++extra;
+                    extras.push_back(at);
+                    INV_LOG("map packs: an extra pack at %.0f %.0f %.0f: %d %s", at.x, at.y, at.z, rounds, kind.c_str());
+                }
+            }
+            INV_LOG("map packs: %d of the map's %zu ammo piles replaced, %d extra packs (of %d wanted, %zu item spots)", replaced,
+                    piles.size(), extra, rules.extra, items.size());
+        }
+
+        // From GameFrame: the packs, when round_start asked for them a moment ago (the map's entities are all there).
+        void place_map_packs_due()
+        {
+            if (g_place_packs_at == 0 || GetTickCount64() < g_place_packs_at)
+                return;
+            g_place_packs_at = 0;
+            place_map_packs();
+        }
+
         void __fastcall hk_ammo_spawn_use(void* pile, void* edx, void* activator, void* caller, int type, float value)
         {
             std::string kind;
             int rounds = 0;
-            if (!pile_contents(pile, kind, rounds))
+            bool map = false;
+            if (!pile_contents(pile, kind, rounds, &map))
             {
                 if (!inv::ammo_pile_rules().enabled)
                 {
@@ -2256,13 +2443,13 @@ namespace game
                 use_finite_pile(pile, activator);
                 return;
             }
-            if (served_remotely(activator))
+            if (served_remotely(activator) && !is_bot(activator))
             {
                 Activation active(activator); // (their weight counts when it is theirs)
-                take_pile(pile, activator, kind, rounds);
+                take_pile(pile, activator, kind, rounds, map);
                 return;
             }
-            take_pile(pile, activator, kind, rounds);
+            take_pile(pile, activator, kind, rounds, map);
         }
 
         void do_drop_weapon(const std::string& classname);
@@ -3161,12 +3348,14 @@ namespace game
 
         void on_game_event(void* event)
         {
-            if (!inv::infection_rules().enabled)
-                return;
             const auto name_fn = reinterpret_cast<EventNameFn>(mem::vslot(event, 1));
             const auto int_fn = reinterpret_cast<EventIntFn>(mem::vslot(event, 6));
             const char* name = name_fn != nullptr ? name_fn(event) : nullptr;
             if (name == nullptr || int_fn == nullptr)
+                return;
+            if (std::strcmp(name, "round_start") == 0 && inv::ammo_pile_rules().enabled)
+                g_place_packs_at = GetTickCount64() + 1500; // (the map's packs: see place_map_packs)
+            if (!inv::infection_rules().enabled)
                 return;
             const auto get = [&](const char* key) { return int_fn(event, key, 0); };
             const std::string_view n(name);
@@ -3309,6 +3498,7 @@ namespace game
                 mem::guarded([] {
                     stamina_frame();
                     cap_reserves();
+                    place_map_packs_due();
                 });
             // a new map without the events above (a new campaign from the menu): the game's clock went back
             static float last_time = 0.f;
