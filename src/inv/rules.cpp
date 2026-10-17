@@ -237,6 +237,14 @@ namespace inv
                     else
                         rules.errors.push_back(at_line(node, "map_guns." + std::string(key.str()) + " must be true or false"));
                 }
+                else if (key == "min_reserve" || key == "max_reserve")
+                {
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 0 || *n > 20)
+                        rules.errors.push_back(at_line(node, "map_guns." + std::string(key.str()) + " must be a whole number from 0 to 20 (magazines)"));
+                    else
+                        (key == "min_reserve" ? guns.min_reserve : guns.max_reserve) = static_cast<int>(*n);
+                }
                 else if (key == "min_clip" || key == "max_clip")
                 {
                     const auto n = node.value_exact<std::int64_t>();
@@ -247,6 +255,11 @@ namespace inv
                 }
                 else
                     rules.errors.push_back(at_line(node, "unknown setting map_guns." + std::string(key.str())));
+            }
+            if (guns.max_reserve < guns.min_reserve)
+            {
+                rules.errors.push_back("map_guns: max_reserve is less than min_reserve (taken as the same)");
+                guns.max_reserve = guns.min_reserve;
             }
             if (guns.max_clip < guns.min_clip)
             {

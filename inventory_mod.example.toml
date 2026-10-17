@@ -131,3 +131,5 @@ enabled = true
 min_clip = 10
 max_clip = 60
 spawners_once = true   # a weapon spawner (guns, melee weapons) gives one, then it is gone
+min_reserve = 0        # what such a gun adds to your reserve: min_reserve..max_reserve magazines
+max_reserve = 1        # (the game would fill it)

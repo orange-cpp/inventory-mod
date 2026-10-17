@@ -374,6 +374,13 @@ molotov = 1
         CHECK(inv::apply_rules("[map_guns]\n").errors.empty() && inv::map_gun_rules().spawners_once);
         CHECK(inv::apply_rules("[map_guns]\nspawners_once = false\n").errors.empty() && !inv::map_gun_rules().spawners_once);
         CHECK(!inv::apply_rules("[map_guns]\nspawners_once = 1\n").errors.empty());
+        CHECK(inv::apply_rules("[map_guns]\n").errors.empty() && inv::map_gun_rules().min_reserve == 0 &&
+              inv::map_gun_rules().max_reserve == 1);
+        CHECK(inv::apply_rules("[map_guns]\nmin_reserve = 2\nmax_reserve = 3\n").errors.empty() &&
+              inv::map_gun_rules().min_reserve == 2 && inv::map_gun_rules().max_reserve == 3);
+        CHECK(inv::apply_rules("[map_guns]\nmin_reserve = 3\nmax_reserve = 1\n").errors.size() == 1 &&
+              inv::map_gun_rules().max_reserve == 3);
+        CHECK(!inv::apply_rules("[map_guns]\nmax_reserve = 21\n").errors.empty());
         inv::apply_rules("");
         CHECK(!inv::map_gun_rules().enabled);
 

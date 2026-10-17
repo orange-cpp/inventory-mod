@@ -8,6 +8,7 @@
 #include "ui/postfx.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -1513,6 +1514,11 @@ namespace hud
                 core::config_save();
         }
 
+        std::atomic<bool> g_open_settings{false}; // open_settings was called (another thread)
+        std::atomic<bool> g_open_window{false}; // open_window was called (another thread)
+        std::atomic<bool> g_settings_page{false}; // the game's menu has the settings (set_settings_page)
+        bool g_select_settings = false; // the next frame selects the Settings tab
+
         void inventory_window(inv::Inventory& inventory, const int (&pool)[32])
         {
             const ImVec2 display = ImGui::GetIO().DisplaySize;
@@ -1532,7 +1538,10 @@ namespace hud
                         debug_tab(inventory);
                         nc::EndTabItem();
                     }
-                    if (nc::BeginTabItem("Settings"))
+                    const ImGuiTabItemFlags settings_flags = g_select_settings ? ImGuiTabItemFlags_SetSelected : 0;
+                    g_select_settings = false;
+                    // (the settings are in the game's menu, Options > Inventory Mod, when it has the page)
+                    if (!g_settings_page.load() && nc::BeginTabItem("Settings", nullptr, settings_flags))
                     {
                         settings_tab();
                         nc::EndTabItem();
@@ -1559,8 +1568,21 @@ namespace hud
         INV_LOG("hud ready, game backend: %s", game::backend().name());
     }
 
+    namespace
+    {
+        void apply_queued_settings(); // (below: the game's Options > Inventory Mod page)
+    } // namespace
+
     void draw()
     {
+        if (g_open_settings.exchange(false))
+        {
+            g.open = true;
+            g_select_settings = true;
+        }
+        if (g_open_window.exchange(false))
+            g.open = true;
+        apply_queued_settings();
         ImGui::GetIO().MouseDrawCursor = g.open || g.wheel;
 
         std::string to_save;
@@ -1620,6 +1642,80 @@ namespace hud
     void request_unload()
     {
         g.unload = true;
+    }
+
+    void open_settings()
+    {
+        g_open_settings = true;
+    }
+
+    namespace
+    {
+        std::mutex g_settings_mutex;
+        std::vector<std::pair<std::string, std::string>> g_settings_queue; // apply_setting, for the next frame
+
+        void apply_queued_settings()
+        {
+            std::vector<std::pair<std::string, std::string>> queue;
+            {
+                std::lock_guard lock(g_settings_mutex);
+                queue.swap(g_settings_queue);
+            }
+            if (queue.empty())
+                return;
+            core::Config& cfg = core::config();
+            for (const auto& [key, value] : queue)
+            {
+                const bool on = value == "1";
+                const float number = static_cast<float>(std::atof(value.c_str()));
+                if (key == "show_hotbar") cfg.show_hotbar = on;
+                else if (key == "inventory_view") cfg.inventory_view = std::clamp(std::atoi(value.c_str()), 0, 2);
+                else if (key == "auto_store") cfg.auto_store = on;
+                else if (key == "replace_native") cfg.replace_native = on;
+                else if (key == "hud_scale") cfg.hud_scale = std::clamp(number, 0.5f, 3.f);
+                else if (key == "infection_effect") cfg.infection_effect = on;
+                else if (key == "infection_cover_game_hud") cfg.infection_cover_game_hud = on;
+                else if (key == "infection_cover_mod_hud") cfg.infection_cover_mod_hud = on;
+                else if (key == "infection_sound") cfg.infection_sound = on;
+                else if (key == "infection_screamer") cfg.infection_screamer = on;
+                else if (key == "screamer_chance") cfg.screamer_chance = std::clamp(number, 0.f, 1.f);
+                else if (key == "stamina_bar") cfg.stamina_bar = on;
+                else if (key == "stamina_vignette") cfg.stamina_vignette = on;
+                else if (key == "key_toggle") cfg.key_toggle = std::atoi(value.c_str());
+                else if (key == "key_prev") cfg.key_prev = std::atoi(value.c_str());
+                else if (key == "key_next") cfg.key_next = std::atoi(value.c_str());
+                else if (key == "key_use") cfg.key_use = std::atoi(value.c_str());
+                else if (key == "key_drop") cfg.key_drop = std::atoi(value.c_str());
+                else if (key == "key_store") cfg.key_store = std::atoi(value.c_str());
+                else if (key == "key_pickup") cfg.key_pickup = std::atoi(value.c_str());
+                else if (key == "slots") cfg.slots = std::clamp(std::atoi(value.c_str()), 1, 24);
+                else if (key == "weapon_slots") cfg.weapon_slots = std::clamp(std::atoi(value.c_str()), 0, 8);
+                else if (key == "max_weight") cfg.max_weight = std::max(0.f, number);
+                else
+                {
+                    INV_LOG("settings page: unknown setting %s", key.c_str());
+                    continue;
+                }
+                INV_LOG("settings page: %s = %s", key.c_str(), value.c_str());
+            }
+            core::config_save();
+        }
+    } // namespace
+
+    void open_window()
+    {
+        g_open_window = true;
+    }
+
+    void set_settings_page(bool available)
+    {
+        g_settings_page = available;
+    }
+
+    void apply_setting(const char* key, const char* value)
+    {
+        std::lock_guard lock(g_settings_mutex);
+        g_settings_queue.emplace_back(key, value);
     }
 
     namespace

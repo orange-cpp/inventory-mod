@@ -141,12 +141,16 @@ namespace inv
     //   min_clip = 10
     //   max_clip = 60
     //   spawners_once = true         # a weapon spawner (guns, melee weapons) gives one, then it is gone
+    //   min_reserve = 0              # what such a gun adds to the reserve: min_reserve..max_reserve magazines
+    //   max_reserve = 1              # (the game would fill the reserve)
     struct MapGunRules
     {
         bool enabled = false;
         int min_clip = 10;
         int max_clip = 60;
         bool spawners_once = true;
+        int min_reserve = 0;
+        int max_reserve = 1;
     };
     // The last apply_rules' [map_guns] (the defaults, disabled, without one).
     const MapGunRules& map_gun_rules();

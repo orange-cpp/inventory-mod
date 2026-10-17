@@ -19,6 +19,10 @@ What is in this folder
 
 2. Start Left 4 Dead 2 and wait for the main menu.
 
+   Once the mod is loaded: Options > Inventory Mod (in the main menu or the Escape menu) has its settings, in the game's
+   own menu style: all of its settings, keys too; "Inventory window" there opens the mod's window. (If the main menu shows no "Inventory Mod" yet, the
+   Escape menu has it.)
+
 3. Double-click load-mod.bat
    It prints "loaded ... into left4dead2.exe". The mod writes inventory_mod.log next to the DLL.
    Windows Defender or another antivirus may complain about injector.exe (loading a DLL into another program is
@@ -65,7 +69,8 @@ Rounds
   With [ammo_piles] in the host's inventory_mod.toml, a map's ammo pile holds 1 to 3 magazines of a random round
   type, shown as that type's ammo pack, and a few more packs lie near the map's items. Take what you can carry; the
   rest stays, and an empty pack is gone.
-  With [map_guns], a gun found in the map has only part of its magazine (10 to 60 %) the first time it is picked up,
+  With [map_guns], a gun found in the map has only part of its magazine (10 to 60 %) the first time it is picked up
+  (and at most a magazine more for your reserve),
   and a weapon spot of the map gives one weapon, then it is gone.
 
 The infection (when the host's inventory_mod.toml has [infection])

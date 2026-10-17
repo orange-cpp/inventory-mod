@@ -75,7 +75,10 @@ Crash dumps go to the game folder (`left4dead2_crash_*.mdmp`); `tools/mdmp_summa
 - `inventory_mod_settings.toml` holds each player's presentation settings (`src/core/config.cpp`).
 
 **Addons.** The mod mounts every `.vpk` in the `addons` folder next to the DLL (filesystem AddVPKFile, in
-`mount_addons`). `inventory_mod_rounds.vpk` holds the round types' ammo packs. It is generated from
+`mount_addons`). `inventory_mod_rounds.vpk` holds the round types' ammo packs. `inventory_mod_menu.vpk` (`tools/make_menu_addon.py`) holds
+the Options > Inventory Mod button and page (GameUI's Xbox-only AudioVideo page, taken over in `overlay.cpp`; its
+`SETTINGS` must match `k_page_settings` there and `apply_queued_settings` in `hud.cpp`). Addons are mounted at the head,
+so their files override the game's. It is generated from
 `assets/textures/*.png` plus the game's own model by `tools/make_rounds_addon.py`, and is never committed (Valve
 content).
 

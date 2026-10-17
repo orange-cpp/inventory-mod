@@ -1261,9 +1261,49 @@ namespace game
             }
         }
 
-        // A survivor is picking `weapon` up: a gun nobody has held gets a part of its magazine.
-        void cut_map_gun(void* player, void* weapon)
+        // A gun nobody has held does not fill the reserve either.  A gun stored into a box adds the rounds it carries
+        // (m_iExtraPrimaryAmmo, zeroed here), and a map's weapon spawner fills the player's reserve of its gun's type
+        // after it has handed the gun out (seen: the pick-up returned, then the reserve was at its most), also when
+        // the player already has that gun and gets none.  So the player's reserve of the gun's ammo type is read before,
+        // and afterwards anything above that plus min_reserve..max_reserve magazines (rolled; 0 when no new gun came) is
+        // taken back.  An object of this lives through the pick-up, or through the spawner's whole Use (g_spawn_reserve:
+        // the pick-up inside it fills that one in).
+        struct MapGunReserve
         {
+            void* player = nullptr; // nullptr: nothing to limit
+            int type = -1;
+            int before = 0;
+            int bonus = 0;
+            std::string kind;
+            bool spawner = false; // the spawner's: `before` per ammo type below, read before its Use
+            int pool_before[32] = {};
+
+            MapGunReserve() = default;
+            MapGunReserve(const MapGunReserve&) = delete;
+            MapGunReserve& operator=(const MapGunReserve&) = delete;
+            ~MapGunReserve()
+            {
+                if (player == nullptr || type < 0 || type >= 32)
+                    return;
+                int* reserve = reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo + 4u * static_cast<unsigned>(type));
+                const int after = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(reserve), before);
+                const int allowed = before + bonus;
+                if (after <= allowed)
+                    return;
+                mem::guarded([&] { *reserve = allowed; });
+                state_changed(player);
+                INV_LOG("map gun: the reserve of %s would have gone %d -> %d, kept at %d (+%d)", kind.c_str(), before, after,
+                        allowed, bonus);
+            }
+        };
+
+        MapGunReserve* g_spawn_reserve = nullptr; // main thread: a spawner's Use is running (see spawn_use)
+
+        // A survivor is picking `weapon` up: a gun nobody has held gets a part of its magazine, and `reserve` (or the
+        // running spawner's) is set to limit what the pick-up adds to the reserve.
+        void cut_map_gun(void* player, void* weapon, MapGunReserve& own_reserve)
+        {
+            MapGunReserve& reserve = g_spawn_reserve != nullptr && g_spawn_reserve->player == player ? *g_spawn_reserve : own_reserve;
             const inv::MapGunRules& rules = inv::map_gun_rules();
             if (!rules.enabled || weapon == nullptr || player == nullptr || team_of(player) != 2)
                 return;
@@ -1287,14 +1327,33 @@ namespace game
             static std::minstd_rand random(static_cast<unsigned>(GetTickCount64() * 3266489917u));
             const int percent = rules.min_clip + static_cast<int>(random() % static_cast<unsigned>(rules.max_clip - rules.min_clip + 1));
             const int clip = std::clamp(static_cast<int>(std::lround(full * percent / 100.0)), 0, full);
-            mem::guarded([&] { *reinterpret_cast<int*>(at) = clip; });
+            const int magazines =
+                rules.min_reserve + static_cast<int>(random() % static_cast<unsigned>(rules.max_reserve - rules.min_reserve + 1));
+            mem::guarded([&] {
+                *reinterpret_cast<int*>(at) = clip;
+                // (CTerrorGun::m_iExtraPrimaryAmmo: what a gun lying around carries for the reserve; every gun here is a
+                // CTerrorGun, the pistols and the chainsaw are left out above)
+                *reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_extra_ammo) = 0;
+            });
             state_changed(weapon);
-            INV_LOG("map gun %s (%p): %d of %d in the magazine (%d%%)", name, weapon, clip, full, percent);
+            reserve.player = player;
+            reserve.type = ammo_type_of(weapon);
+            reserve.kind = kind;
+            reserve.bonus = magazines * std::max(1, inv::ammo_magazine(kind));
+            if (reserve.spawner)
+                reserve.before = reserve.type >= 0 && reserve.type < 32 ? reserve.pool_before[reserve.type] : 0;
+            else
+                reserve.before = reserve.type >= 0 ? mem::read_or<int>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo +
+                                                                        4u * static_cast<unsigned>(reserve.type))
+                                                   : 0;
+            INV_LOG("map gun %s (%p): %d of %d in the magazine (%d%%), %d reserve rounds at most", name, weapon, clip, full, percent,
+                    reserve.bonus);
         }
 
         bool bump_weapon(void* player, void* edx, void* weapon)
         {
-            cut_map_gun(player, weapon);
+            MapGunReserve map_gun;
+            cut_map_gun(player, weapon, map_gun);
             const inv::ItemDef* def = nullptr;
             const bool local = !g_giving && player != nullptr && player == local_player();
             if (local)
@@ -1421,7 +1480,9 @@ namespace game
                 char name[MAX_PATH * 2] = {};
                 if (WideCharToMultiByte(CP_ACP, 0, path.c_str(), -1, name, sizeof(name), nullptr, nullptr) == 0)
                     continue;
-                const bool ok = mem::guarded([&] { reinterpret_cast<AddVpkFileFn>(at)(fs, name, 1); });
+                // at the head (0): ahead of the game's own files, so the menu's flyout in inventory_mod_menu.vpk is the
+                // one the game reads (the others hold only the mod's own files)
+                const bool ok = mem::guarded([&] { reinterpret_cast<AddVpkFileFn>(at)(fs, name, 0); });
                 INV_LOG("game: mounted %s%s", name, ok ? "" : " (the call failed)");
             } while (FindNextFileW(search, &found));
             FindClose(search);
@@ -1808,6 +1869,24 @@ namespace game
             const bool once = survivor && item[0] != '\0' && inv::map_gun_rules().enabled && inv::map_gun_rules().spawners_once &&
                               (def == nullptr || def->weapon());
             const bool local = activator != nullptr && activator == local_player();
+            // [map_guns]: what the spawner adds to the reserve (see MapGunReserve); a gun's spawner only
+            MapGunReserve reserve;
+            MapGunReserve* outer_reserve = g_spawn_reserve;
+            const char* ammo_kind = item[0] != '\0' ? inv::ammo_kind(item) : nullptr;
+            if (survivor && inv::map_gun_rules().enabled && ammo_kind != nullptr && std::strcmp(ammo_kind, "chainsaw") != 0)
+            {
+                const AmmoPool pool = read_pool(activator);
+                if (pool.read)
+                {
+                    reserve.player = activator;
+                    reserve.spawner = true;
+                    reserve.kind = ammo_kind;
+                    reserve.type = inv::ammo_index(ammo_kind);
+                    std::memcpy(reserve.pool_before, pool.count, sizeof(pool.count));
+                    reserve.before = reserve.type >= 0 ? pool.count[reserve.type] : 0;
+                    g_spawn_reserve = &reserve;
+                }
+            }
             std::vector<std::uint32_t> before;
             int stored_before = 0;
             if (once)
@@ -1838,6 +1917,7 @@ namespace game
             }
             g_spawn_use.original()(spawner, edx, activator, caller, type, value);
             g_hidden_weapon_id = 0;
+            g_spawn_reserve = outer_reserve; // (`reserve` limits the reserve when this function returns)
             if (once)
             {
                 // given: a weapon in the hands that was not there, or a copy stored in a box
@@ -2172,7 +2252,8 @@ namespace game
 
         void gun_use(void* gun, void* edx, void* activator, void* caller, int type, float value)
         {
-            cut_map_gun(activator, gun);
+            MapGunReserve map_gun;
+            cut_map_gun(activator, gun, map_gun);
             if (!g_giving && activator != nullptr && activator == local_player())
             {
                 const WeaponPickup pickup = weapon_pickup(activator, gun, item_of(gun));

@@ -7,7 +7,8 @@
 #    game unloads it, or close the game): Windows does not let the linker replace a loaded DLL.
 # 2. out\Release\inventory_tests.exe: the release stops when a test fails.
 # 3. tools\make_rounds_addon.py (Python with Pillow, and the game installed: it reads the game's ammo pack model)
-#    builds addons\inventory_mod_rounds.vpk straight into the release folder.
+#    builds addons\inventory_mod_rounds.vpk, and tools\make_menu_addon.py addons\inventory_mod_menu.vpk (the
+#    Options > Inventory Mod page), straight into the release folder.
 # 4. The release folder is made anew: inventory_mod.dll, injector.exe, load-mod.bat and HOW-TO.txt (packaging\),
 #    inventory_mod.example.toml, inventory_mod_screamer.jpg (assets\), addons\; then it is zipped.
 
@@ -60,6 +61,10 @@ Copy-Item (Join-Path $Root 'assets\inventory_mod_screamer.jpg') $Folder
 Step 'the ammo packs (tools\make_rounds_addon.py)'
 & python -I (Join-Path $Root 'tools\make_rounds_addon.py') --out (Join-Path $Folder 'addons\inventory_mod_rounds.vpk')
 if ($LASTEXITCODE -ne 0) { Fail 'the ammo pack addon was not made (Python with Pillow, and the game installed?)' }
+
+Step 'the menus (tools\make_menu_addon.py)'
+& python -I (Join-Path $Root 'tools\make_menu_addon.py') --out (Join-Path $Folder 'addons\inventory_mod_menu.vpk')
+if ($LASTEXITCODE -ne 0) { Fail 'the menu addon was not made (the game installed?)' }
 
 Step 'the zip'
 $zip = Join-Path $Dist ("inventory-mod-{0}.zip" -f (Get-Date -Format 'yyyy-MM-dd'))

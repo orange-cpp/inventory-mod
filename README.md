@@ -128,7 +128,8 @@ map's piles becomes an ammo pack of its rolled type when the round starts, so wh
 `extra` (4) more packs are put beside the map's item spots (pills, throwables, guns; not near the start).
 
 With `[map_guns]` (on in the example) a gun nobody has held yet, lying in the map or from a weapon spawner, has only
-`min_clip` to `max_clip` % of its magazine (10 to 60) when it is first picked up. A gun someone has held, or one
+`min_clip` to `max_clip` % of its magazine (10 to 60) when it is first picked up, and it adds only `min_reserve` to
+`max_reserve` magazines (0 to 1) to your reserve, where the game would fill it. A gun someone has held, or one
 dropped from a box, keeps what it had. With `spawners_once` (on) a weapon spawner of the map, for guns or melee
 weapons, gives one and is gone; item spawners (pills, kits) are the game's.
 
@@ -147,7 +148,19 @@ Each player chooses how it shows, in the Settings tab ("Stamina") or under `[sta
 `vignette` (the screen's edges darken and lose their colour from half down; exhausted, they close in and pulse with
 each gasp). The Debug tab has a preview of both.
 
-## Keys (all can be rebound in the window's Settings tab)
+## Settings in the game's menu
+
+Options > Inventory Mod (main menu and the in-game menu) is a page of the game's own menu, in its own style, with all
+of the mod's settings as drop-downs in two columns: the HUD, the infection and stamina on the left; the keys (from a
+list: free letters, `[ ] \ ; ' , . /`, Insert, Delete, Home, Page Up / Down, None) and the limits on the right;
+then "Inventory window" (the mod's window) and Done. The window has no Settings tab while the page is there. A choice is saved to `inventory_mod_settings.toml` at once. It
+comes with the addon `inventory_mod_menu.vpk` in the `addons` folder next to the DLL (built by
+`python -I tools/make_menu_addon.py`): the Options flyout with the button, the page's layout and each drop-down's
+choices. The page is the Xbox build's Audio / Video page, which the PC menu never opens, with its own code switched
+off (see docs/game-notes.md); without the addon, or on another game build, the button is not there and the window's
+Settings tab is back (it also rebinds a key to any key at all).
+
+## Keys (all can be rebound on Options > Inventory Mod)
 
 | Key | Action |
 |---|---|

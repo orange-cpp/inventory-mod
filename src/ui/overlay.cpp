@@ -1,5 +1,6 @@
 #include "ui/overlay.hpp"
 
+#include "core/config.hpp"
 #include "core/hook.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
@@ -9,7 +10,13 @@
 #include "ui/hud.hpp"
 #include "ui/postfx.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 #include <d3d9.h>
 #include <imgui.h>
 #include <imgui_impl_dx9.h>
@@ -343,6 +350,378 @@ namespace ui::overlay
             g_pre_hud_slot = nullptr;
         }
 
+        // ---- Options > Inventory Mod ----------------------------------------------------------------------------------
+        //
+        // The game's Options flyout (main menu and in-game menu: resource/UI/L4D360UI/OptionsFlyout.res) gets an
+        // "Inventory Mod" button from the mod's addon inventory_mod_menu.vpk (tools/make_menu_addon.py; the mod mounts
+        // its addons ahead of the game's files).  Its command "InventoryModSettings" reaches the menus' OnCommand like
+        // "Video" or "Audio" do: GameUI.dll (bin), L4D360UI::MainMenu (RTTI; vtable 0x1017AF1C) and
+        // L4D360UI::InGameMainMenu (0x10178154), slot 96 OnCommand(const char*) (thiscall, ret 4: 0x10068220 and
+        // 0x1005EE40, which compare it with "Video", "Audio", "KeyboardMouse", "SteamController", "CloudSettings" ...).
+        // The mod puts its function in both slots: that command opens its window on the Settings tab, the rest go on.
+
+        constexpr const char* k_settings_command = "InventoryModSettings";
+        constexpr int k_vt_menu_on_command = 96;
+        using OnCommandFn = void(__fastcall*)(void* self, void* edx, const char* command);
+
+        struct MenuHook
+        {
+            std::uintptr_t vtable_rva;
+            std::uintptr_t function_rva;
+            const char* prologue;
+            void** slot = nullptr;
+            OnCommandFn original = nullptr;
+        };
+        MenuHook g_menu_hooks[2] = {
+            {0x17AF1C, 0x68220, "55 8B EC 81 EC CC 01 00 00"}, // MainMenu
+            {0x178154, 0x5EE40, "55 8B EC 81 EC C0 00 00 00"}, // InGameMainMenu
+        };
+
+        bool patch_slot(void** slot, void* value)
+        {
+            DWORD old = 0;
+            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old))
+                return false;
+            *slot = value;
+            VirtualProtect(slot, sizeof(void*), old, &old);
+            return true;
+        }
+
+        // ---- the page: GameUI's AudioVideo, taken over ----
+        //
+        // The page is a real page of the game's menu: L4D360UI::AudioVideo (RTTI; vtable 0x1016908C), the Xbox build's
+        // Audio / Video page, which the PC menu never opens.  Its layout is the mod's (resource/UI/L4D360UI/AudioVideo.res
+        // in inventory_mod_menu.vpk: a drop-down per setting, as on the Video page).  Its own code, which looks for its
+        // own controls, is switched off: of the slots where it differs from its base L4D360UI::CL4DFrame (vtable
+        // 0x101636AC), these get the base's back or the mod's:
+        //    88 0x10025A00 -> 0x1000F660 (the base's, then something of its own)
+        //    96 OnCommand 0x10025430 -> the mod's: "InvMod <key> <value>" (a choice), "InventoryModWindow", "Back";
+        //       the rest to the base 0x100FB8B0 (vgui Frame's: "Close", "CloseModal" ...)
+        //   101 0x10025220 -> the mod's: the base's 0x100FC680 (the layout loaded, the controls made), then the values
+        //       (its own looks up SldBrightness, DrpColorMode ... by name)
+        //   121 OnKeyCodePressed 0x10025EE0 -> 0x1000EB80 (B / Escape: back; its own asks to restart for a language)
+        //   127 0x100259E0 -> the mod's: the title, through 0x1000F8C0(title, 0, subtitle, 0, 0, 0, 0x7FFFFFFF)
+        //       (thiscall, ret 1Ch)
+        //   238 Activate 0x10025CA0 -> the mod's: the base's 0x100FA2E0, then each drop-down's current choice
+        //   282 0x10025850 -> 0x1000F580 (it writes the video config when the page closes)
+        // (28-30: its class name, 32: its destructor, are its own and stay.)
+        // A drop-down: FindChildByName(name, false) 0x100CEB70 (thiscall, ret 8); DropDownMenu::SetCurrentSelection(
+        // command) 0x1002D180 (ret 4: the choice whose command that is shows); its flyout 0x1002CD50 (ret), which gets the
+        // page's FlyoutMenuListener (+0x2BC) through 0x1002DA00 (ret 4), as AudioVideo's own Activate does.
+        // Opening it: CBaseModPanel::GetSingleton() 0x10009A90 (`mov eax, [0x101FFB10]`), then OpenWindow(const
+        // WINDOW_TYPE&, caller, hideCaller, KeyValues*) 0x1000AC00 (thiscall); WT_AUDIOVIDEO is 3 (the in-game menu's
+        // "AudioVideo" command).  Going back: as the Video page's "Back", the B button: 0x1000E950(0x73 KEY_XBUTTON_B,
+        // the panel's user 0x10009B30) (cdecl), then the page's own slot 121 with that code.
+
+        struct PageSetting
+        {
+            const char* key;
+            enum
+            {
+                Bool,
+                Int,
+                Float
+            } kind;
+            std::vector<float> values; // Float: the page's choices (tools/make_menu_addon.py SETTINGS)
+        };
+        const PageSetting k_page_settings[] = {
+            {"show_hotbar", PageSetting::Bool, {}},
+            {"inventory_view", PageSetting::Int, {}},
+            {"auto_store", PageSetting::Bool, {}},
+            {"replace_native", PageSetting::Bool, {}},
+            {"hud_scale", PageSetting::Float, {0.75f, 1.f, 1.25f, 1.5f, 2.f, 2.5f, 3.f}},
+            {"infection_effect", PageSetting::Bool, {}},
+            {"infection_cover_game_hud", PageSetting::Bool, {}},
+            {"infection_cover_mod_hud", PageSetting::Bool, {}},
+            {"infection_sound", PageSetting::Bool, {}},
+            {"infection_screamer", PageSetting::Bool, {}},
+            {"screamer_chance", PageSetting::Float, {0.f, 0.1f, 0.25f, 0.5f, 0.75f, 1.f}},
+            {"stamina_bar", PageSetting::Bool, {}},
+            {"stamina_vignette", PageSetting::Bool, {}},
+            {"key_toggle", PageSetting::Int, {}},
+            {"key_prev", PageSetting::Int, {}},
+            {"key_next", PageSetting::Int, {}},
+            {"key_use", PageSetting::Int, {}},
+            {"key_drop", PageSetting::Int, {}},
+            {"key_store", PageSetting::Int, {}},
+            {"key_pickup", PageSetting::Int, {}},
+            {"slots", PageSetting::Float, {4.f, 6.f, 8.f, 10.f, 12.f, 16.f, 20.f, 24.f}},
+            {"weapon_slots", PageSetting::Float, {0.f, 1.f, 2.f, 3.f, 4.f, 6.f, 8.f}},
+            {"max_weight", PageSetting::Float, {0.f, 10.f, 15.f, 20.f, 25.f, 30.f, 40.f, 50.f}},
+        };
+
+        // The setting's current value as the page's choice ("1", "0.25" ...).
+        std::string page_value(const PageSetting& s)
+        {
+            const core::Config& c = core::config();
+            const std::string_view k(s.key);
+            float number = 0.f;
+            if (k == "show_hotbar") number = c.show_hotbar;
+            else if (k == "inventory_view") number = static_cast<float>(c.inventory_view);
+            else if (k == "auto_store") number = c.auto_store;
+            else if (k == "replace_native") number = c.replace_native;
+            else if (k == "hud_scale") number = c.hud_scale;
+            else if (k == "infection_effect") number = c.infection_effect;
+            else if (k == "infection_cover_game_hud") number = c.infection_cover_game_hud;
+            else if (k == "infection_cover_mod_hud") number = c.infection_cover_mod_hud;
+            else if (k == "infection_sound") number = c.infection_sound;
+            else if (k == "infection_screamer") number = c.infection_screamer;
+            else if (k == "screamer_chance") number = c.screamer_chance;
+            else if (k == "stamina_bar") number = c.stamina_bar;
+            else if (k == "stamina_vignette") number = c.stamina_vignette;
+            else if (k == "key_toggle") number = static_cast<float>(c.key_toggle);
+            else if (k == "key_prev") number = static_cast<float>(c.key_prev);
+            else if (k == "key_next") number = static_cast<float>(c.key_next);
+            else if (k == "key_use") number = static_cast<float>(c.key_use);
+            else if (k == "key_drop") number = static_cast<float>(c.key_drop);
+            else if (k == "key_store") number = static_cast<float>(c.key_store);
+            else if (k == "key_pickup") number = static_cast<float>(c.key_pickup);
+            else if (k == "slots") number = static_cast<float>(c.slots);
+            else if (k == "weapon_slots") number = static_cast<float>(c.weapon_slots);
+            else if (k == "max_weight") number = c.max_weight;
+            if (s.kind == PageSetting::Float && !s.values.empty())
+                number = *std::min_element(s.values.begin(), s.values.end(),
+                                           [&](float a, float b) { return std::fabs(a - number) < std::fabs(b - number); });
+            char text[32];
+            std::snprintf(text, sizeof(text), "%g", number);
+            return text;
+        }
+
+        constexpr std::uintptr_t k_rva_page_vtable = 0x16908C; // AudioVideo
+        constexpr std::uintptr_t k_rva_get_singleton = 0x9A90, k_rva_open_window = 0xAC00;
+        constexpr std::uintptr_t k_rva_find_child = 0xCEB70, k_rva_set_selection = 0x2D180, k_rva_get_flyout = 0x2CD50,
+                                 k_rva_set_listener = 0x2DA00, k_rva_set_title = 0xF8C0, k_rva_user = 0x9B30,
+                                 k_rva_button_code = 0xE950, k_rva_base_command = 0xFB8B0, k_rva_base_activate = 0xFA2E0,
+                                 k_rva_base_layout = 0xFC680;
+        constexpr int k_wt_audio_video = 3;
+        constexpr std::uintptr_t k_off_flyout_listener = 0x2BC;
+
+        using GetSingletonFn = void*(__cdecl*)();
+        using OpenWindowFn = void*(__thiscall*)(void* panel, const int* type, void* caller, bool hide_caller, void* params);
+        using FindChildFn = void*(__thiscall*)(void* panel, const char* name, bool recurse);
+        using SetSelectionFn = void(__thiscall*)(void* drop_down, const char* command);
+        using GetFlyoutFn = void*(__thiscall*)(void* drop_down);
+        using SetListenerFn = void(__thiscall*)(void* flyout, void* listener);
+        using SetTitleFn = void(__thiscall*)(void* frame, const char* title, int, const char* subtitle, int, int, int, int);
+        using UserFn = int(__thiscall*)(void* panel);
+        using ButtonCodeFn = int(__cdecl*)(int code, int user);
+        using KeyCodeFn = void(__thiscall*)(void* frame, int code);
+        using ActivateFn = void(__thiscall*)(void* frame);
+
+        std::uintptr_t g_gameui = 0;
+        bool g_page_ready = false; // the AudioVideo vtable is the mod's
+        struct PageSlot
+        {
+            int slot;
+            std::uintptr_t own_rva; // what AudioVideo has there
+            std::uintptr_t base_rva; // the base's (0: the mod's function)
+            void* original = nullptr;
+        };
+        PageSlot g_page_slots[] = {
+            {88, 0x25A00, 0xF660},  {96, 0x25430, 0},       {101, 0x25220, 0xFC680}, {121, 0x25EE0, 0xEB80},
+            {127, 0x259E0, 0},      {238, 0x25CA0, 0},      {282, 0x25850, 0xF580},
+        };
+
+        template <class F> F gameui_fn(std::uintptr_t rva) { return reinterpret_cast<F>(g_gameui + rva); }
+
+        void __fastcall page_title(void* self, void*)
+        {
+            game::mem::guarded([&] {
+                gameui_fn<SetTitleFn>(k_rva_set_title)(self, "Inventory Mod", 0,
+                                                       "The inventory mod's settings: its HUD, the infection and stamina.", 0,
+                                                       0, 0, 0x7FFFFFFF);
+            });
+        }
+
+        bool g_page_quiet = false; // main thread: the mod is setting the drop-downs (their own commands come back: ignored)
+
+        // Each drop-down shows the setting's current choice.  SetCurrentSelection sends the choice's command to the page,
+        // as a click does: those are ignored meanwhile.
+        bool g_page_values_due = false; // main thread: the page opened, its values are not shown yet
+
+        // true when the drop-downs were there
+        bool page_show_values(void* self)
+        {
+            bool found = false;
+            g_page_quiet = true;
+            game::mem::guarded([&] {
+                for (const PageSetting& s : k_page_settings)
+                {
+                    const std::string name = std::string("Drp_") + s.key;
+                    void* drop_down = gameui_fn<FindChildFn>(k_rva_find_child)(self, name.c_str(), false);
+                    if (drop_down == nullptr)
+                        continue;
+                    found = true;
+                    const std::string command = std::string("InvMod ") + s.key + " " + page_value(s);
+                    gameui_fn<SetSelectionFn>(k_rva_set_selection)(drop_down, command.c_str());
+                    if (void* flyout = gameui_fn<GetFlyoutFn>(k_rva_get_flyout)(drop_down))
+                        gameui_fn<SetListenerFn>(k_rva_set_listener)(flyout, static_cast<char*>(self) + k_off_flyout_listener);
+                }
+            });
+            g_page_quiet = false;
+            return found;
+        }
+
+        // slot 238 (Activate), each time the page opens: the base's, then the values (on the first opening the layout
+        // is not loaded yet: then page_layout shows them)
+        void __fastcall page_activate(void* self, void*)
+        {
+            gameui_fn<ActivateFn>(k_rva_base_activate)(self);
+            g_page_values_due = !page_show_values(self);
+        }
+
+        // slot 101 (the game calls it again and again: AudioVideo's own looks its controls up only while it has not found
+        // them): the base's (0x100FC680), then the values, once after an opening that could not show them
+        void __fastcall page_layout(void* self, void*)
+        {
+            gameui_fn<ActivateFn>(k_rva_base_layout)(self);
+            if (g_page_values_due)
+                g_page_values_due = !page_show_values(self);
+        }
+
+        void __fastcall page_command(void* self, void* edx, const char* command)
+        {
+            if (command != nullptr && std::strncmp(command, "InvMod ", 7) == 0)
+            {
+                const std::string text(command + 7);
+                const std::size_t space = text.find(' ');
+                // (a click: the drop-down shows the choice by itself; selecting it again here sent the command again, without
+                // end, and the stack overflowed)
+                if (space != std::string::npos && !g_page_quiet)
+                {
+                    const std::string key = text.substr(0, space), value = text.substr(space + 1);
+                    hud::apply_setting(key.c_str(), value.c_str());
+                }
+                return;
+            }
+            if (command != nullptr && _stricmp(command, "InventoryModWindow") == 0)
+            {
+                hud::open_window();
+                return;
+            }
+            if (command != nullptr && (_stricmp(command, "Back") == 0 || _stricmp(command, "Done") == 0))
+            {
+                game::mem::guarded([&] {
+                    void* panel = gameui_fn<GetSingletonFn>(k_rva_get_singleton)();
+                    const int code = gameui_fn<ButtonCodeFn>(k_rva_button_code)(0x73, gameui_fn<UserFn>(k_rva_user)(panel));
+                    reinterpret_cast<KeyCodeFn>(game::mem::vslot(self, 121))(self, code);
+                });
+                return;
+            }
+            reinterpret_cast<OnCommandFn>(g_gameui + k_rva_base_command)(self, edx, command);
+        }
+
+        void install_page()
+        {
+            void* mine[] = {nullptr, reinterpret_cast<void*>(page_command), reinterpret_cast<void*>(page_layout), nullptr,
+                            reinterpret_cast<void*>(page_title), reinterpret_cast<void*>(page_activate), nullptr};
+            void** vtable = reinterpret_cast<void**>(g_gameui + k_rva_page_vtable);
+            // every slot first checked: the build this was read from
+            for (const PageSlot& s : g_page_slots)
+                if (game::mem::read_or<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(vtable + s.slot)) != g_gameui + s.own_rva)
+                {
+                    INV_LOG("overlay: GameUI's AudioVideo page does not look as expected (slot %d): no settings page", s.slot);
+                    return;
+                }
+            if (game::mem::find_pattern(g_gameui + k_rva_open_window, 10, "55 8B EC 83 EC 0C 53 8B 5D 08") != g_gameui + k_rva_open_window ||
+                game::mem::find_pattern(g_gameui + k_rva_find_child, 10, "55 8B EC 83 EC 0C 53 56 89 4D") != g_gameui + k_rva_find_child ||
+                game::mem::find_pattern(g_gameui + k_rva_set_selection, 9, "55 8B EC 81 EC 08 01 00 00") != g_gameui + k_rva_set_selection ||
+                game::mem::find_pattern(g_gameui + k_rva_get_flyout, 6, "56 8B F1 83 BE 88") != g_gameui + k_rva_get_flyout ||
+                game::mem::find_pattern(g_gameui + k_rva_set_listener, 9, "55 8B EC 8B 45 08 89 81 8C") != g_gameui + k_rva_set_listener ||
+                game::mem::find_pattern(g_gameui + k_rva_set_title, 9, "55 8B EC 81 EC 44 04 00 00") != g_gameui + k_rva_set_title ||
+                game::mem::find_pattern(g_gameui + k_rva_get_singleton, 1, "A1") != g_gameui + k_rva_get_singleton ||
+                game::mem::find_pattern(g_gameui + k_rva_user, 6, "8B 81 84 02 00 00") != g_gameui + k_rva_user ||
+                game::mem::find_pattern(g_gameui + k_rva_button_code, 6, "55 8B EC 8B 45 08") != g_gameui + k_rva_button_code ||
+                game::mem::find_pattern(g_gameui + k_rva_base_activate, 4, "53 56 8B F1") != g_gameui + k_rva_base_activate)
+            {
+                INV_LOG("overlay: GameUI's functions do not look as expected: no settings page");
+                return;
+            }
+            for (int i = 0; i < static_cast<int>(std::size(g_page_slots)); ++i)
+            {
+                PageSlot& s = g_page_slots[i];
+                s.original = reinterpret_cast<void*>(g_gameui + s.own_rva);
+                patch_slot(vtable + s.slot, mine[i] != nullptr ? mine[i] : reinterpret_cast<void*>(g_gameui + s.base_rva));
+            }
+            g_page_ready = true;
+            hud::set_settings_page(true);
+        }
+
+        void uninstall_page()
+        {
+            if (!g_page_ready)
+                return;
+            void** vtable = reinterpret_cast<void**>(g_gameui + k_rva_page_vtable);
+            for (const PageSlot& s : g_page_slots)
+                patch_slot(vtable + s.slot, s.original);
+            g_page_ready = false;
+            hud::set_settings_page(false);
+        }
+
+        // The menus' "InventoryModSettings": the page (the mod's own window when there is none).
+        void open_page(void* caller)
+        {
+            if (!g_page_ready)
+            {
+                hud::open_settings();
+                return;
+            }
+            const int type = k_wt_audio_video;
+            if (!game::mem::guarded([&] {
+                    void* panel = gameui_fn<GetSingletonFn>(k_rva_get_singleton)();
+                    gameui_fn<OpenWindowFn>(k_rva_open_window)(panel, &type, caller, true, nullptr);
+                }))
+                hud::open_settings();
+        }
+
+        template <int I>
+        void __fastcall hk_menu_command(void* self, void* edx, const char* command)
+        {
+            if (command != nullptr && _stricmp(command, k_settings_command) == 0)
+            {
+                open_page(self);
+                return;
+            }
+            g_menu_hooks[I].original(self, edx, command);
+        }
+
+        void install_menu_hooks()
+        {
+            const auto gameui = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"GameUI.dll"));
+            void* hooks[2] = {reinterpret_cast<void*>(hk_menu_command<0>), reinterpret_cast<void*>(hk_menu_command<1>)};
+            int installed = 0;
+            for (int i = 0; i < 2 && gameui != 0; ++i)
+            {
+                MenuHook& h = g_menu_hooks[i];
+                void** slot = reinterpret_cast<void**>(gameui + h.vtable_rva + 4u * k_vt_menu_on_command);
+                const std::uintptr_t target = game::mem::read_or<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(slot));
+                if (target != gameui + h.function_rva || game::mem::find_pattern(target, 9, h.prologue) != target)
+                    continue;
+                h.original = reinterpret_cast<OnCommandFn>(target);
+                if (patch_slot(slot, hooks[i]))
+                {
+                    h.slot = slot;
+                    ++installed;
+                }
+            }
+            g_gameui = gameui;
+            if (installed > 0)
+                install_page();
+            INV_LOG("overlay: Options > Inventory Mod %s (%d of 2 menus), %s", installed == 2 ? "ready" : "not available", installed,
+                    g_page_ready ? "its page ready" : "the mod's window instead of a page");
+        }
+
+        void uninstall_menu_hooks()
+        {
+            uninstall_page();
+            for (MenuHook& h : g_menu_hooks)
+                if (h.slot != nullptr)
+                {
+                    patch_slot(h.slot, reinterpret_cast<void*>(h.original));
+                    h.slot = nullptr;
+                }
+        }
+
         // ---- ImGui --------------------------------------------------------------------------------------------------
 
         bool init_imgui(IDirect3DDevice9* device)
@@ -380,6 +759,7 @@ namespace ui::overlay
             icons::set_device(device);
             postfx::init(device);
             install_pre_hud();
+            install_menu_hooks();
             audio::install();
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
@@ -556,6 +936,7 @@ namespace ui::overlay
     void uninstall()
     {
         uninstall_pre_hud(); // first: a pass queued already still finds the DLL (the waits below)
+        uninstall_menu_hooks();
         g_shutdown_requested = true;
         for (int i = 0; i < 40 && !g_shutdown_done.load(); ++i)
             Sleep(50); // the render thread tears ImGui down in its next Present

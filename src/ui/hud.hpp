@@ -19,5 +19,15 @@ namespace hud
     // Ctrl+End was pressed (or request_unload was called).
     bool unload_requested();
     void request_unload();
+    // Any thread: opens the window on its Settings tab (Options > Inventory Mod when the game's menu has no page for it).
+    void open_settings();
+    // Any thread: opens the window ("Inventory window" on the game's Options > Inventory Mod page).
+    void open_window();
+    // Any thread: the game's menu has the Options > Inventory Mod page (overlay.cpp): the settings are there, and the
+    // window has no Settings tab.
+    void set_settings_page(bool available);
+    // Any thread: a setting chosen on the game's Options > Inventory Mod page ("show_hotbar" "1" ...), applied and saved
+    // on the next frame (see overlay.cpp, k_page_settings).
+    void apply_setting(const char* key, const char* value);
 
 } // namespace hud
