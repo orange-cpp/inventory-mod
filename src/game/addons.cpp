@@ -3,9 +3,11 @@
 #include "game/addons.hpp"
 
 #include "core/log.hpp"
+#include "game/client_remote.hpp"
 #include "game/mem.hpp"
 #include "game/sdk.hpp"
 
+#include <atomic>
 #include <cstring>
 #include <string>
 
@@ -51,6 +53,28 @@ namespace game::detail
 
     bool game_file_exists(const char* name);
 
+    // ---- the menu's layout, read again ----
+    //
+    // A layout file is read when its panel is built.  The main menu (GameUI.dll L4D360UI::MainMenu) is built when the
+    // game reaches it, which is usually before the mod is injected: its Options flyout (FlmOptionsFlyout, from
+    // resource/UI/L4D360UI/OptionsFlyout.res) then is the game's own, without "Inventory Mod", until the menu is built
+    // again (after a game).  GameUI's console command "ui_reloadscheme" ("Reloads the resource files for the active UI
+    // window", registered at 0x1015A5D0, its function 0x10016130: the scheme, then the active window's layout from its
+    // files, the flyouts with it) does that at once; seen working in game 2026-10-17 (the button there right after it).
+    // It goes through the engine's ClientCmd_Unrestricted when the game is not connected (at the main menu): in a game
+    // the active window is the in-game menu, which is built each time it opens and reads the addon's flyout anyway,
+    // so the command waits until the player is back at the main menu.
+    std::atomic<bool> g_menu_reload_pending{false};
+
+    void reload_menus()
+    {
+        if (!g_menu_reload_pending.load() || !knows_connection() || connected_to_server())
+            return;
+        g_menu_reload_pending = false;
+        send_to_server("ui_reloadscheme"); // (a command the client knows: it runs there)
+        INV_LOG("game: the main menu built again from its layout files (ui_reloadscheme), for Options > Inventory Mod");
+    }
+
     void mount_addons()
     {
         const std::wstring folder = std::wstring(core::module_dir()) + L"addons\\";
@@ -84,6 +108,8 @@ namespace game::detail
             // one the game reads (the others hold only the mod's own files)
             const bool ok = mem::guarded([&] { reinterpret_cast<AddVpkFileFn>(at)(fs, name, 0); });
             INV_LOG("game: mounted %s%s", name, ok ? "" : " (the call failed)");
+            if (ok && _wcsicmp(found.cFileName, L"inventory_mod_menu.vpk") == 0)
+                g_menu_reload_pending = true;
         } while (FindNextFileW(search, &found));
         FindClose(search);
         INV_LOG("game: the ammo packs %s", game_file_exists("models/inv_mod/rounds_smg.mdl") ? "are there" : "are not found");

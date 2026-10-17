@@ -182,10 +182,12 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         Layer g_layer = Layer::OverAll; // ... on this layer
         struct UnderHud
         {
-            bool wanted = false;
+            bool infection = false;
             float severity = 0.f, beat = 0.f, last = 0.f;
+            bool stamina = false;
+            float tired = 0.f, exhausted = 0.f, breath = 0.f;
         };
-        UnderHud g_under_hud; // the infection for the next frame's pass under the game's HUD (render thread)
+        UnderHud g_under_hud; // the effects for the next frame's pass under the game's HUD (render thread)
         std::atomic<bool> g_under_hud_wanted{false}; // (the game's main thread asks)
         struct Screamer
         {
@@ -198,6 +200,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         Screamer g_screamer_frame; // set_screamer this frame
         float g_severity = 0.f, g_beat = 0.f, g_last = 0.f;
         bool g_stamina_wanted = false; // set_stamina this frame
+        Layer g_stamina_layer = Layer::OverAll; // ... on this layer
         float g_tired = 0.f, g_exhausted = 0.f, g_breath = 0.f;
 
         template <class T> void release(T*& p)
@@ -487,9 +490,10 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
 
     bool stamina_ready() { return g_ready && g_ps_stamina != nullptr; }
 
-    void set_stamina(float tired, float exhausted, float breath)
+    void set_stamina(float tired, float exhausted, float breath, Layer layer)
     {
         g_stamina_wanted = true;
+        g_stamina_layer = layer;
         g_tired = tired;
         g_exhausted = exhausted;
         g_breath = breath;
@@ -520,32 +524,54 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
     void render(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer, Layer layer)
     {
         const float time = static_cast<float>(GetTickCount64() % 1000000ULL) / 1000.f;
+        // on every layer the stamina goes first, so the infection (when there is one too) runs over it
         if (layer == Layer::UnderGameHud)
         {
-            if (g_ready && back_buffer != nullptr && g_under_hud.wanted && make_copy(device, back_buffer))
+            const UnderHud& u = g_under_hud;
+            const bool stamina = u.stamina && g_ps_stamina != nullptr;
+            if (g_ready && back_buffer != nullptr && (stamina || u.infection) && make_copy(device, back_buffer))
             {
-                const float p0[4] = {time, g_under_hud.severity, g_under_hud.beat, g_under_hud.last};
-                full_screen_pass(device, back_buffer, g_ps, p0);
+                if (stamina)
+                {
+                    const float p0[4] = {time, u.tired, u.exhausted, u.breath};
+                    full_screen_pass(device, back_buffer, g_ps_stamina, p0);
+                }
+                if (u.infection)
+                {
+                    const float p0[4] = {time, u.severity, u.beat, u.last};
+                    full_screen_pass(device, back_buffer, g_ps, p0);
+                }
             }
             return;
         }
         if (layer == Layer::UnderModHud)
         {
-            if (g_ready && back_buffer != nullptr && g_wanted && g_layer == Layer::UnderModHud && make_copy(device, back_buffer))
+            const bool stamina = g_stamina_wanted && g_stamina_layer == Layer::UnderModHud && g_ps_stamina != nullptr;
+            const bool infection = g_wanted && g_layer == Layer::UnderModHud;
+            if (g_ready && back_buffer != nullptr && (stamina || infection) && make_copy(device, back_buffer))
             {
-                const float p0[4] = {time, g_severity, g_beat, g_last};
-                full_screen_pass(device, back_buffer, g_ps, p0);
+                if (stamina)
+                {
+                    const float p0[4] = {time, g_tired, g_exhausted, g_breath};
+                    full_screen_pass(device, back_buffer, g_ps_stamina, p0);
+                }
+                if (infection)
+                {
+                    const float p0[4] = {time, g_severity, g_beat, g_last};
+                    full_screen_pass(device, back_buffer, g_ps, p0);
+                }
             }
             return;
         }
         // the frame's last pass: what goes under the next frame's HUD is kept, the rest is forgotten
-        g_under_hud = UnderHud{g_wanted && g_layer == Layer::UnderGameHud, g_severity, g_beat, g_last};
-        g_under_hud_wanted = g_under_hud.wanted;
+        g_under_hud = UnderHud{g_wanted && g_layer == Layer::UnderGameHud, g_severity, g_beat, g_last,
+                               g_stamina_wanted && g_stamina_layer == Layer::UnderGameHud, g_tired, g_exhausted, g_breath};
+        g_under_hud_wanted = g_under_hud.infection || (g_under_hud.stamina && g_ps_stamina != nullptr);
         const bool wanted = g_wanted && g_layer == Layer::OverAll;
         g_wanted = false;
         const Screamer screamer = g_screamer_frame;
         g_screamer_frame.wanted = false;
-        const bool stamina = g_stamina_wanted;
+        const bool stamina = g_stamina_wanted && g_stamina_layer == Layer::OverAll;
         g_stamina_wanted = false;
         if (!g_ready || back_buffer == nullptr || (!wanted && !screamer.wanted && !stamina) || !make_copy(device, back_buffer))
             return;
@@ -567,7 +593,6 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             draw_screamer(device, screamer, static_cast<float>(g_copy_w), static_cast<float>(g_copy_h));
         }
-        // stamina first, so the infection (when there is one too) runs over it
         if (stamina && g_ps_stamina != nullptr)
         {
             const float p0[4] = {time, g_tired, g_exhausted, g_breath};

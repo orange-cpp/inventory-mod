@@ -239,10 +239,72 @@ namespace game::sdk
     constexpr std::uintptr_t k_rva_process_print = 0x52100;
     constexpr std::uintptr_t k_off_print_text = 0x54;
     using ProcessPrintFn = bool(__fastcall*)(void* state, void* edx, void* msg);
-    using IsInGameFn = bool(__thiscall*)(void* engine); // VEngineClient013 slot 26
+    using IsInGameFn = bool(__thiscall*)(void* engine); // VEngineClient013 slot 26 (also slot 27 IsConnected)
+    constexpr int k_vt_is_connected = 27;
     using ClientCmdFn = void(__thiscall*)(void* engine, const char* text); // VEngineClient013 slot 107
     using GetLocalPlayerFn = int(__thiscall*)(void* engine); // VEngineClient013 slot 12
     using GameUiVisibleFn = bool(__thiscall*)(void* vgui); // VEngineVGui001 slot 2
+
+    // ---- vgui2.dll, vguimatsurface.dll: the game's 2D drawing (see src/ui/vgui.cpp) -----------------------------------
+    //
+    // Each interface's object is a global its CreateInterface hands out; the vtables are the ones its constructor stores.
+    // Every slot below is checked at run time against the RVA here and its prologue.
+
+    // vgui2.dll "VGUI_Panel009" (VPanelWrapper, vtable 0x100480CC): slot 36 GetName(VPANEL), slot 41
+    // PaintTraverse(VPANEL, bool force_repaint, bool allow_force)
+    constexpr std::uintptr_t k_rva_panel_vtable = 0x480CC;
+    constexpr int k_vt_panel_get_name = 36, k_vt_panel_paint_traverse = 41;
+    constexpr std::uintptr_t k_rva_panel_get_name = 0x1EAC0, k_rva_panel_paint_traverse = 0x1EBE0;
+    using PanelNameFn = const char*(__thiscall*)(void* panels, unsigned vpanel);
+    using PaintTraverseFn = void(__fastcall*)(void* panels, void* edx, unsigned vpanel, bool force_repaint, bool allow_force);
+
+    // vgui2.dll "VGUI_Scheme010" (CSchemeManager, vtable 0x10046FCC): slot 5 GetScheme(tag), slot 8 GetIScheme(handle);
+    // CScheme (vtable 0x10047010): slot 3 GetFont(name, proportional), slot 4 GetFontName(const HFont&)
+    constexpr std::uintptr_t k_rva_scheme_manager_vtable = 0x46FCC, k_rva_scheme_vtable = 0x47010;
+    constexpr int k_vt_schemes_get_scheme = 5, k_vt_schemes_get_ischeme = 8;
+    constexpr int k_vt_scheme_get_font = 3, k_vt_scheme_font_name = 4;
+    using GetSchemeFn = unsigned(__thiscall*)(void* schemes, const char* tag);
+    using GetISchemeFn = void*(__thiscall*)(void* schemes, unsigned scheme);
+    using SchemeFontFn = unsigned(__thiscall*)(void* scheme, const char* name, bool proportional);
+    using SchemeFontNameFn = const char*(__thiscall*)(void* scheme, const unsigned& font);
+
+    // vguimatsurface.dll "VGUI_Surface031" (CMatSystemSurface, vtable 0x100BEF2C).  0..4 are IAppSystem's; MSVC puts
+    // overloads last first, so DrawSetColor(int r, g, b, a) is 11 and DrawSetColor(Color) 10 (which calls 11), the same
+    // for DrawSetTextColor (19, and 18 calling it).
+    constexpr std::uintptr_t k_rva_surface_vtable = 0xBEF2C;
+    constexpr int k_vt_surface_set_color = 11; // (r, g, b, a): stored at +0x24, a times the alpha multiplier
+    constexpr int k_vt_surface_filled_rect = 12; // (x0, y0, x1, y1)
+    constexpr int k_vt_surface_text_font = 17; // (HFont): stored at +0x294
+    constexpr int k_vt_surface_text_color = 19; // (r, g, b, a)
+    constexpr int k_vt_surface_text_pos = 20; // (x, y): +0x2C, +0x30
+    constexpr int k_vt_surface_print_text = 22; // (const wchar_t*, length, FontDrawType_t 0: the font's own)
+    constexpr int k_vt_surface_texture_id = 25; // DrawGetTextureId(file): the id bound to it, or -1
+    constexpr int k_vt_surface_texture_file = 27; // DrawSetTextureFile(id, material, hardware_filter, force_reload)
+    constexpr int k_vt_surface_set_texture = 29; // DrawSetTexture(id): +0x2A0
+    constexpr int k_vt_surface_new_texture = 34; // CreateNewTextureID(procedural)
+    constexpr int k_vt_surface_screen_size = 35; // GetScreenSize(int& w, int& h)
+    constexpr int k_vt_surface_text_size = 72; // GetTextSize(HFont, const wchar_t*, int& w, int& h)
+    constexpr int k_vt_surface_play_sound = 75; // PlaySound(file under sound/): the engine's callback at +0x102D0
+    constexpr int k_vt_surface_textured_sub_rect = 98; // (x0, y0, x1, y1, s0, t0, s1, t1)
+    constexpr int k_vt_surface_textured_polygon = 99; // (n, Vertex_t*, clip)
+    struct SurfaceVertex // vgui::Vertex_t
+    {
+        float x, y, u, v;
+    };
+    using SurfaceColorFn = void(__thiscall*)(void* surface, int r, int g, int b, int a);
+    using SurfaceRectFn = void(__thiscall*)(void* surface, int x0, int y0, int x1, int y1);
+    using SurfaceFontFn = void(__thiscall*)(void* surface, unsigned font);
+    using SurfacePosFn = void(__thiscall*)(void* surface, int x, int y);
+    using SurfacePrintFn = void(__thiscall*)(void* surface, const wchar_t* text, int length, int draw_type);
+    using SurfaceTextureIdFn = int(__thiscall*)(void* surface, const char* file);
+    using SurfaceTextureFileFn = void(__thiscall*)(void* surface, int id, const char* file, int hardware_filter, bool force_reload);
+    using SurfaceSetTextureFn = void(__thiscall*)(void* surface, int id);
+    using SurfaceNewTextureFn = int(__thiscall*)(void* surface, bool procedural);
+    using SurfaceScreenSizeFn = void(__thiscall*)(void* surface, int& w, int& h);
+    using SurfaceTextSizeFn = void(__thiscall*)(void* surface, unsigned font, const wchar_t* text, int& w, int& h);
+    using SurfaceSoundFn = void(__thiscall*)(void* surface, const char* file);
+    using SurfaceSubRectFn = void(__thiscall*)(void* surface, int x0, int y0, int x1, int y1, float s0, float t0, float s1, float t1);
+    using SurfacePolygonFn = void(__thiscall*)(void* surface, int n, SurfaceVertex* vertices, bool clip);
 
     // ---- client.dll ----------------------------------------------------------------------------------------------------
 

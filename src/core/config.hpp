@@ -28,6 +28,7 @@ namespace core
         //   view_wheel: the wheel only; no item boxes (the game's own throwable / kit / pills boxes stay hidden too), and
         //               the number keys and the mouse wheel are the game's
         int inventory_view = 0;
+        bool wheel_sounds = true; // the game's menu tick as the wheel's pointer moves onto another segment
 
         // The most boxes a player can have; the HUD shows only those in use (and one free item box), so the weight
         // limit is what really limits.
@@ -50,6 +51,8 @@ namespace core
         // How this player's stamina shows (whether there is any is the host's inventory_mod.toml).
         bool stamina_bar = true; // a bar under the crosshair while it is not full
         bool stamina_vignette = true; // the screen's edges darken as it runs low (postfx)
+        bool stamina_cover_game_hud = true; // the vignette over the game's HUD too (false: under it, on the 3D picture)
+        bool stamina_cover_mod_hud = true; // ... and over the mod's boxes, wheel and window (only with the game's HUD)
         // inventory_mod.toml (the rules) was read: its limits win over the settings' (see rules_load)
         bool rules_file = false;
     };

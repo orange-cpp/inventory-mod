@@ -4,6 +4,8 @@
 
 #include "game/entities.hpp"
 
+#include <string>
+
 namespace game::detail
 {
 
@@ -13,6 +15,14 @@ namespace game::detail
     // GetPlayerUserId, the `script` command's handler, CommitSuicide, the rescue closets and GameFrame (through
     // lifecycle); FireEvent must be hooked already.
     void install_infection();
+
+    // VScript in the server's VM (at most 480 characters); false when the `script` command's handler was not found.
+    bool run_script(const std::string& code);
+    // A soundscript of the game's played on the player, for everyone near them to hear (VScript EmitSoundOn).
+    void emit_sound_on(void* player, const char* sound);
+    // What a gun picked up sounds like (scripts/game_sounds.txt: CHAN_WEAPON, ")items/itempickup.wav", volume 0.7):
+    // played by the unload key and by a pile of rounds taken, as by the game's own pick-ups.
+    constexpr char k_pickup_sound[] = "Player.PickupWeapon";
 
     void infect(void* player, const char* how);
     // A game event (from FireEvent): who is infected, cured, gone; all clear.

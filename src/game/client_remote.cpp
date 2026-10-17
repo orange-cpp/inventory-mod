@@ -29,13 +29,15 @@ namespace game::detail
     // is in a game), the HUD's requests go to the server as console commands, and the inventory shown is the one the
     // server sends back (send_state, in players.cpp).
     //
-    //   engine.dll VEngineClient013 slot 26 IsInGame() (signon state == 6), slot 107 ClientCmd_Unrestricted(text)
-    //       (Cbuf_AddText; a command the client does not know is forwarded to the server).
+    //   engine.dll VEngineClient013 slot 26 IsInGame() (0x1005F1A0: signon state == 6), slot 27 IsConnected()
+    //       (0x1005F1B0: signon state >= 2), slot 107 ClientCmd_Unrestricted(text) (Cbuf_AddText; a command the client
+    //       does not know is forwarded to the server).
     //   engine.dll 0x10052100 CBaseClientState::ProcessPrint(SVC_Print*), thiscall, ret 4: ConMsg("%s", msg + 0x54).
     //       The state line is taken out there, before it reaches the console.
 
     void* g_engine_client = nullptr;
     IsInGameFn g_is_in_game = nullptr;
+    IsInGameFn g_is_connected = nullptr;
     ClientCmdFn g_client_cmd = nullptr;
     core::Hook<ProcessPrintFn> g_process_print;
 
@@ -47,6 +49,17 @@ namespace game::detail
         bool in_game = false;
         mem::guarded([&] { in_game = g_is_in_game(g_engine_client); });
         return in_game;
+    }
+
+    bool knows_connection() { return g_engine_client != nullptr && g_is_connected != nullptr && g_client_cmd != nullptr; }
+
+    bool connected_to_server()
+    {
+        if (!knows_connection())
+            return false;
+        bool connected = false;
+        mem::guarded([&] { connected = g_is_connected(g_engine_client); });
+        return connected;
     }
 
     void send_to_server(const std::string& command)
@@ -238,6 +251,15 @@ namespace game::detail
                 g_client_cmd = reinterpret_cast<ClientCmdFn>(cmd);
                 if (g_process_print.create("ProcessPrint", reinterpret_cast<void*>(print), hk_process_print))
                     g_process_print.enable();
+
+                const std::uintptr_t connected = mem::vslot(g_engine_client, k_vt_is_connected);
+                if (connected != 0 &&
+                    mem::find_pattern(connected, 15, "E8 ?? ?? ?? ?? 33 C9 83 78 68 02 0F 9D C0 C3") == connected)
+                    g_is_connected = reinterpret_cast<IsInGameFn>(connected);
+                else
+                    INV_LOG("game: the engine's IsConnected (slot 27, %p) does not look as expected: the main menu's "
+                            "Options > Inventory Mod waits for the menu to be built again",
+                            reinterpret_cast<void*>(connected));
 
                 install_client_view(engine_create); // what the player sees (see "what the player sees")
             }

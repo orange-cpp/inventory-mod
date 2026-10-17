@@ -551,6 +551,36 @@ namespace icons
                 }
             g_icons.clear();
         }
+
+        // (under g_mutex) The icon's rectangle trimmed to its visible pixels: some icons sit in a corner of a much
+        // larger rectangle.  Sets the sheet; false when there is none.
+        bool trimmed_rect(const char* classname, Rect& r, const Sheet*& sheet_out)
+        {
+            const auto rect = g_rects.find(classname);
+            if (rect == g_rects.end())
+                return false;
+            const auto sheet = g_sheets.find(rect->second.sheet);
+            if (sheet == g_sheets.end() || sheet->second.image.width <= 0)
+                return false;
+            const Image& image = sheet->second.image;
+            r = rect->second;
+            int left = r.x + r.w, top = r.y + r.h, right = r.x - 1, bottom = r.y - 1;
+            for (int y = std::max(r.y, 0); y < std::min(r.y + r.h, image.height); ++y)
+                for (int x = std::max(r.x, 0); x < std::min(r.x + r.w, image.width); ++x)
+                    if ((image.bgra[static_cast<std::size_t>(y) * image.width + x] >> 24) > 24)
+                    {
+                        left = std::min(left, x);
+                        right = std::max(right, x);
+                        top = std::min(top, y);
+                        bottom = std::max(bottom, y);
+                    }
+            if (right >= left && bottom >= top)
+                r = Rect{r.sheet, left, top, right - left + 1, bottom - top + 1};
+            sheet_out = &sheet->second;
+            return true;
+        }
+
+        std::map<std::string, Sprite> g_sprites; // classname -> resolved sprite (an empty material: none)
     } // namespace
 
     void start()
@@ -607,23 +637,10 @@ namespace icons
             texture->UnlockRect(0);
             sheet.texture = texture;
         }
-        // trimmed to the visible pixels: some icons sit in a corner of a much larger rectangle
-        Rect r = rect->second;
-        {
-            const Image& image = sheet.image;
-            int left = r.x + r.w, top = r.y + r.h, right = r.x - 1, bottom = r.y - 1;
-            for (int y = std::max(r.y, 0); y < std::min(r.y + r.h, image.height); ++y)
-                for (int x = std::max(r.x, 0); x < std::min(r.x + r.w, image.width); ++x)
-                    if ((image.bgra[static_cast<std::size_t>(y) * image.width + x] >> 24) > 24)
-                    {
-                        left = std::min(left, x);
-                        right = std::max(right, x);
-                        top = std::min(top, y);
-                        bottom = std::max(bottom, y);
-                    }
-            if (right >= left && bottom >= top)
-                r = Rect{r.sheet, left, top, right - left + 1, bottom - top + 1};
-        }
+        Rect r;
+        const Sheet* trimmed_on = nullptr;
+        if (!trimmed_rect(classname, r, trimmed_on))
+            return nullptr;
         const float iw = static_cast<float>(sheet.image.width), ih = static_cast<float>(sheet.image.height);
         icon.texture = sheet.texture;
         icon.u0 = static_cast<float>(r.x) / iw;
@@ -632,6 +649,35 @@ namespace icons
         icon.v1 = static_cast<float>(r.y + r.h) / ih;
         icon.aspect = static_cast<float>(r.w) / static_cast<float>(r.h);
         return &icon;
+    }
+
+    bool find_sprite(const char* classname, Sprite& out)
+    {
+        if (!g_ready || classname == nullptr)
+            return false;
+        std::lock_guard lock(g_mutex);
+        auto known = g_sprites.find(classname);
+        if (known == g_sprites.end())
+        {
+            Sprite& sprite = g_sprites[classname]; // remembered, found or not
+            Rect r;
+            const Sheet* sheet = nullptr;
+            if (trimmed_rect(classname, r, sheet) && !sheet->failed && r.w > 0 && r.h > 0)
+            {
+                const float iw = static_cast<float>(sheet->image.width), ih = static_cast<float>(sheet->image.height);
+                sprite.material = r.sheet;
+                sprite.u0 = static_cast<float>(r.x) / iw;
+                sprite.v0 = static_cast<float>(r.y) / ih;
+                sprite.u1 = static_cast<float>(r.x + r.w) / iw;
+                sprite.v1 = static_cast<float>(r.y + r.h) / ih;
+                sprite.aspect = static_cast<float>(r.w) / static_cast<float>(r.h);
+            }
+            known = g_sprites.find(classname);
+        }
+        if (known->second.material.empty())
+            return false;
+        out = known->second;
+        return true;
     }
 
     void shutdown()

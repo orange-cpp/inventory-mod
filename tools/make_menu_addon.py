@@ -60,6 +60,8 @@ SETTINGS = [
      [("0", "Never"), ("0.1", "10%"), ("0.25", "25%"), ("0.5", "50%"), ("0.75", "75%"), ("1", "Always")]),
     ("stamina_bar", "Stamina: bar", "A thin bar under the crosshair while stamina is not full.", ON_OFF),
     ("stamina_vignette", "Stamina: vignette", "The screen's edges darken as stamina runs low.", ON_OFF),
+    ("stamina_cover_game_hud", "Stamina: over the game's HUD", "Off: the vignette stays under the game's HUD.", ON_OFF),
+    ("stamina_cover_mod_hud", "Stamina: over the mod's HUD", "Off: the mod's boxes and wheel stay clear.", ON_OFF),
     ("key_toggle", "Key: inventory window", "Opens and closes the mod's inventory window.", KEYS),
     ("key_prev", "Key: previous item", "Selects the previous box.", KEYS),
     ("key_next", "Key: next item", "Selects the next box.", KEYS),

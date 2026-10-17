@@ -10,6 +10,9 @@ namespace hud
     void init();
     // Every frame, between ImGui::NewFrame() and ImGui::Render().
     void draw();
+    // Every frame the game paints its panels (main thread, ui/vgui.cpp): what the HUD draws with the game's VGUI
+    // surface (the radial wheel).
+    void paint_vgui();
     // The inventory window or the radial wheel is open, so the overlay takes the mouse from the game.
     bool wants_input();
     // ... and the keyboard too (the window; the wheel leaves it to the game, so the player can keep walking).

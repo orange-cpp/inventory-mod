@@ -125,6 +125,7 @@ namespace game
                                 (core::config().inventory_view == core::view_wheel ||
                                  (core::config().show_hotbar && core::shows_slots())));
                 refresh_view();
+                reload_menus(); // once, at the main menu, after the menu's addon is mounted
                 for (;;)
                 {
                     Command command{};

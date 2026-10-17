@@ -144,7 +144,9 @@ add_library(inventory_mod SHARED
     src/ui/postfx.cpp
     src/ui/postfx.hpp
     src/ui/audio.cpp
-    src/ui/audio.hpp)
+    src/ui/audio.hpp
+    src/ui/vgui.cpp
+    src/ui/vgui.hpp)
 target_include_directories(inventory_mod PRIVATE src)
 target_link_libraries(inventory_mod PRIVATE inventory_core nc_ui minhook::minhook tomlplusplus::tomlplusplus windowscodecs ole32)
 inventory_options(inventory_mod)

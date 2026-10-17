@@ -42,6 +42,7 @@ Keys (rebind them in the window's Settings tab)
   I                 open / close the inventory window (Settings, Debug, drag and drop, right click menu)
   middle mouse      hold: the radial wheel. Point at something and let go to take it in hand,
                     right click drops it. You can keep walking while it is open.
+                    (Settings > Wheel sounds: the tick as you point at another item.)
   mouse wheel, [ ]  step through gun, melee, stored weapons, then the items
   3 .. 9, 0         take inventory box 1 .. 8 in hand
   ;                 store what is in your hands (items and weapons)
@@ -100,7 +101,8 @@ Stamina (when the host's inventory_mod.toml has [stamina])
   exhausted until it is back to about a third: you move slower, swing and shove slower, and your melee hits do less
   damage. The game's own shove tiredness is off meanwhile: stamina is the limit.
   A thin bar under the crosshair shows it while it is not full, and the screen's edges darken as it runs low. Turn
-  either off in the window's Settings tab ("Stamina").
+  either off in the window's Settings tab ("Stamina"); there you can also keep the darkened edges under the game's
+  HUD and the mod's boxes.
 
 Files the mod writes next to the DLL
   inventory_mod_settings.toml  your settings and keys (the Settings tab writes it)

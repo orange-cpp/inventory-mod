@@ -19,7 +19,7 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   rest is dropped in front of you as a pack of those rounds. Incendiary / explosive rounds come out as plain rounds (the
   laser sight stays). Not the pistols, the M60 or the chainsaw. A gun on the ground stays there, empty; a map's gun
   spawner gives up one gun, which lies there empty (the spawner goes when it had one left). A gun unloaded in your hands
-  stays empty until you reload or fire.
+  stays empty until you reload or fire. The rounds taken make the game's pick-up sound.
 - **Use**: puts the selected item in your hands, if the player's slot for it is free.
 - **Drop**: puts the selected item on the ground in front of you, like `ent_create` does.
 - **Auto-store**: pressing +use (E) on a supported item while your slot for it is full puts it into the inventory
@@ -123,7 +123,7 @@ The reserve rounds you carry weigh, by `[round_weight]` in the host's `inventory
 360 weigh 3.6; SMG 0.006; shotgun shell 0.04; sniper and hunting rifle 0.02; grenade 0.15; 0 makes a type weightless).
 The window's Items tab lists each type you carry with what it weighs, and drops it a magazine's worth at a time
 ("Drop 50") or all of it: the rounds land as an ammo pile that holds exactly those rounds, which anyone (not the bots)
-takes back with E, as many as fit; the rest stays in the pile; rounds dropped next to a pile of their type join it. Each
+takes back with E, as many as fit (with the game's pick-up sound); the rest stays in the pile; rounds dropped next to a pile of their type join it. Each
 round type is its own ammo pack (the textures in `assets/textures`) when the addon `inventory_mod_rounds.vpk` is in the
 `addons` folder next to the DLL: the mod mounts every `.vpk` there when it loads, so nothing is copied into the game
 (in `left4dead2/addons` it works too). Without it, and for M60 rounds and chainsaw fuel, the pile is the incendiary
@@ -158,7 +158,9 @@ stamina is the limit. `bots = true` gives the survivor bots stamina too.
 Each player chooses how it shows, in the Settings tab ("Stamina") or under `[stamina]` in `inventory_mod_settings.toml`:
 `bar` (a thin bar under the crosshair while it is not full; orange when low, red and pulsing when exhausted) and
 `vignette` (the screen's edges darken and lose their colour from half down; exhausted, they close in and pulse with
-each gasp). The Debug tab has a preview of both.
+each gasp), and, as for the infection, `cover_game_hud` and `cover_mod_hud` (whether the vignette also covers the game's
+HUD, and the mod's boxes, wheel and window: "Vignette covers the game's HUD" / "... the mod's HUD"). The Debug tab has
+a preview of both.
 
 ## Settings in the game's menu
 
@@ -177,7 +179,7 @@ Settings tab is back (it also rebinds a key to any key at all).
 | Key | Action |
 |---|---|
 | `I` | open / close the inventory window |
-| middle mouse (hold) | the radial wheel, as in No More Room in Hell: everything you carry around the middle of the screen (gun, melee, stored weapons, items, then your reserve rounds in their colours), each segment as large as its share of the weight, with the weight as a ring that turns from green to red as the load nears the limit. Point at one and let go (or left click) to take it in hand, right click drops it (rounds: a magazine's worth, or all of that type with the button held half a second), Escape closes. The view stops turning while it is open (and does not jump when it closes); the keyboard stays the game's, so you keep walking |
+| middle mouse (hold) | the radial wheel, as in No More Room in Hell: everything you carry around the middle of the screen (gun, melee, stored weapons, items, then your reserve rounds in their colours), each segment as large as its share of the weight, with the weight as a ring that turns from green to red as the load nears the limit. It is drawn by the game itself (its VGUI surface, in the HUD's own Trade Gothic / Stubble fonts and icons); it opens with a quick grow, the segment under the cursor slides out and lights up with the game's menu tick (`wheel_sounds`), and the pick follows the cursor at once. Point at one and let go (or left click) to take it in hand, right click drops it (rounds: a magazine's worth, or all of that type with the button held half a second), Escape closes. The view stops turning while it is open (and does not jump when it closes); the keyboard stays the game's, so you keep walking |
 | `1`..`5` | the game's own slots (beside the game's panel) |
 | `3`..`9`, `0` | beside the game's panel: take inventory box 1..8 in your hands (an item whose game slot is taken swaps with it; that one goes back into its own box). `1` / `2` stay the game's gun and melee keys |
 | `1`..`9`, `0` | with `replace_native=1`: select hotbar entry 1..10: first the game's two gun slots (primary, secondary; always shown, empty or not), then the inventory boxes. A throwable, kit, pills or carried item in your hands is shown in its own inventory box (green bar under it), so items never change boxes. Like the game's own panel, selecting any of them takes it in your hands; an inventory item whose game slot is occupied swaps with what is there (that one goes back into its own box) |
@@ -239,7 +241,8 @@ src/inv/       the model, no Windows or ImGui (tested on its own); rules.cpp rea
 src/core/      log, config, MinHook wrapper
 src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel, window), icons.cpp (the game's
                own weapon and item icons, read from its VTF sheets), postfx.cpp (the infection and stamina shaders),
-               audio.cpp (the infection's sound)
+               audio.cpp (the infection's sound), vgui.cpp (the game's VGUI surface and scheme fonts:
+               the wheel is drawn with them)
 src/game/      backend.hpp (the seam), game.cpp (the real backend: the request queue and init),
                one module per topic (entities, weapons, pickup, rounds, players, infection,
                stamina, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets

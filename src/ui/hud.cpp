@@ -6,6 +6,7 @@
 #include "ui/audio.hpp"
 #include "ui/icons.hpp"
 #include "ui/postfx.hpp"
+#include "ui/vgui.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -806,7 +807,12 @@ namespace hud
             if (cfg.stamina_vignette && (tired > 0.f || g_stamina_exhausted > 0.f))
             {
                 if (postfx::stamina_ready())
-                    postfx::set_stamina(tired, g_stamina_exhausted, breath);
+                {
+                    const postfx::Layer layer = !cfg.stamina_cover_game_hud ? postfx::Layer::UnderGameHud
+                                                : !cfg.stamina_cover_mod_hud ? postfx::Layer::UnderModHud
+                                                                             : postfx::Layer::OverAll;
+                    postfx::set_stamina(tired, g_stamina_exhausted, breath, layer);
+                }
                 else
                 {
                     ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -930,12 +936,19 @@ namespace hud
         // ---- the radial wheel (hold the middle mouse button) ---------------------------------------------------------
         //
         // Like No More Room in Hell's inventory wheel: everything the player carries around the middle of the screen,
-        // weapons first, then items, each in the place it first had (a swap does not move them); the segment the cursor points at (by its
-        // direction from the middle) is taken in hand when the button is let go or on a left click, dropped on a right
-        // click.  After them the reserve rounds, one segment per type in its colour: a right click drops a magazine's
-        // worth, the right button held half a second all of them (they cannot be taken in hand).  Each segment's share of the circle grows with what it weighs (a part
-        // of the circle is shared out evenly, so the light ones stay easy to point at).  The outer ring is the weight:
-        // what is carried (green when light, red at the limit), grey for what is left.
+        // weapons first, then items, each in the place it first had (a swap does not move them); the segment the cursor
+        // points at (by its direction from the middle) is taken in hand when the button is let go or on a left click,
+        // dropped on a right click.  After them the reserve rounds, one segment per type in its colour: a right click
+        // drops a magazine's worth, the right button held half a second all of them (they cannot be taken in hand).
+        // Each segment's share of the circle grows with what it weighs (a part of the circle is shared out evenly, so
+        // the light ones stay easy to point at).  The outer ring is the weight: what is carried (green when light, red
+        // at the limit), grey for what is left.
+        //
+        // It is drawn the way the game draws its HUD: with its VGUI surface, in its frame, in the client scheme's fonts
+        // (ui/vgui.cpp calls paint_vgui on the main thread).  When that is not there the overlay draws it with ImGui,
+        // the same shapes.  The pointed-at segment follows the cursor in the window procedure itself (wheel_mouse_moved,
+        // from the layout the last drawing left), not a frame later; the wheel opens with a quick grow, and the segment
+        // under the cursor slides out, lights up and ticks (the game's menu focus sound).
 
         struct WheelEntry
         {
@@ -1057,104 +1070,385 @@ namespace hud
             return spans;
         }
 
-        // A ring segment from angle a0 to a1 (radians, 0 = right, clockwise on screen), filled.
-        void ring_segment(ImDrawList* dl, ImVec2 c, float r0, float r1, float a0, float a1, ImU32 color)
+        // Where the last drawing put the segments, for the window procedure (under g_wheel_mutex): the pick follows
+        // the cursor as the messages come, and the release takes what is under the cursor then.
+        struct WheelLayout
         {
-            const int steps = std::max(2, static_cast<int>((a1 - a0) * 24.f));
+            bool valid = false;
+            float cx = 0.f, cy = 0.f;
+            float dead = 0.f; // within this distance of the middle nothing is pointed at (letting go there cancels)
+            std::vector<float> ends; // each segment's end (radians from the top, clockwise)
+            std::vector<WheelPick> picks;
+        };
+        WheelLayout g_wheel_layout;
+        int g_wheel_ticked = -1; // (main thread) the segment the last tick was for
+        std::atomic<int> g_cursor_x{-1}, g_cursor_y{-1}; // the last WM_MOUSEMOVE, client coordinates
+        std::atomic<ULONGLONG> g_wheel_opened{0};
+
+        int wheel_hover(const WheelLayout& layout, float x, float y)
+        {
+            constexpr float k_pi = 3.14159265f;
+            const float dx = x - layout.cx, dy = y - layout.cy;
+            if (!layout.valid || layout.ends.empty() || dx * dx + dy * dy <= layout.dead * layout.dead)
+                return -1;
+            float angle = std::atan2(dy, dx) + k_pi * 0.5f; // 0 at the top, growing clockwise
+            if (angle < 0.f)
+                angle += 2.f * k_pi;
+            for (std::size_t i = 0; i < layout.ends.size(); ++i)
+                if (angle < layout.ends[i])
+                    return static_cast<int>(i);
+            return static_cast<int>(layout.ends.size()) - 1;
+        }
+
+        // Main thread (the window procedure): the cursor moved while the wheel is open.
+        void wheel_mouse_moved(int x, int y)
+        {
+            int hover = -1;
+            {
+                std::lock_guard lock(g_wheel_mutex);
+                if (!g_wheel_layout.valid)
+                    return;
+                hover = wheel_hover(g_wheel_layout, static_cast<float>(x), static_cast<float>(y));
+                g_wheel_pick = hover >= 0 ? g_wheel_layout.picks[static_cast<std::size_t>(hover)] : WheelPick{};
+            }
+            if (hover != g_wheel_ticked)
+            {
+                g_wheel_ticked = hover;
+                if (hover >= 0 && core::config().wheel_sounds)
+                    ui::vgui::play_sound("ui/menu_focus.wav");
+            }
+        }
+
+        // What the wheel is drawn with: the game's VGUI surface, or ImGui's draw list over the frame.
+        enum class WheelFont
+        {
+            Title, // the name in the middle
+            Text, // its rounds or count, the weight
+            Ammo, // under each icon: the game's ammo counter's face
+            Hint // the buttons
+        };
+
+        class WheelPainter
+        {
+        public:
+            virtual ~WheelPainter() = default;
+            virtual void polygon(const ImVec2* points, int n, ImU32 colour) = 0; // convex, filled
+            virtual float line(WheelFont font) = 0;
+            virtual float width(WheelFont font, const std::string& text) = 0;
+            virtual void text(WheelFont font, float x, float y, ImU32 colour, const std::string& text) = 0; // top left
+            // The game's icon for `key`, fitted (aspect kept) and centred in the box; false when it has none.
+            virtual bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) = 0;
+        };
+
+        ImU32 faded(ImU32 colour, float alpha)
+        {
+            const float a = static_cast<float>(colour >> IM_COL32_A_SHIFT) * std::clamp(alpha, 0.f, 1.f);
+            return (colour & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a + 0.5f) << IM_COL32_A_SHIFT);
+        }
+
+        ImU32 mixed(ImU32 a, ImU32 b, float t)
+        {
+            const ImVec4 x = ImGui::ColorConvertU32ToFloat4(a), y = ImGui::ColorConvertU32ToFloat4(b);
+            return ImGui::ColorConvertFloat4ToU32(ImVec4(x.x + (y.x - x.x) * t, x.y + (y.y - x.y) * t, x.z + (y.z - x.z) * t,
+                                                         x.w + (y.w - x.w) * t));
+        }
+
+        // The box (x0, y0, x1, y1) narrowed to `aspect` (width / height), centred.
+        void fit(float aspect, float& x0, float& y0, float& x1, float& y1)
+        {
+            float w = x1 - x0, h = y1 - y0;
+            if (h <= 0.f || aspect <= 0.f)
+                return;
+            if (w / h > aspect)
+                w = h * aspect;
+            else
+                h = w / aspect;
+            const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+            x0 = cx - w * 0.5f;
+            x1 = cx + w * 0.5f;
+            y0 = cy - h * 0.5f;
+            y1 = cy + h * 0.5f;
+        }
+
+        class ImGuiWheelPainter final : public WheelPainter
+        {
+        public:
+            explicit ImGuiWheelPainter(float screen_h)
+                : dl_(ImGui::GetForegroundDrawList()), fonts_(nc::GetFonts()),
+                  // the toolkit's fonts are drawn for 12 px cells: the wheel's text grows with the screen
+                  size_(fonts_.Size * std::max(1.f, screen_h / 720.f))
+            {
+            }
+            void polygon(const ImVec2* points, int n, ImU32 colour) override
+            {
+                dl_->AddConvexPolyFilled(points, n, colour);
+            }
+            float line(WheelFont font) override
+            {
+                return size_of(font);
+            }
+            float width(WheelFont font, const std::string& text) override
+            {
+                return font_of(font)->CalcTextSizeA(size_of(font), FLT_MAX, 0.f, text.c_str()).x;
+            }
+            void text(WheelFont font, float x, float y, ImU32 colour, const std::string& text) override
+            {
+                x = std::floor(x);
+                y = std::floor(y);
+                dl_->AddText(font_of(font), size_of(font), ImVec2(x + 1.f, y + 1.f), faded(IM_COL32(0, 0, 0, 200), alpha_of(colour)),
+                             text.c_str());
+                dl_->AddText(font_of(font), size_of(font), ImVec2(x, y), colour, text.c_str());
+            }
+            bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) override
+            {
+                const icons::Icon* icon = icons::find(key.c_str());
+                if (icon == nullptr)
+                    return false;
+                fit(icon->aspect, x0, y0, x1, y1);
+                dl_->AddImage(reinterpret_cast<ImTextureID>(icon->texture), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(icon->u0, icon->v0),
+                              ImVec2(icon->u1, icon->v1), tint);
+                return true;
+            }
+
+        private:
+            static float alpha_of(ImU32 colour)
+            {
+                return static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f;
+            }
+            ImFont* font_of(WheelFont font) const
+            {
+                return font == WheelFont::Title ? fonts_.Header : fonts_.Normal;
+            }
+            float size_of(WheelFont font) const
+            {
+                switch (font)
+                {
+                case WheelFont::Title:
+                    return size_ * 1.3f;
+                case WheelFont::Hint:
+                    return size_ * 0.85f;
+                default:
+                    return size_;
+                }
+            }
+            ImDrawList* dl_;
+            const nc::Fonts& fonts_;
+            float size_;
+        };
+
+        class VguiWheelPainter final : public WheelPainter
+        {
+        public:
+            void polygon(const ImVec2* points, int n, ImU32 colour) override
+            {
+                ui::vgui::Vertex v[64];
+                n = std::min(n, 64);
+                for (int i = 0; i < n; ++i)
+                    v[i] = ui::vgui::Vertex{points[i].x, points[i].y};
+                ui::vgui::polygon(v, n, colour);
+            }
+            float line(WheelFont font) override
+            {
+                return static_cast<float>(ui::vgui::font_tall(font_of(font)));
+            }
+            float width(WheelFont font, const std::string& text) override
+            {
+                return static_cast<float>(ui::vgui::text_width(font_of(font), text));
+            }
+            void text(WheelFont font, float x, float y, ImU32 colour, const std::string& text) override
+            {
+                const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
+                // the ammo font adds its light (as the game's counter): a shadow would only grey the segment
+                if (font != WheelFont::Ammo)
+                    ui::vgui::text(font_of(font), ix + 1, iy + 1,
+                                   faded(IM_COL32(0, 0, 0, 220), static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f), text);
+                ui::vgui::text(font_of(font), ix, iy, colour, text);
+            }
+            bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) override
+            {
+                icons::Sprite sprite;
+                if (!icons::find_sprite(key.c_str(), sprite))
+                    return false;
+                fit(sprite.aspect, x0, y0, x1, y1);
+                ui::vgui::image(sprite.material, static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(x1),
+                                static_cast<int>(y1), sprite.u0, sprite.v0, sprite.u1, sprite.v1, tint);
+                return true;
+            }
+
+        private:
+            static ui::vgui::Font font_of(WheelFont font)
+            {
+                switch (font)
+                {
+                case WheelFont::Title:
+                    return ui::vgui::Font::Title;
+                case WheelFont::Ammo:
+                    return ui::vgui::Font::Ammo;
+                case WheelFont::Hint:
+                    return ui::vgui::Font::Hint;
+                default:
+                    return ui::vgui::Font::Text;
+                }
+            }
+        };
+
+        // A ring segment from angle a0 to a1 (radians, 0 = right, clockwise on screen), filled: a quad every few
+        // degrees (under a third of a pixel off the circle at the wheel's size).
+        void ring_segment(WheelPainter& p, ImVec2 c, float r0, float r1, float a0, float a1, ImU32 color)
+        {
+            if (a1 <= a0 || r1 <= r0 || (color >> IM_COL32_A_SHIFT) == 0)
+                return;
+            const int steps = std::max(2, static_cast<int>(std::ceil((a1 - a0) * 12.f)));
             for (int i = 0; i < steps; ++i)
             {
                 const float t0 = a0 + (a1 - a0) * static_cast<float>(i) / steps;
                 const float t1 = a0 + (a1 - a0) * static_cast<float>(i + 1) / steps;
-                dl->AddQuadFilled(ImVec2(c.x + std::cos(t0) * r0, c.y + std::sin(t0) * r0),
-                                  ImVec2(c.x + std::cos(t0) * r1, c.y + std::sin(t0) * r1),
-                                  ImVec2(c.x + std::cos(t1) * r1, c.y + std::sin(t1) * r1),
-                                  ImVec2(c.x + std::cos(t1) * r0, c.y + std::sin(t1) * r0), color);
+                const ImVec2 q[4] = {ImVec2(c.x + std::cos(t0) * r0, c.y + std::sin(t0) * r0),
+                                     ImVec2(c.x + std::cos(t0) * r1, c.y + std::sin(t0) * r1),
+                                     ImVec2(c.x + std::cos(t1) * r1, c.y + std::sin(t1) * r1),
+                                     ImVec2(c.x + std::cos(t1) * r0, c.y + std::sin(t1) * r0)};
+                p.polygon(q, 4, color);
             }
         }
 
-        void draw_wheel(const game::Session& session)
+        void disc(WheelPainter& p, ImVec2 c, float r, ImU32 color)
+        {
+            constexpr int k_points = 48;
+            ImVec2 points[k_points];
+            for (int i = 0; i < k_points; ++i)
+            {
+                const float a = 6.2831853f * static_cast<float>(i) / k_points;
+                points[i] = ImVec2(c.x + std::cos(a) * r, c.y + std::sin(a) * r);
+            }
+            p.polygon(points, k_points, color);
+        }
+
+        // What moves on the wheel, from frame to frame (whichever thread draws it: one at a time).
+        struct WheelMotion
+        {
+            ULONGLONG opened = 0; // the wheel these are for
+            ULONGLONG last = 0;
+            std::vector<float> lit; // each segment's hover, eased 0 .. 1
+            float pointer = 0.f; // the pointer's angle, eased
+            bool pointer_set = false;
+        };
+        WheelMotion g_wheel_motion;
+
+        void draw_wheel(const game::Session& session, WheelPainter& p, ImVec2 display)
         {
             constexpr float k_pi = 3.14159265f;
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
-            ImDrawList* dl = ImGui::GetForegroundDrawList();
-            const nc::Fonts& fonts = nc::GetFonts();
-            const ImVec2 c(display.x * 0.5f, display.y * 0.5f);
-            const float r_out = display.y * 0.27f, r_in = display.y * 0.10f;
             const ImU32 green = IM_COL32(142, 214, 57, 255);
-            // the toolkit's fonts are drawn for 12 px cells: the wheel's text grows with the screen
-            const float text_size = fonts.Size * std::max(1.f, display.y / 720.f);
-            const int line = static_cast<int>(text_size);
-            const auto text_at = [&](ImFont* font, float size, float x_centre, float y_top, ImU32 colour, const std::string& text) {
-                const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.f, text.c_str());
-                dl->AddText(font, size, ImVec2(std::floor(x_centre - extent.x * 0.5f) + 1.f, std::floor(y_top) + 1.f),
-                            IM_COL32(0, 0, 0, 200), text.c_str());
-                dl->AddText(font, size, ImVec2(std::floor(x_centre - extent.x * 0.5f), std::floor(y_top)), colour, text.c_str());
-            };
+            const ULONGLONG now = GetTickCount64();
+
+            // the motion: a quick grow and fade in when it opens, then each segment eases toward lit or not
+            WheelMotion& m = g_wheel_motion;
+            const ULONGLONG opened = g_wheel_opened.load();
+            if (m.opened != opened)
+                m = WheelMotion{opened, now};
+            const float dt = std::clamp(static_cast<float>(now - m.last) / 1000.f, 0.f, 0.1f);
+            m.last = now;
+            const float open_t = std::clamp(static_cast<float>(now - opened) / 140.f, 0.f, 1.f);
+            const float ease = 1.f - (1.f - open_t) * (1.f - open_t) * (1.f - open_t);
+            const float alpha = ease, grow = 0.86f + 0.14f * ease;
+
+            const ImVec2 c(display.x * 0.5f, display.y * 0.5f);
+            const float r_out = display.y * 0.27f * grow, r_in = display.y * 0.11f * grow;
+            const float unit = display.y / 1080.f; // a pixel at 1080 lines
 
             const std::vector<WheelEntry> entries = wheel_entries(session);
             const int n = static_cast<int>(entries.size());
-
-            // the segment the cursor points at: by direction, once it is off the middle
-            const ImVec2 mouse = ImGui::GetIO().MousePos;
-            const float dx = mouse.x - c.x, dy = mouse.y - c.y;
             const std::vector<float> spans = wheel_spans(entries);
             std::vector<float> starts(spans.size(), 0.f); // from the top, clockwise
             for (std::size_t i = 1; i < spans.size(); ++i)
                 starts[i] = starts[i - 1] + spans[i - 1];
+
+            // the layout for the window procedure, and what the cursor points at now
             int hover = -1;
-            if (n > 0 && dx * dx + dy * dy > (r_in * 0.4f) * (r_in * 0.4f))
             {
-                float angle = std::atan2(dy, dx) + k_pi * 0.5f; // 0 at the top, growing clockwise
-                if (angle < 0.f)
-                    angle += 2.f * k_pi;
-                hover = n - 1;
-                for (int i = 0; i < n; ++i)
-                    if (angle < starts[static_cast<std::size_t>(i)] + spans[static_cast<std::size_t>(i)])
-                    {
-                        hover = i;
-                        break;
-                    }
-            }
-            {
-                std::lock_guard lock(g_wheel_mutex);
-                if (hover < 0)
-                    g_wheel_pick = WheelPick{};
-                else
+                WheelLayout layout;
+                layout.valid = true;
+                layout.cx = c.x;
+                layout.cy = c.y;
+                layout.dead = display.y * 0.11f * 0.3f; // (the full size's: the same while it grows)
+                for (std::size_t i = 0; i < spans.size(); ++i)
                 {
-                    const WheelEntry& w = entries[static_cast<std::size_t>(hover)];
-                    g_wheel_pick = WheelPick{true, w.entry.native, w.entry.index, w.classname, w.ammo};
+                    layout.ends.push_back(starts[i] + spans[i]);
+                    const WheelEntry& w = entries[i];
+                    layout.picks.push_back(WheelPick{true, w.entry.native, w.entry.index, w.classname, w.ammo});
                 }
+                const int mx = g_cursor_x.load(), my = g_cursor_y.load();
+                if (mx >= 0)
+                    hover = wheel_hover(layout, static_cast<float>(mx), static_cast<float>(my));
+                std::lock_guard lock(g_wheel_mutex);
+                g_wheel_pick = hover >= 0 ? layout.picks[static_cast<std::size_t>(hover)] : WheelPick{};
+                g_wheel_layout = std::move(layout);
+            }
+
+            if (m.lit.size() != static_cast<std::size_t>(n))
+                m.lit.assign(static_cast<std::size_t>(n), 0.f);
+            const float follow = 1.f - std::exp(-dt * 22.f);
+            for (int i = 0; i < n; ++i)
+            {
+                float& lit = m.lit[static_cast<std::size_t>(i)];
+                lit += ((i == hover ? 1.f : 0.f) - lit) * follow;
+            }
+            if (hover >= 0)
+            {
+                const int mx = g_cursor_x.load(), my = g_cursor_y.load();
+                const float target = std::atan2(static_cast<float>(my) - c.y, static_cast<float>(mx) - c.x);
+                if (!m.pointer_set)
+                    m.pointer = target;
+                float delta = std::remainder(target - m.pointer, 2.f * k_pi); // the short way round
+                m.pointer += delta * (1.f - std::exp(-dt * 30.f));
+                m.pointer_set = true;
             }
 
             // the segments
-            dl->AddCircleFilled(c, r_out + display.y * 0.004f, IM_COL32(0, 0, 0, 90), 96);
+            disc(p, c, r_out + display.y * 0.004f, faded(IM_COL32(0, 0, 0, 90), alpha));
             const float gap = n > 1 ? 0.012f : 0.f;
             for (int i = 0; i < n; ++i)
             {
                 const WheelEntry& w = entries[static_cast<std::size_t>(i)];
+                const float lit = m.lit[static_cast<std::size_t>(i)];
                 const float span = spans[static_cast<std::size_t>(i)];
                 const float a0 = -k_pi * 0.5f + starts[static_cast<std::size_t>(i)] + gap, a1 = a0 + span - 2.f * gap;
-                ring_segment(dl, c, r_in, r_out, a0, a1, i == hover ? IM_COL32(142, 214, 57, 90) : IM_COL32(0, 0, 0, 150));
-                // the icon (or a melee weapon's kind) in the middle of the segment
-                const float mid = (a0 + a1) * 0.5f, rm = (r_in + r_out) * 0.5f;
-                const ImVec2 p(c.x + std::cos(mid) * rm, c.y + std::sin(mid) * rm);
-                const float chord = std::min((r_out - r_in) * 0.8f, 2.f * rm * std::sin(std::min(span, k_pi) * 0.5f) * 0.8f);
-                const float half_w = chord * 0.5f, half_h = std::min(chord, (r_out - r_in) * 0.5f) * 0.45f;
-                const ImU32 ink = w.active ? green : IM_COL32_WHITE;
+                const float mid = (a0 + a1) * 0.5f;
+                // the lit segment slides out from the middle and reaches further
+                const ImVec2 sc(c.x + std::cos(mid) * 14.f * unit * lit, c.y + std::sin(mid) * 14.f * unit * lit);
+                const float r1 = r_out + 10.f * unit * lit;
+                ring_segment(p, sc, r_in, r1, a0, a1, faded(mixed(IM_COL32(0, 0, 0, 150), IM_COL32(60, 92, 26, 200), lit), alpha));
+                ring_segment(p, sc, r1 - 4.f * unit, r1, a0, a1, faded(green, alpha * lit)); // its outer edge
+                if (w.active)
+                    ring_segment(p, sc, r_in, r_in + 4.f * unit, a0, a1, faded(green, alpha * 0.8f)); // in the hands
+                // the icon (or a melee weapon's kind) in the middle of the segment, a little larger when lit
+                const float rm = (r_in + r1) * 0.5f;
+                const ImVec2 at(sc.x + std::cos(mid) * rm, sc.y + std::sin(mid) * rm);
+                const float chord = std::min((r1 - r_in) * 0.8f, 2.f * rm * std::sin(std::min(span, k_pi) * 0.5f) * 0.8f);
+                const float zoom = 1.f + 0.15f * lit;
+                const float half_w = chord * 0.5f * zoom, half_h = std::min(chord, (r1 - r_in) * 0.5f) * 0.45f * zoom;
+                const ImU32 ink = faded(w.active ? green : mixed(IM_COL32(215, 215, 215, 255), IM_COL32_WHITE, lit), alpha);
                 if (!w.ammo.empty())
                 {
-                    // the rounds: a box in their colour (what a dropped pile of them is tinted)
-                    const float bw = std::min(half_w, half_h * 1.6f), bh = std::min(half_h, bw * 0.7f);
-                    const ImU32 fill = IM_COL32((w.color >> 16) & 255u, (w.color >> 8) & 255u, w.color & 255u, 230);
-                    dl->AddRectFilled(ImVec2(p.x - bw, p.y - bh), ImVec2(p.x + bw, p.y + bh), fill, 3.f);
-                    dl->AddRect(ImVec2(p.x - bw, p.y - bh), ImVec2(p.x + bw, p.y + bh), IM_COL32(0, 0, 0, 200), 3.f, 0, 2.f);
+                    // the rounds: a box in their colour (what a dropped pile of them is tinted), with a dark edge
+                    const float bw = std::min(half_w, half_h * 1.6f), bh = std::min(half_h, bw * 0.7f), e = 2.f * unit + 1.f;
+                    const ImVec2 edge[4] = {ImVec2(at.x - bw - e, at.y - bh - e), ImVec2(at.x + bw + e, at.y - bh - e),
+                                            ImVec2(at.x + bw + e, at.y + bh + e), ImVec2(at.x - bw - e, at.y + bh + e)};
+                    const ImVec2 box[4] = {ImVec2(at.x - bw, at.y - bh), ImVec2(at.x + bw, at.y - bh), ImVec2(at.x + bw, at.y + bh),
+                                           ImVec2(at.x - bw, at.y + bh)};
+                    p.polygon(edge, 4, faded(IM_COL32(0, 0, 0, 200), alpha));
+                    p.polygon(box, 4, faded(IM_COL32((w.color >> 16) & 255u, (w.color >> 8) & 255u, w.color & 255u, 230), alpha));
                 }
-                else if (!draw_icon(dl, static_cast<int>(p.x - half_w), static_cast<int>(p.y - half_h),
-                                               static_cast<int>(p.x + half_w), static_cast<int>(p.y + half_h),
-                                               w.icon.c_str(), ink))
-                    text_at(fonts.Header, text_size * 1.2f, p.x, p.y - line * 0.6f, ink, w.label);
+                else if (!p.icon(w.icon, at.x - half_w, at.y - half_h, at.x + half_w, at.y + half_h, ink))
+                {
+                    const float tw = p.width(WheelFont::Text, w.label);
+                    p.text(WheelFont::Text, at.x - tw * 0.5f, at.y - p.line(WheelFont::Text) * 0.5f, ink, w.label);
+                }
                 if (!w.detail.empty())
-                    text_at(fonts.Normal, text_size, p.x, p.y + half_h + 2.f, IM_COL32(230, 230, 230, 230), w.detail);
+                {
+                    const float tw = p.width(WheelFont::Ammo, w.detail);
+                    p.text(WheelFont::Ammo, at.x - tw * 0.5f, at.y + half_h + 2.f * unit,
+                           faded(mixed(IM_COL32(200, 200, 200, 220), IM_COL32(255, 255, 255, 255), lit), alpha), w.detail);
+                }
             }
 
             // the weight: a ring outside, what is carried (green .. red), grey for what is left
@@ -1162,21 +1456,30 @@ namespace hud
             const float weight = session.remote_weight >= 0.f ? session.remote_weight : session.inventory.weight();
             if (max_weight > 0.f)
             {
-                const float w0 = r_out + display.y * 0.008f, w1 = w0 + display.y * 0.012f;
+                const float w0 = r_out + display.y * 0.006f, w1 = w0 + display.y * 0.005f;
                 const float fraction = std::clamp(weight / max_weight, 0.f, 1.f);
-                ring_segment(dl, c, w0, w1, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi, IM_COL32(110, 110, 110, 170));
+                ring_segment(p, c, w0, w1, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi, faded(IM_COL32(110, 110, 110, 170), alpha));
                 // what is carried: green when light, yellow half way, red at the limit
-                const float t = std::clamp(fraction, 0.f, 1.f);
+                const float t = fraction;
                 const float r = t < 0.5f ? 70.f + (230.f - 70.f) * t / 0.5f : 230.f - 30.f * (t - 0.5f) / 0.5f;
                 const float gch = t < 0.5f ? 200.f + 10.f * t / 0.5f : 210.f - 170.f * (t - 0.5f) / 0.5f;
                 const float b = t < 0.5f ? 60.f - 20.f * t / 0.5f : 40.f - 5.f * (t - 0.5f) / 0.5f;
                 if (fraction > 0.f)
-                    ring_segment(dl, c, w0, w1, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi * fraction,
-                                 IM_COL32(static_cast<int>(r), static_cast<int>(gch), static_cast<int>(b), 230));
+                    ring_segment(p, c, w0, w1, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi * fraction,
+                                 faded(IM_COL32(static_cast<int>(r), static_cast<int>(gch), static_cast<int>(b), 230), alpha));
             }
 
-            // the middle: what is pointed at, and the weight
-            dl->AddCircleFilled(c, r_in * 0.95f, IM_COL32(0, 0, 0, 160), 64);
+            // the middle: what is pointed at, and the weight; a notch on its edge points where the cursor does
+            disc(p, c, r_in * 0.95f, faded(IM_COL32(0, 0, 0, 170), alpha));
+            if (hover >= 0 && m.pointer_set)
+            {
+                const float a = m.pointer, spread = 0.09f;
+                const ImVec2 tip(c.x + std::cos(a) * (r_in + 1.f * unit), c.y + std::sin(a) * (r_in + 1.f * unit));
+                const float rb = r_in * 0.95f - 9.f * unit;
+                const ImVec2 notch[3] = {ImVec2(c.x + std::cos(a - spread) * rb, c.y + std::sin(a - spread) * rb), tip,
+                                         ImVec2(c.x + std::cos(a + spread) * rb, c.y + std::sin(a + spread) * rb)};
+                p.polygon(notch, 3, faded(green, alpha));
+            }
             // a right button held on rounds: a ring fills, then all of them drop
             std::string drop_all;
             float held = 0.f;
@@ -1184,7 +1487,7 @@ namespace hud
                 std::lock_guard lock(g_wheel_mutex);
                 if (!g_rounds_hold.kind.empty())
                 {
-                    held = static_cast<float>(GetTickCount64() - g_rounds_hold.since) / static_cast<float>(k_rounds_hold_ms);
+                    held = static_cast<float>(now - g_rounds_hold.since) / static_cast<float>(k_rounds_hold_ms);
                     if (held >= 1.f)
                     {
                         drop_all = g_rounds_hold.kind;
@@ -1198,41 +1501,54 @@ namespace hud
                 game::backend().drop_ammo(drop_all, 0); // (only posts a request: fine with the session locked)
             }
             else if (held > 0.f)
-                ring_segment(dl, c, r_in * 0.95f, r_in, -k_pi * 0.5f, -k_pi * 0.5f + 2.f * k_pi * std::min(held, 1.f),
-                             IM_COL32(240, 90, 75, 230));
-            float y = c.y - line * 2.2f;
-            const auto centred = [&](ImFont* font, float size, const std::string& text, ImU32 colour) {
-                text_at(font, size, c.x, y, colour, text);
-                y += size + 4.f;
+                ring_segment(p, c, r_in * 0.95f - 5.f * unit, r_in * 0.95f, -k_pi * 0.5f,
+                             -k_pi * 0.5f + 2.f * k_pi * std::min(held, 1.f), IM_COL32(240, 90, 75, 230));
+
+            // the lines in the middle, centred as a block; a name too wide for the middle is set smaller
+            struct Line
+            {
+                WheelFont font;
+                std::string text;
+                ImU32 colour;
             };
+            std::vector<Line> lines;
             if (hover >= 0)
             {
                 const WheelEntry& w = entries[static_cast<std::size_t>(hover)];
-                centred(fonts.Header, text_size * 1.3f, w.label, IM_COL32_WHITE);
-                centred(fonts.Normal, text_size, w.detail, IM_COL32(205, 205, 205, 255));
+                lines.push_back({p.width(WheelFont::Title, w.label) > r_in * 1.8f ? WheelFont::Text : WheelFont::Title, w.label,
+                                 IM_COL32_WHITE});
+                if (!w.detail.empty())
+                    lines.push_back({WheelFont::Ammo, w.detail, IM_COL32(230, 230, 230, 255)});
             }
             else
-            {
-                centred(fonts.Header, text_size * 1.3f, n == 0 ? std::string("Nothing carried") : std::string("Inventory"),
-                        IM_COL32_WHITE);
-                y += text_size + 4.f;
-            }
+                lines.push_back({WheelFont::Title, n == 0 ? std::string("Nothing carried") : std::string("Inventory"), IM_COL32_WHITE});
             if (max_weight > 0.f)
             {
                 char text[32];
                 std::snprintf(text, sizeof(text), "%.1f / %.1f", weight, max_weight);
-                centred(fonts.Normal, text_size, text,
-                        weight >= max_weight - 1e-3f ? IM_COL32(240, 90, 75, 255) : IM_COL32(190, 190, 190, 255));
+                lines.push_back({WheelFont::Text, text,
+                                 weight >= max_weight - 1e-3f ? IM_COL32(240, 90, 75, 255) : IM_COL32(190, 190, 190, 255)});
             }
             if (hover >= 0 && !entries[static_cast<std::size_t>(hover)].ammo.empty())
             {
                 const std::string& kind = entries[static_cast<std::size_t>(hover)].ammo;
                 const int magazine = std::min(inv::ammo_magazine(kind), session.ammo_pool[inv::ammo_index(kind)]);
-                centred(fonts.Normal, text_size * 0.85f, "right click: drop " + std::to_string(magazine) + "   hold: all",
-                        IM_COL32(150, 150, 150, 255));
+                lines.push_back({WheelFont::Hint, "right click: drop " + std::to_string(magazine) + "   hold: all", IM_COL32(150, 150, 150, 255)});
             }
-            else
-                centred(fonts.Normal, text_size * 0.85f, "release: take   right click: drop", IM_COL32(150, 150, 150, 255));
+            else if (hover >= 0)
+                lines.push_back({WheelFont::Hint, "release: take   right click: drop", IM_COL32(150, 150, 150, 255)});
+            else if (n > 0)
+                lines.push_back({WheelFont::Hint, "point at an item", IM_COL32(150, 150, 150, 255)});
+            const float spacing = 3.f * unit;
+            float total = 0.f;
+            for (const Line& l : lines)
+                total += p.line(l.font) + spacing;
+            float y = c.y - (total - spacing) * 0.5f;
+            for (const Line& l : lines)
+            {
+                p.text(l.font, c.x - p.width(l.font, l.text) * 0.5f, y, faded(l.colour, alpha), l.text);
+                y += p.line(l.font) + spacing;
+            }
         }
 
         void slot_grid(inv::Inventory& inventory)
@@ -1459,6 +1775,7 @@ namespace hud
                 changed |= nc::Combo("Inventory view:", &cfg.inventory_view, k_views, 3);
                 nc::TextDisabled("Wheel: hold the middle mouse button. Wheel only: no item boxes at all (the wheel shows");
                 nc::TextDisabled("everything); the number keys and the mouse wheel are the game's again.");
+                changed |= nc::Checkbox("Wheel sounds (a tick on each item pointed at)", &cfg.wheel_sounds);
                 changed |= nc::Checkbox("Store items on use", &cfg.auto_store);
                 changed |= nc::Checkbox("Replace the game's weapon panel (1-0 keys, wheel); off: a grid under it, keys 3-0", &cfg.replace_native);
                 changed |= nc::SliderFloat("Scale:", &cfg.hud_scale, 0.5f, 3.f, "%.2f");
@@ -1491,6 +1808,17 @@ namespace hud
             {
                 changed |= nc::Checkbox("Bar under the crosshair", &cfg.stamina_bar);
                 changed |= nc::Checkbox("Vignette as it runs low", &cfg.stamina_vignette);
+                if (cfg.stamina_vignette)
+                {
+                    changed |= nc::Checkbox("Vignette covers the game's HUD", &cfg.stamina_cover_game_hud);
+                    nc::SetItemTooltip("Off: the vignette is on the game's picture only; the game's HUD (health, teammates,\n"
+                                       "crosshair) and the mod's boxes stay clear over it.");
+                    if (cfg.stamina_cover_game_hud)
+                    {
+                        changed |= nc::Checkbox("Vignette covers the mod's HUD", &cfg.stamina_cover_mod_hud);
+                        nc::SetItemTooltip("The mod's boxes, wheel and this window. Off: they stay clear over the vignette.");
+                    }
+                }
                 nc::TextDisabled("Whether there is stamina at all is [stamina] in the host's inventory_mod.toml.");
             }
             nc::EndGroupBox();
@@ -1613,8 +1941,11 @@ namespace hud
             draw_screamer(session);
             if (g.wheel && !session.playing)
                 g.wheel = false; // died, a menu opened ...
-            if (g.wheel)
-                draw_wheel(session);
+            if (g.wheel && !ui::vgui::painting()) // (the game paints it itself: paint_vgui)
+            {
+                ImGuiWheelPainter painter(ImGui::GetIO().DisplaySize.y);
+                draw_wheel(session, painter, ImGui::GetIO().DisplaySize);
+            }
             if (g.open)
                 inventory_window(session.inventory, session.ammo_pool);
             // a dedicated server keeps (and saves) a remote inventory; the local file is left alone meanwhile
@@ -1632,6 +1963,23 @@ namespace hud
         intents.swap(g.intents);
         for (const Intent& intent : intents)
             run(intent);
+    }
+
+    void paint_vgui()
+    {
+        if (!g.wheel)
+            return;
+        game::Session& session = game::local_session();
+        // (try: should the game ever paint from inside something of the mod's that holds the lock, a frame is skipped)
+        std::unique_lock lock(session.mutex, std::try_to_lock);
+        if (!lock.owns_lock() || !session.playing)
+            return;
+        int w = 0, h = 0;
+        ui::vgui::screen_size(w, h);
+        if (w <= 0 || h <= 0)
+            return;
+        VguiWheelPainter painter;
+        draw_wheel(session, painter, ImVec2(static_cast<float>(w), static_cast<float>(h)));
     }
 
     bool wants_input()
@@ -1691,6 +2039,8 @@ namespace hud
                 else if (key == "screamer_chance") cfg.screamer_chance = std::clamp(number, 0.f, 1.f);
                 else if (key == "stamina_bar") cfg.stamina_bar = on;
                 else if (key == "stamina_vignette") cfg.stamina_vignette = on;
+                else if (key == "stamina_cover_game_hud") cfg.stamina_cover_game_hud = on;
+                else if (key == "stamina_cover_mod_hud") cfg.stamina_cover_mod_hud = on;
                 else if (key == "key_toggle") cfg.key_toggle = std::atoi(value.c_str());
                 else if (key == "key_prev") cfg.key_prev = std::atoi(value.c_str());
                 else if (key == "key_next") cfg.key_next = std::atoi(value.c_str());
@@ -1745,17 +2095,22 @@ namespace hud
             {
                 std::lock_guard lock(g_wheel_mutex);
                 g_wheel_pick = WheelPick{};
+                g_wheel_layout = WheelLayout{}; // (the next drawing lays it out again)
             }
+            g_wheel_ticked = -1;
             if (HWND window = GetActiveWindow())
             {
                 RECT rc{};
                 if (GetClientRect(window, &rc))
                 {
                     POINT centre{(rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2};
+                    g_cursor_x = centre.x;
+                    g_cursor_y = centre.y;
                     ClientToScreen(window, &centre);
                     SetCursorPos(centre.x, centre.y);
                 }
             }
+            g_wheel_opened = GetTickCount64();
             g.wheel = true;
         }
 
@@ -1774,6 +2129,7 @@ namespace hud
             {
                 std::lock_guard lock(g_wheel_mutex);
                 g_rounds_hold = RoundsHold{};
+                g_wheel_layout.valid = false;
             }
             const WheelPick pick = take_wheel_pick();
             if (!take || !pick.valid || !pick.ammo.empty()) // (rounds are not taken in hand)
@@ -1827,10 +2183,20 @@ namespace hud
             open_wheel();
             return true;
         }
+        if (msg == WM_MOUSEMOVE)
+        {
+            const int x = static_cast<int>(static_cast<short>(LOWORD(lparam))), y = static_cast<int>(static_cast<short>(HIWORD(lparam)));
+            g_cursor_x = x;
+            g_cursor_y = y;
+            if (g.wheel)
+                wheel_mouse_moved(x, y); // (and on to ImGui: the cursor is drawn there)
+        }
         if (g.wheel)
         {
             if (msg == WM_MBUTTONUP || msg == WM_LBUTTONDOWN)
             {
+                // what is under the cursor now, even when no drawing has caught up with it yet
+                wheel_mouse_moved(static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam)));
                 close_wheel(true);
                 return true;
             }

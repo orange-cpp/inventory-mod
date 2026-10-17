@@ -92,6 +92,7 @@ namespace core
             const toml::node_view hud = root["hud"];
             c.show_hotbar = hud["show"].value_or(c.show_hotbar);
             c.replace_native = hud["replace_native_panel"].value_or(c.replace_native);
+            c.wheel_sounds = hud["wheel_sounds"].value_or(c.wheel_sounds);
             c.hud_scale = std::clamp(hud["scale"].value_or(static_cast<double>(c.hud_scale)), 0.5, 3.0);
             const std::string view = hud["view"].value_or(std::string(k_views[c.inventory_view]));
             for (int i = 0; i < 3; ++i)
@@ -114,6 +115,8 @@ namespace core
             const toml::node_view stamina = root["stamina"];
             c.stamina_bar = stamina["bar"].value_or(c.stamina_bar);
             c.stamina_vignette = stamina["vignette"].value_or(c.stamina_vignette);
+            c.stamina_cover_game_hud = stamina["cover_game_hud"].value_or(c.stamina_cover_game_hud);
+            c.stamina_cover_mod_hud = stamina["cover_mod_hud"].value_or(c.stamina_cover_mod_hud);
 
             const toml::node_view limits = root["limits"];
             c.slots = clamp_slots(limits["slots"].value_or(static_cast<std::int64_t>(c.slots)));
@@ -283,6 +286,8 @@ namespace core
         fprintf(f, "replace_native_panel = %s   # true: the mod's hotbar instead of the game's weapon panel\n",
                 c.replace_native ? "true" : "false");
         fprintf(f, "scale = %.2f                   # the hotbar's size\n", c.hud_scale);
+        fprintf(f, "wheel_sounds = %s           # a tick as the wheel's pointer moves onto another item\n",
+                c.wheel_sounds ? "true" : "false");
         fprintf(f, "\n[play]\n");
         fprintf(f, "auto_store = %s   # E on an item always stores it (otherwise only when its game slot is full)\n",
                 c.auto_store ? "true" : "false");
@@ -301,6 +306,10 @@ namespace core
         fprintf(f, "\n[stamina]   # how your stamina shows (the host's inventory_mod.toml turns it on)\n");
         fprintf(f, "bar = %s        # a bar under the crosshair while it is not full\n", c.stamina_bar ? "true" : "false");
         fprintf(f, "vignette = %s   # the screen's edges darken as it runs low\n", c.stamina_vignette ? "true" : "false");
+        fprintf(f, "cover_game_hud = %s   # the vignette over the game's HUD too (false: under it)\n",
+                c.stamina_cover_game_hud ? "true" : "false");
+        fprintf(f, "cover_mod_hud = %s    # and over the mod's boxes, wheel and window (only with cover_game_hud)\n",
+                c.stamina_cover_mod_hud ? "true" : "false");
         fprintf(f, "\n[limits]   # when you play alone or host and there is no inventory_mod.toml\n");
         fprintf(f, "slots = %d          # the most item boxes\n", g_own_slots);
         fprintf(f, "weapon_slots = %d    # the most weapon boxes\n", g_own_weapon_slots);

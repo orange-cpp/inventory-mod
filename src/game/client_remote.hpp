@@ -16,6 +16,10 @@ namespace game::detail
     void install_client_remote();
 
     bool in_remote_game();
+    // Connected to a server, or loading into one (false at the main menu, and when IsConnected was not found).
+    bool connected_to_server();
+    // Whether connected_to_server() can tell.
+    bool knows_connection();
     void send_to_server(const std::string& command);
     // The local inventory comes back when the player is no longer on someone else's server.
     void leave_remote();

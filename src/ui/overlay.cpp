@@ -9,6 +9,7 @@
 #include "ui/icons.hpp"
 #include "ui/hud.hpp"
 #include "ui/postfx.hpp"
+#include "ui/vgui.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -190,7 +191,8 @@ namespace ui::overlay
 
         // ---- the infection under the game's HUD ----------------------------------------------------------------------
         //
-        // With [infection] cover_game_hud = false (settings) the infection's effect goes on the game's 3D picture only:
+        // With [infection] cover_game_hud = false (settings) the infection's effect goes on the game's 3D picture only
+        // (and the same for the stamina's vignette with [stamina] cover_game_hud = false):
         // it runs from the game's own rendering, just before the game draws its HUD.  client.dll's CTerrorViewRender
         // (RTTI; vtable 0x105C1424) renders a view in slot 6 (0x101D6D80: "2D Client Rendering", Push2DView, then slot 37,
         // then "VGui_DrawHud" when the HUD is drawn); slot 37 is Render2DEffectsPreHUD(const CViewSetup&) (thiscall, ret
@@ -446,6 +448,8 @@ namespace ui::overlay
             {"screamer_chance", PageSetting::Float, {0.f, 0.1f, 0.25f, 0.5f, 0.75f, 1.f}},
             {"stamina_bar", PageSetting::Bool, {}},
             {"stamina_vignette", PageSetting::Bool, {}},
+            {"stamina_cover_game_hud", PageSetting::Bool, {}},
+            {"stamina_cover_mod_hud", PageSetting::Bool, {}},
             {"key_toggle", PageSetting::Int, {}},
             {"key_prev", PageSetting::Int, {}},
             {"key_next", PageSetting::Int, {}},
@@ -478,6 +482,8 @@ namespace ui::overlay
             else if (k == "screamer_chance") number = c.screamer_chance;
             else if (k == "stamina_bar") number = c.stamina_bar;
             else if (k == "stamina_vignette") number = c.stamina_vignette;
+            else if (k == "stamina_cover_game_hud") number = c.stamina_cover_game_hud;
+            else if (k == "stamina_cover_mod_hud") number = c.stamina_cover_mod_hud;
             else if (k == "key_toggle") number = static_cast<float>(c.key_toggle);
             else if (k == "key_prev") number = static_cast<float>(c.key_prev);
             else if (k == "key_next") number = static_cast<float>(c.key_next);
@@ -815,6 +821,7 @@ namespace ui::overlay
             postfx::init(device);
             install_pre_hud();
             install_menu_hooks();
+            ui::vgui::install(); // the wheel in the game's own frame and fonts (else ImGui draws it)
             audio::install();
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
@@ -991,6 +998,7 @@ namespace ui::overlay
     void uninstall()
     {
         uninstall_pre_hud(); // first: a pass queued already still finds the DLL (the waits below)
+        ui::vgui::uninstall();
         uninstall_menu_hooks();
         g_shutdown_requested = true;
         for (int i = 0; i < 40 && !g_shutdown_done.load(); ++i)

@@ -5,6 +5,7 @@
 #include "core/log.hpp"
 #include "game/addons.hpp"
 #include "game/backend.hpp"
+#include "game/infection.hpp"
 #include "game/weapons.hpp"
 #include "inv/rules.hpp"
 
@@ -332,6 +333,7 @@ namespace game::detail
             mem::guarded([&] { g.util_remove(pile); });
         else
             set_pile_contents(pile, kind, rounds - n, map);
+        emit_sound_on(player, k_pickup_sound); // as a gun picked up sounds
         INV_LOG("rounds: %s took %d of the %d %s in pile %p", bot ? "a bot" : "a survivor", n, rounds, kind.c_str(), pile);
         if (own)
             notify("Picked up " + std::to_string(n) + " " + title + (n < rounds ? " (the rest is too much)" : ""));

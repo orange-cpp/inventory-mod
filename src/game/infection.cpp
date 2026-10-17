@@ -97,6 +97,21 @@ namespace game::detail
         return mem::guarded([&] { g_script_command(command.get()); });
     }
 
+    // The player by their userid, as cough and go_insane do; an error goes to left4dead2/ems/inv_sound_error.txt.
+    void emit_sound_on(void* player, const char* sound)
+    {
+        const int user_id = player != nullptr ? user_id_of(player) : -1;
+        if (user_id < 0)
+            return;
+        char code[256];
+        std::snprintf(code, sizeof(code),
+                      "try{local p=GetPlayerFromUserID(%d);if(p){p.PrecacheScriptSound(\"%s\");EmitSoundOn(\"%s\",p);}}"
+                      "catch(e){StringToFile(\"inv_sound_error.txt\",\"\"+e)}",
+                      user_id, sound, sound);
+        if (!run_script(code))
+            INV_LOG("sound: %s could not be played on userid %d (the script failed)", sound, user_id);
+    }
+
     // The infection clock to the player: the host's own session, or a line their client DLL reads
     // ("@inf@ <ms left> <ms in all> <1: turned now>").
     void tell_infection(void* player, const Infection* infection, bool turned = false)

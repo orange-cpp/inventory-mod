@@ -323,10 +323,14 @@ over it; with the effect off it goes on ImGui's foreground draw list.
 The game's menus are `bin/GameUI.dll` (namespace `L4D360UI`, the Alien Swarm SDK's BaseModUI). The mod's addon
 `inventory_mod_menu.vpk` (`tools/make_menu_addon.py`) is mounted at the head of the VPK list (AddVPKFile with 0), so
 its files win over the game's; a layout file is read when its page is built, so the in-game menu shows it at once.
+The main menu is usually built before the mod is injected, so its Options flyout was the game's own (no "Inventory
+Mod") until the menu was built again after a game: the mod runs GameUI's `ui_reloadscheme` once, at the main menu (not
+connected), after the addon is mounted. Seen working in game 2026-10-17.
 
 | What | Where / how |
 |---|---|
 | the button | `resource/UI/L4D360UI/OptionsFlyout.res` (both menus' Options flyout) with `BtnInventoryMod` under `BtnCloud` (ypos 120, the background 145 tall), command `InventoryModSettings` |
+| the main menu built again | `ui_reloadscheme` ("Reloads the resource files for the active UI window"), registered at `0x1015A5D0`, its function `0x10016130` (the scheme reloaded, then `CBaseModPanel::GetSingleton()` `0x10009A90`, the active window `0x1000A460` and its layout read again). Sent with `ClientCmd_Unrestricted` (engine `VEngineClient013` slot 107) while slot 27 `IsConnected` (`0x1005F1B0`: `cmp [eax+68h], 2 / setge al`) is false |
 | the menus' commands | `MainMenu` (RTTI; vtable `0x1017AF1C`) and `InGameMainMenu` (`0x10178154`), slot 96 `OnCommand(const char*)` (`0x10068220`, `0x1005EE40`; they compare it with "Video", "Audio", "KeyboardMouse", "SteamController", "CloudSettings" ...). The mod's function in both slots takes `InventoryModSettings` |
 | opening a page | `CBaseModPanel::GetSingleton()` `0x10009A90` (`mov eax, [0x101FFB10]`), `OpenWindow(const WINDOW_TYPE&, caller, hideCaller, KeyValues*)` `0x1000AC00` (thiscall); "AudioVideo" is window type 3, "Controller" 5 (`0x1005F221`) |
 | the page | `AudioVideo` (the Xbox build's; vtable `0x1016908C`), its layout `resource/UI/L4D360UI/AudioVideo.res` replaced. Where it differs from its base `CL4DFrame` (`0x101636AC`): 28-30 class name, 32 destructor (kept); 88 `0x10025A00` kept (the base `0x1000F660`, then vgui slot 71 `SetPaintBackgroundEnabled(true)` `0x100CF120` (flag 8 at +0x60) and the frame's layout `0x1000F360`, as Video's `0x10074810` starts: without it the frame paints no dark band behind `ImgBackground`; seen when it was replaced by the base); 96 `OnCommand` `0x10025430` -> the mod's (else the base `0x100FB8B0`, vgui Frame's "Close" ...); 101 `0x10025220` (finds `SldBrightness` ... by name, only while not found: called again and again) -> the mod's: the base `0x100FC680`, then the values once after an opening; 121 `OnKeyCodePressed` `0x10025EE0` -> base `0x1000EB80`; 127 `0x100259E0` the title -> the mod's (`0x1000F8C0(title, 0, subtitle, 0, 0, 0, 0x7FFFFFFF)`, thiscall `ret 1Ch`); 238 `Activate` `0x10025CA0` -> the mod's: the base `0x100FA2E0`, then the values; 282 `0x10025850` (writes the video config) -> base `0x1000F580` |
@@ -336,8 +340,9 @@ its files win over the game's; a layout file is read when its page is built, so 
 
 ## The infection's effect under the HUD
 
-The infection's shader can go under the game's HUD (settings `[infection] cover_game_hud = false`): it then runs from
-the game's own rendering, just before the HUD is drawn, instead of at `Present` (see `overlay.cpp`).
+The infection's shader, and the stamina's vignette, can go under the game's HUD (settings `[infection]` /
+`[stamina]` `cover_game_hud = false`): it then runs from the game's own rendering, just before the HUD is drawn,
+instead of at `Present` (see `overlay.cpp`). Both in the same pass, the stamina's first.
 
 | What | Where / how |
 |---|---|
@@ -345,7 +350,7 @@ the game's own rendering, just before the HUD is drawn, instead of at `Present` 
 | the hook | slot 37 `Render2DEffectsPreHUD(const CViewSetup&)`, thiscall `ret 4`: `CViewRender`'s is `ret 4` (`0x101CA100`), `CCSViewRender`'s `0x1022ECD0` (`55 8B EC 5D E9`) jumps to `0x1022E5D0` (night vision). The mod writes its function into the slot (the vtable is read-only data: `VirtualProtect`) and puts it back when it unloads |
 | the render thread | `materialsystem.dll` "VMaterialSystem080" slot 96 `GetRenderContext` `0x1000D960` (`56 57 8B F9 B9`: the thread's context, a reference added; the client's own use: `0x1022E763`, then slot 2 `BeginRender`, slot 3 `EndRender`, slot 1 `Release`). The context's slot 142 `GetCallQueue`: `CMatQueuedRenderContext` (vtable `0x1009BF9C`) `0x10023CD0` `lea eax, [ecx+2A4h]` (its `CCallQueueExternal`, vtable `0x1009A9F8`, written at `0x10014336`), `CMatRenderContext` (`0x1009EB6C`) `0x10022990` `xor eax, eax`. The queue's slot 0 `QueueFunctorInternal(CFunctor*)` `0x10010600` (`55 8B EC 56 8B 75 08 8B 06 8B 10`: AddRef, into the context's `CCallQueue`, Release) |
 | a functor | `CMemberFunctor1<...>` vtable `0x1009C3B4`: 0 AddRef (`inc [ecx+0Ch]`), 1 Release, 2 the deleting destructor, 3 `operator()`. The mod's is a static object with that layout whose AddRef / Release do nothing |
-| the pass | on the render thread (or right away without queued rendering): the current render target 0 copied, the shader drawn over it (sRGB writes off, as at Present), the D3D state captured and put back with a state block of its own. It uses the infection the previous frame's HUD set (the HUD sets it at Present, after the game has drawn) |
+| the pass | on the render thread (or right away without queued rendering): the current render target 0 copied, the shader drawn over it (sRGB writes off, as at Present), the D3D state captured and put back with a state block of its own. It uses the infection and the stamina the previous frame's HUD set (the HUD sets it at Present, after the game has drawn) |
 
 ## Stamina
 
@@ -446,8 +451,54 @@ keyboard messages to the game (`hud::wants_keyboard()`), so the player keeps wal
 middle while captured, and its next read would otherwise be the whole way the pointer travelled, a flick of the view.
 The segment is picked by the cursor's
 direction from the middle. Its entries are the grid's wheel order; taking one sends the same requests as the grid
-(`select_weapon` / `use`, `drop_weapon` / `drop`), so it works on a dedicated server unchanged. The toolkit's fonts are
-for 12 px cells, so the wheel draws its text through `ImDrawList::AddText(font, size, ...)` scaled by height / 720.
+(`select_weapon` / `use`, `drop_weapon` / `drop`), so it works on a dedicated server unchanged.
+
+Since 2026-10-17 the wheel is drawn with the game's own VGUI surface, in the client scheme's fonts (see "The VGUI
+surface" below); ImGui draws the same shapes only when that is missing (a check failed, or nothing painted for 250 ms).
+The pick no longer waits for a drawing: every drawing leaves its layout (middle, dead zone, each segment's end angle and
+what it picks) under `g_wheel_mutex`, and the window procedure works out the segment from each `WM_MOUSEMOVE` (and from
+the release's own coordinates), so letting go takes what is under the cursor at that moment. A new segment under the
+cursor plays `ui/menu_focus.wav` through the surface's `PlaySound` (settings: `wheel_sounds`). The ImGui fallback's
+text is the toolkit's 12 px fonts scaled by height / 720.
+
+## The VGUI surface (client side)
+
+Found 2026-10-17 with `tools/re/pe_tools.py` (the DLLs carry no RTTI names for these classes); not yet seen in game.
+
+- **The objects.** Each `CreateInterface` registration is `push "<name>"; push <create fn>; mov ecx, <InterfaceReg>;
+  call`, and the create function is `mov eax, <global>; ret`. vgui2.dll: `VGUI_Panel009` (registered at `0x100425B0`)
+  -> `0x10054324`, a constant object whose vtable is `0x100480CC`; `VGUI_Scheme010` (`0x10042470`) -> `0x100587B0`,
+  built by `0x1000F080` (`mov [edi], 0x10046FCC`). vguimatsurface.dll: `VGUI_Surface031` (`0x100BCCF0`) ->
+  `0x10128560`, built by `0x10014490` (`mov [esi], 0x100BEF2C`). The mod checks each object's vtable against these.
+- **IPanel** (`VPanelWrapper`): 36 `GetName(VPANEL)` (`0x1001EAC0`: the VPanel's own slot 35, `+0x8C`), 41
+  `PaintTraverse(VPANEL, bool, bool)` (`0x1001EBE0`, `ret 0xC`: `Client(vpanel)` (slot 65, `+0x104`) then that client
+  panel's slot 3). Slot 0 is IBaseInterface's destructor, so these are one past the SDK's numbering. Hooked with
+  MinHook: the mod paints after the panel named `FocusOverlayPanel`. engine.dll's `CEngineVGui::Init` makes it at
+  `0x1021F9A5` (`new` 0x14C, its constructor `0x1021E710` with the static panel `[esi+0x78]` as parent), then
+  `SetZPos(150)` (`push 0x96`): the last of the game's own panels to paint each frame.
+- **ISchemeManager** (`CSchemeManager`, vtable `0x10046FCC`): 4 `GetDefaultScheme` (`mov eax, 1`), 5
+  `GetScheme(tag)` (`0x1000C520`: compares each scheme's name, its slot 12, with the tag), 8 `GetIScheme(handle)`
+  (`0x1000BD90`: bounds check, then the array). **IScheme** (`CScheme`, vtable `0x10047010`, stored by `0x1000E4E0`):
+  3 `GetFont(name, proportional)` (`0x1000C810`, `ret 8`), 4 `GetFontName(const HFont&)` (`0x1000C7B0`: "<Unknown
+  font>"). The wheel asks `ClientScheme` for `PlayerDisplayName` (14), `HudHintText` (12), `HudAmmoSmall` (12,
+  additive, the ammo counter's) and `MessageText` (10), proportional: the scheme gives "Stubble bold" or "Trade Gothic
+  Bold" (`resource/TGB.vfont`, a CustomFontFiles entry) by `$WIN32HIDEF`, scaled by height / 480 like the HUD's own.
+- **ISurface** (`CMatSystemSurface`, vtable `0x100BEF2C`): 0..4 are IAppSystem's (2 is QueryInterface: it compares
+  with "VGUI_Surface031"). Told apart by their argument sizes (`ret N`) and bodies, in the Alien Swarm SDK's order:
+  11 `DrawSetColor(r, g, b, a)` (`0x100081E0`: bytes at `+0x24..0x27`, alpha times `+0x10`; 10 is the `Color` one,
+  calling 11), 12 `DrawFilledRect` (`ret 0x10`; 14 DrawOutlinedRect calls it four times), 17 `DrawSetTextFont`
+  (`+0x294`), 19 `DrawSetTextColor(r, g, b, a)` (18 calls it), 20 `DrawSetTextPos` (`+0x2C`, `+0x30`), 22
+  `DrawPrintText(text, length, draw type)` (`ret 0xC`), 25 `DrawGetTextureId(file)` (the texture dictionary's slot 12,
+  -1 when none), 27 `DrawSetTextureFile(id, file, filter, reload)`, 29 `DrawSetTexture(id)` (`+0x2A0`), 31
+  `DrawTexturedRect`, 34 `CreateNewTextureID(procedural)` (the dictionary's slot 0), 35 `GetScreenSize(&w, &h)`,
+  63 `CreateFont` / 64 `SetFontGlyphSet` (`ret 0x24`) / 66 `GetFontTall` / 72 `GetTextSize(font, text, &w, &h)` (the
+  font manager's, `0x10015F20`), 75 `PlaySound(file)` (the engine's callback at `+0x102D0`), 87..89 the workspace /
+  window bounds and proportional base (`ret 0x10`, `0x10`, 8), 93 / 94 SurfaceGet/SetCursorPos, 95
+  `DrawTexturedLine`, 96 `DrawOutlinedCircle` (`ret 0x10`), 97 `DrawTexturedPolyLine`, 98 `DrawTexturedSubRect(x0, y0,
+  x1, y1, s0, t0, s1, t1)` (`ret 0x20`), 99 `DrawTexturedPolygon(n, Vertex_t*, clip)` (`ret 0xC`; `Vertex_t` is
+  `{x, y, u, v}` floats, clipped by `0x100024C0` against the current panel and drawn with the bound texture). The ring
+  segments are convex quads of `vgui/white`, the icons `DrawTexturedSubRect`s of the HUD's own sheets
+  (`vgui/hud/iconsheet*`, `vgui/hud/icon_<melee>`), tinted by the colour.
 
 ## What the player sees (client side)
 
@@ -562,6 +613,7 @@ the server and the client together at the first fire.
 | the client's prediction | the client predicts its own weapon: with only the server's hook it started the reload every frame (seen: the gun jittered, no animation). client.dll gets the same rule: `m_nButtons` is client `+0x13A4` (datamap entry `0x106C1664`: type 5, "m_nButtons"), `m_bInReload` `+0x9BD` (RecvProp at `0x10015BF4`). The client's `Reload()` is what its `ReloadOrSwitchWeapons` (`+0x400`, `0x100178B0`) calls: `+0x434`, slot 269 of the primary vtable (complete object locator offset 0; the RTTI tool also lists the secondary ones): `C_TerrorGun` `0x10609034`, `C_SniperRifle`, `C_Rifle_Desert` -> `0x1030C150` (`56 57 8B F1 E8`), `C_PumpShotgun` `0x105FF6FC`, `C_Shotgun_Chrome`, `C_AutoShotgun`, `C_Shotgun_SPAS` -> `0x102F1CF0` (`55 8B EC 51 56 57 8B F1 E8`). Slot 266 (`+0x428`, `0x10018160` / shotguns `0x102F2200`), which `ItemPostFrame` (`0x10017A40`) calls first when `UsesClipsForAmmo1` (`+0x514`), is `CheckReload`: it finishes a running reload (`FinishReload`, `+0x42C`). Hooked by mistake at first, it let the client start its own reload and finish it at the first fire: the client's magazine was full in that frame and it predicted a real shot while the server's was empty (seen: the client's fire body `0x1030C4C0` ran with `m_iClip1` 19; the server reloaded: a "ghost shot" with no bullet). The client marks its gun in the hands when the key is pressed (the pump, before the request goes out). Seen 2026-10-17: no jitter, fire and R reload with the animation, no ghost shot |
 | fire on an empty gun | the guns' frame update, the base `CBaseCombatWeapon::ItemPostFrame` (`0x1004D7C0`), sees `IN_ATTACK` with `m_iClip1 <= 0` (`0x1004D9F8`) and calls `HandleFireOnEmpty` (`+0x450`, `0x1004ABD0`): while `m_bFireOnEmpty` (datamap, boolean, `+0x144E`; client `+0x9BE`, its datamap entry at `0x106BCECC`) is false it dry-fires and sets it, then calls `ReloadOrSwitchWeapons` (`+0x434`, `0x1004D590`: `m_iClip1` 0 and both attack times passed -> `Reload` `+0x464`; seen: `Reload` called from server.dll+0x4D714). Both sides hook it (server `0x1004ABD0`, `56 8B F1 80 BE 4E 14 00 00 00`; client `0x100156D0`, `56 8B F1 80 BE BE 09 00 00 00`; `void __thiscall`) and set the flag first when the magazine is empty and the owner has rounds of its type, so fire on an unloaded gun reloads at once. (Two earlier tries did nothing: hooks on the fire body `0x103E9370` / client `0x1030C4C0` and on `CWeaponCSBase::ItemPostFrame` `0x102502A0` are not on the guns' path for this; client `C_WeaponCSBase::ItemPostFrame` is `0x10232300`) |
 | a map's spawner | `weapon_rifle_spawn` ...: an entity whose slot 106 is `CWeaponSpawn::Use` (`0x1029DCB0`), its gun by slot 240 and `0x1024EB70` (see "Map item spawners"), not the ammo pile (its own Use). One gun comes out: made with "origin" and "angles" (`m_angRotation` `+0x394`) before `DispatchSpawn`, its magazine cut by `[map_guns]`, known; the spawner's count (`+0x1444`) goes down by one, and at 1 (or with `spawners_once`) it is `UTIL_Remove`d and the gun lies where it stood; one that stays (endless, or more) gets the gun 24 units aside on the floor (`on_floor`). Then that gun is unloaded. Seen: a rifle spawner (count 10, spawners_once) gave 17 of 50 rounds, no crash |
+| the sound | the game's own pick-up sound on the player, for everyone near to hear: the soundscript `Player.PickupWeapon` (`scripts/game_sounds.txt`: `CHAN_WEAPON`, `SNDLVL_NORM`, volume 0.7, `)items/itempickup.wav`) through VScript `EmitSoundOn` (`emit_sound_on`, the `script` command's handler as the infection's coughs use it). A pile of rounds taken (`take_pile`) plays it too. Seen working in game 2026-10-17 (local game): heard on unload and on an ammo pack taken |
 | which guns | `inv::unloadable`: a gun with an ammo kind but the M60 (its reserve's most is 0) and the chainsaw. The gun's `m_iPrimaryAmmoType` (`+0x140C`) must be that kind's index |
 
 The game's default `config.cfg` binds U to `messagemode2` (team chat); while the player is a living survivor the mod's

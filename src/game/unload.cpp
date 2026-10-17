@@ -5,6 +5,7 @@
 #include "core/hook.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "game/infection.hpp"
 #include "game/map_guns.hpp"
 #include "game/pickup.hpp"
 #include "game/rounds.hpp"
@@ -345,6 +346,7 @@ namespace game::detail
                 "ground",
                 def->classname, gun, on_ground ? "on the ground" : "in the hands", clip, special, upgrades,
                 split.to_reserve, pool.read ? pool.count[type] : -1, split.to_ground);
+        emit_sound_on(player, k_pickup_sound); // the rounds taken, as a pick-up sounds
         if (split.to_ground > 0)
             do_drop_ammo(kind, split.to_ground);
         std::string text = "Unloaded " + std::to_string(clip) + " " + title;
