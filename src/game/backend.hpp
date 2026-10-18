@@ -58,6 +58,11 @@ namespace game
         // Stamina ([stamina] in the rules): 0 .. 1, -1 when there is none; exhausted: it ran out and is not back yet.
         float stamina = -1.f;
         bool stamina_exhausted = false;
+        // Server side, main thread only: the player's reserve (m_iAmmo, by the game's index) when the chapter ended,
+        // waiting for the next chapter: the game brings back only the reserve of the guns in the hands, and a stored
+        // gun's reserve is the player's (see "a chapter transition" in game/lifecycle.cpp).
+        bool transition_pending = false;
+        int transition_reserve[32] = {};
     };
     // The active session: the local player's, or (while the game code serves another player: a dedicated server, or
     // a guest on this listen server) theirs.  The game code uses this one.

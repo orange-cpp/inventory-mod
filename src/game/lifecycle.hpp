@@ -13,5 +13,7 @@ namespace game::detail
     // GameFrame at `at` (ServerGameDLL005 slot 4, checked by the caller).
     void install_game_frame(std::uintptr_t at);
     bool game_frame_installed();
+    // The game's restore of a survivor after a chapter transition: the reserve of their stored guns comes back too.
+    void install_transition_restore();
 
 } // namespace game::detail

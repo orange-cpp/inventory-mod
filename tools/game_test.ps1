@@ -11,7 +11,7 @@
 #   Stop-Game
 #
 # A dedicated server (srcds.exe) with the mod, and the game connected to it:
-#   Start-Server         # srcds.exe -console -game left4dead2 -port 27015 -insecure +map c1m1_hotel
+#   Start-Server         # srcds.exe -console -game left4dead2 -port 27020 -insecure +map c1m1_hotel
 #   Inject-Server        # copies the DLL (and the settings) to out\Server and loads it into that srcds.exe
 #   Start-Game -Connect  # the game, connecting to it (then Inject-Mod)
 #   Server-Log / Unload-Server / Reload-Server / Stop-Server
@@ -31,7 +31,7 @@ public class GameWin {
 $script:Root = Split-Path -Parent $PSScriptRoot
 $script:L4D = "C:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2"
 $script:L4DS = "C:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2 Dedicated Server"
-if (-not (Test-Path variable:script:ServerPort)) { $script:ServerPort = 27015 }
+if (-not (Test-Path variable:script:ServerPort)) { $script:ServerPort = 27020 }
 if (-not (Test-Path variable:script:ServerPid)) { $script:ServerPid = 0 }
 
 function Game-Window { (Get-Process left4dead2 -ErrorAction Stop).MainWindowHandle }
@@ -134,7 +134,9 @@ function Server-Address {
 
 # +sv_lan 1: a LAN server does not ask Steam to validate each player's ticket.  Without it the server drops the
 # player a few seconds after they join ("STEAMAUTH: Client ... received failure code 1", "No Steam logon").
-function Start-Server([string]$Map = "c1m1_hotel", [int]$Port = 27015, [int]$WaitSeconds = 45) {
+# Port 27020: the game itself keeps 27015 open, and a server started next to it on 27015 moved to 27016, where the game
+# never got an answer.
+function Start-Server([string]$Map = "c1m1_hotel", [int]$Port = 27020, [int]$WaitSeconds = 45) {
     $script:ServerPort = $Port
     $p = Start-Process -FilePath "$script:L4DS\srcds.exe" -WorkingDirectory $script:L4DS -PassThru `
         -ArgumentList "-console", "-game", "left4dead2", "-port", "$Port", "-insecure", "+sv_lan", "1", "+map", $Map

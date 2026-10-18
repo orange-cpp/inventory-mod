@@ -80,8 +80,8 @@ Rounds
   and a weapon spot of the map gives one weapon, then it is gone.
 
 Chapters, deaths, new campaigns
-  The inventory comes with you to the next chapter. A lost round or a restarted chapter gives back what you had when
-  the chapter began. A new campaign starts with it empty. When you die, everything in it falls where you died (your
+  The inventory comes with you to the next chapter, with the reserve rounds of the guns in it. A lost round or a
+  restarted chapter gives back what you had when the chapter began. A new campaign starts with it empty. When you die, everything in it falls where you died (your
   rounds as ammo packs), and the others can pick it up.
 
 The infection (when the host's inventory_mod.toml has [infection])

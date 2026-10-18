@@ -321,6 +321,7 @@ namespace game
             install_infection();
             install_stamina();
             install_client_commands();
+            install_transition_restore(); // a chapter transition keeps the reserve of the stored guns (see lifecycle)
         }
         if (!g_dedicated)
             install_client_remote(); // a game client: playing on someone else's server through the inv_* commands

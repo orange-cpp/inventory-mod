@@ -196,6 +196,11 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_args_argv = 0x408; // CCommand: argc at +0, argv[] at +0x408
     constexpr std::uintptr_t k_rva_script_command = 0x21CB90; // the `script` command's handler (cdecl, const CCommand&)
     constexpr std::uintptr_t k_rva_rescue_set_survivor = 0x2CEAF0; // CSurvivorRescue::SetSurvivor(CTerrorPlayer*)
+    // CTransitioningPlayer::Restore(CTerrorPlayer*) (0x102B8B60, thiscall, ret 4, nothing returned): a survivor's saved
+    // state (the KeyValues at +0 of `this`) back onto their new player entity in the next chapter: health, position,
+    // each "weapon" subkey ("currentMagazine" onto m_iClip1, "extraAmmo" with SetAmmoCount for that gun's type).
+    // Called by the takeover of a survivor bot ("[TAKEOVER]: Restoring %s(%d) after transition.", 0x102BA070).
+    constexpr std::uintptr_t k_rva_transition_restore = 0x2B8B60;
     constexpr std::uintptr_t k_rva_server_engine = 0x7F7698; // server.dll's own IVEngineServer pointer
     constexpr std::uintptr_t k_rva_change_accessor_call = 0xED4B0; // what calls the engine's slot 97 (SetShovePenalty's way)
     // CGlobalVars (gpGlobals: PlayerInfoManager002 slot 1 GetGlobalVars)
@@ -205,6 +210,7 @@ namespace game::sdk
     using ClientCommandFn = void(__cdecl*)(void* player, const void* args);
     using ScriptCommandFn = void(__cdecl*)(const void* command);
     using SetRescueSurvivorFn = void(__fastcall*)(void* rescue, void* edx, void* survivor);
+    using TransitionRestoreFn = void(__fastcall*)(void* transitioning, void* edx, void* player);
     using GameFrameFn = void(__fastcall*)(void* self, void* edx, bool simulating); // ServerGameDLL005 slot 4
 
     // ---- engine.dll: the server side ---------------------------------------------------------------------------------

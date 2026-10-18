@@ -41,9 +41,24 @@ namespace game::detail
     // "maps/%s_commentary.txt", with "" for null).  The inventories: the host's (the local one) and every one the
     // server keeps; a player's file not loaded yet that was last written before the new game is not read
     // (g_new_game, see server_player).
+    //
+    // A chapter transition and the reserve.  A stored gun keeps only its magazine: its reserve is the player's
+    // m_iAmmo of its type, shared with the guns in the hands (see "rounds").  At a transition the game saves each
+    // survivor (CTerrorPlayer 0x102B7E20, "Saving %s for transition": the KeyValues of 0x102B6C40, one "weapon"
+    // subkey per carried weapon with "currentMagazine" and "extraAmmo", the reserve of that gun's type), and in the
+    // next chapter puts it back onto their new player entity (CTransitioningPlayer::Restore, 0x102B8B60, from the
+    // takeover of the survivor bot that stood in for them: "currentMagazine" onto m_iClip1, "extraAmmo" with
+    // SetAmmoCount).  So only the types of the guns in the hands come back; the reserve of every gun in a box was
+    // 0 in the next chapter (seen on the dedicated server 2026-10-18: a stored hunting rifle's rounds gone from
+    // c2m1 to c2m2).  Now the event map_transition copies every survivor's m_iAmmo into their session
+    // (transition_reserve), and the hook on the restore writes it back for the types no carried gun uses (the carried
+    // ones are the game's: they may have been fired between the event and the game's save), up to the type's most.
+    // On a dedicated server the players leave and come back during the change: their session (by SteamID) waits for
+    // them.  A new game (round_start without the transition) drops what waits.
 
     core::Hook<FireEventFn> g_fire_event;
     core::Hook<GameFrameFn> g_game_frame;
+    core::Hook<TransitionRestoreFn> g_transition_restore;
 
     struct Death
     {
@@ -75,6 +90,17 @@ namespace game::detail
             f(sp->session);
     }
 
+    // The inventory of a player of this game: the host's (the local one), or a served player's when their game runs
+    // the mod; nullptr for a bot or a player without the mod.  Main thread.
+    Session* session_of_player(void* player)
+    {
+        if (player != nullptr && player == host_player())
+            return &local_session();
+        if (ServerPlayer* sp = server_player(player); sp != nullptr && sp->has_mod)
+            return &sp->session;
+        return nullptr;
+    }
+
     void on_round_start()
     {
         g_deaths.clear();
@@ -92,6 +118,8 @@ namespace game::detail
             }
             else if (!next_chapter)
                 s.inventory.clear();
+            if (!next_chapter)
+                s.transition_pending = false; // (a reserve waiting for a next chapter that is not this round)
             g_chapter_start[&s] = s.inventory.to_text();
             ++sessions;
         });
@@ -102,6 +130,30 @@ namespace game::detail
                 next_chapter ? "kept" : again ? "back as the chapter began" : "emptied");
         g_transition = false;
         g_round_map = map;
+    }
+
+    // The event map_transition: the chapter ends.  Every survivor's reserve goes with their inventory to the next
+    // chapter (restore_transition_reserve), since the game's own save keeps only the reserve of the guns in the hands.
+    void on_map_transition()
+    {
+        g_transition = true;
+        int saved = 0;
+        for (int index = 1; index <= 64; ++index)
+        {
+            void* player = entity_at_index(index);
+            char name[16];
+            if (player == nullptr || !classname_of(player, name, sizeof(name)) || std::strcmp(name, "player") != 0 ||
+                team_of(player) != 2)
+                continue;
+            Session* s = session_of_player(player);
+            const AmmoPool pool = read_pool(player);
+            if (s == nullptr || !pool.read)
+                continue;
+            std::memcpy(s->transition_reserve, pool.count, sizeof(s->transition_reserve));
+            s->transition_pending = true;
+            ++saved;
+        }
+        INV_LOG("chapter transition: the reserve of %d survivors with an inventory waits for the next chapter", saved);
     }
 
     // The event player_death: a survivor's inventory falls where they died, a moment later (drop_dead_inventories).
@@ -212,7 +264,7 @@ namespace game::detail
         if (std::strcmp(name, "round_start") == 0)
             on_round_start();
         else if (std::strcmp(name, "map_transition") == 0)
-            g_transition = true;
+            on_map_transition();
         else if (std::strcmp(name, "player_death") == 0)
             on_death(int_fn(event, "userid", 0));
         infection_on_event(name, event, int_fn);
@@ -298,15 +350,56 @@ namespace game::detail
                 team_of(player) != 2 || !alive(player))
                 continue;
             know_held_guns(player);
-            Session* s = nullptr;
-            if (player == host)
-                s = &local_session();
-            else if (ServerPlayer* sp = server_player(player); sp != nullptr && sp->has_mod)
-                s = &sp->session;
+            Session* s = session_of_player(player);
             const int user_id = s != nullptr ? user_id_of(player) : -1;
             if (user_id > 0)
                 cap_reserve(player, user_id, *s, player == host);
         }
+    }
+
+    // After the game restored a transitioned survivor onto their new player entity (see "a chapter transition"): the
+    // game gave back the reserve of the guns in their hands; every other type gets what the player had when the
+    // chapter ended, for the guns in their boxes, up to the type's most.
+    void restore_transition_reserve(void* player)
+    {
+        Session* s = session_of_player(player);
+        if (s == nullptr || !s->transition_pending)
+            return;
+        s->transition_pending = false;
+        AmmoPool pool = read_pool(player);
+        if (!pool.read)
+            return;
+        std::string back;
+        for (const char* kind : inv::ammo_kinds())
+        {
+            const int type = inv::ammo_index(kind);
+            if (type < 0 || type >= 32 || carries_ammo_type(player, type))
+                continue;
+            int rounds = s->transition_reserve[type];
+            if (const int max = inv::ammo_max(kind); max >= 0)
+                rounds = std::min(rounds, max);
+            if (rounds <= pool.count[type])
+                continue;
+            pool.count[type] = rounds;
+            back += (back.empty() ? "" : ", ") + std::to_string(rounds) + ' ' + kind;
+        }
+        if (back.empty())
+        {
+            INV_LOG("chapter transition: userid %d restored, no stored gun's reserve to give back", user_id_of(player));
+            return;
+        }
+        write_pool(player, pool);
+        state_changed(player);
+        g_reserves.erase(user_id_of(player)); // (cap_reserve: a first look at this reserve, not a rise)
+        INV_LOG("chapter transition: userid %d restored, the reserve of the stored guns back: %s", user_id_of(player),
+                back.c_str());
+    }
+
+    void __fastcall hk_transition_restore(void* transitioning, void* edx, void* player)
+    {
+        g_transition_restore.original()(transitioning, edx, player);
+        if (player != nullptr)
+            mem::guarded([&] { restore_transition_reserve(player); });
     }
 
     void __fastcall hk_game_frame(void* self, void* edx, bool simulating)
@@ -350,6 +443,20 @@ namespace game::detail
     bool game_frame_installed()
     {
         return g_game_frame.installed();
+    }
+
+    void install_transition_restore()
+    {
+        // CTransitioningPlayer::Restore (see "a chapter transition"): push ebp; mov ebp, esp; sub esp, 0x60; push ebx;
+        // mov ebx, [ebp+8]; mov eax, [ebx+0x28] (the player's edict); push esi; mov esi, ecx
+        const std::uintptr_t at = g.server.base + k_rva_transition_restore;
+        if (mem::find_pattern(at, 16, "55 8B EC 83 EC 60 53 8B 5D 08 8B 43 28 56 8B F1") == at &&
+            g_transition_restore.create("TransitionRestore", reinterpret_cast<void*>(at), hk_transition_restore))
+            g_transition_restore.enable();
+        else
+            INV_LOG("game: CTransitioningPlayer::Restore (%p) does not look as expected: the reserve of the stored guns "
+                    "is lost at a chapter transition",
+                    reinterpret_cast<void*>(at));
     }
 
 } // namespace game::detail

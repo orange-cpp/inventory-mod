@@ -27,7 +27,8 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   every such +use stores the item, even when you could carry it.
 - Stacks, a slot count and an optional weight limit. The contents are saved in `inventory_mod.inventory` (a
   dedicated server keeps one file per player, `inventory_<name>.inventory`).
-- **The game's rules for what you carry**: the inventory goes on to the next chapter with you; a lost round or a
+- **The game's rules for what you carry**: the inventory goes on to the next chapter with you, and so does the
+  reserve of the guns in it (the game itself carries over only the reserve of the guns in your hands); a lost round or a
   restarted chapter gives back what it held when the chapter began, as the game does with your weapons; a new campaign
   (another map without a saferoom transition) starts with it empty. A survivor who dies drops it: the items fall where
   they died and each round type lies there as an ammo pile, so the others can take them.
