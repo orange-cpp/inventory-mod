@@ -49,7 +49,6 @@ namespace ui::vgui
         SurfaceColorFn g_text_color = nullptr;
         SurfacePosFn g_text_pos = nullptr;
         SurfacePrintFn g_print_text = nullptr;
-        SurfaceTextureIdFn g_texture_id = nullptr;
         SurfaceTextureFileFn g_texture_file = nullptr;
         SurfaceSetTextureFn g_set_texture = nullptr;
         SurfaceNewTextureFn g_new_texture = nullptr;
@@ -95,16 +94,23 @@ namespace ui::vgui
         }
 
         // The scheme's fonts: looked up again when the screen's size changed (a resolution change remakes the
-        // proportional ones), and while one is still missing (the client's scheme is loaded with client.dll).
+        // proportional ones), and while one is still missing (the client's scheme is loaded with client.dll) every
+        // couple of seconds: a custom HUD's clientscheme.res may not have one at all, and asking (and logging) every
+        // frame would go on for the whole game.  A font is logged when its handle changes.
         void resolve_fonts()
         {
+            constexpr ULONGLONG k_retry_ms = 2000;
+            static ULONGLONG last_try = 0;
             int w = 0, h = 0;
             g_screen_size(g_surface, w, h);
             bool missing = false;
             for (unsigned font : g_fonts)
                 missing |= font == 0;
-            if (!missing && w == g_fonts_w && h == g_fonts_h)
+            const bool resized = w != g_fonts_w || h != g_fonts_h;
+            const ULONGLONG now = GetTickCount64();
+            if (!resized && (!missing || now - last_try < k_retry_ms))
                 return;
+            last_try = now;
             g_fonts_w = w;
             g_fonts_h = h;
             const unsigned handle = g_get_scheme(g_schemes, "ClientScheme");
@@ -124,6 +130,8 @@ namespace ui::vgui
                 unsigned font = get_font(scheme, k_fonts[i].name, true);
                 if (font == 0)
                     font = get_font(scheme, k_fonts[i].name, false);
+                if (font == g_fonts[i] && !resized)
+                    continue;
                 g_fonts[i] = font;
                 INV_LOG("vgui: font %s -> %u (%s), screen %dx%d", k_fonts[i].name, font, font != 0 ? font_name(scheme, font) : "-",
                         w, h);
@@ -147,18 +155,17 @@ namespace ui::vgui
                         static_cast<int>((c >> 16) & 255u), static_cast<int>(c >> 24));
         }
 
-        // The texture id of a material: the one the game already bound to it (its HUD's, or this mod's before a
-        // reload), else a new one.
+        // The texture id of a material: one of the mod's own, made the first time.  Never one the game already bound
+        // to it (DrawGetTextureId): that id belongs to a panel, which may destroy it (DestroyTextureID) when it goes,
+        // on a map change or a disconnect, and the slot can then be given to another texture (an avatar's RGBA) while
+        // the wheel still draws with it.  Each load of the mod makes a few new ids; the game never frees them, which
+        // costs a dictionary entry per material per reload.
         int texture(const std::string& material)
         {
             if (const auto known = g_textures.find(material); known != g_textures.end())
                 return known->second;
-            int id = g_texture_id(g_surface, material.c_str());
-            if (id <= 0)
-            {
-                id = g_new_texture(g_surface, false);
-                g_texture_file(g_surface, id, material.c_str(), 1, false);
-            }
+            const int id = g_new_texture(g_surface, false);
+            g_texture_file(g_surface, id, material.c_str(), 1, false);
             g_textures[material] = id;
             return id;
         }
@@ -242,7 +249,6 @@ namespace ui::vgui
             slot_is(surface, k_vt_surface_text_color, "55 8B EC 53 56 8B F1 0F B6 46 28") &&
             slot_is(surface, k_vt_surface_text_pos, "55 8B EC 8B 45 08 8B 55 0C 89 41 2C 89 51 30") &&
             slot_is(surface, k_vt_surface_print_text, "55 8B EC 8B 45 10 8B 55 0C 50 8B 45 08 6A 00 52") &&
-            slot_is(surface, k_vt_surface_texture_id, "55 8B EC E8 ?? ?? ?? ?? 8B 10 8B C8 8B 52 30") &&
             slot_is(surface, k_vt_surface_texture_file, "55 8B EC 56 57 8B F1 E8 ?? ?? ?? ?? 8B 4D 0C") &&
             slot_is(surface, k_vt_surface_set_texture, "55 8B EC 56 57 8B 7D 08 8B F1 3B BE A0 02 00 00") &&
             slot_is(surface, k_vt_surface_new_texture, "55 8B EC E8 ?? ?? ?? ?? 8B 10 8B C8 8B 12 5D FF") &&
@@ -270,7 +276,6 @@ namespace ui::vgui
         g_text_color = slot_fn<SurfaceColorFn>(surface, k_vt_surface_text_color);
         g_text_pos = slot_fn<SurfacePosFn>(surface, k_vt_surface_text_pos);
         g_print_text = slot_fn<SurfacePrintFn>(surface, k_vt_surface_print_text);
-        g_texture_id = slot_fn<SurfaceTextureIdFn>(surface, k_vt_surface_texture_id);
         g_texture_file = slot_fn<SurfaceTextureFileFn>(surface, k_vt_surface_texture_file);
         g_set_texture = slot_fn<SurfaceSetTextureFn>(surface, k_vt_surface_set_texture);
         g_new_texture = slot_fn<SurfaceNewTextureFn>(surface, k_vt_surface_new_texture);

@@ -499,7 +499,9 @@ Found 2026-10-17 with `tools/re/pe_tools.py` (the DLLs carry no RTTI names for t
   x1, y1, s0, t0, s1, t1)` (`ret 0x20`), 99 `DrawTexturedPolygon(n, Vertex_t*, clip)` (`ret 0xC`; `Vertex_t` is
   `{x, y, u, v}` floats, clipped by `0x100024C0` against the current panel and drawn with the bound texture). The ring
   segments are convex quads of `vgui/white`, the icons `DrawTexturedSubRect`s of the HUD's own sheets
-  (`vgui/hud/iconsheet*`, `vgui/hud/icon_<melee>`), tinted by the colour.
+  (`vgui/hud/iconsheet*`, `vgui/hud/icon_<melee>`), tinted by the colour. Each material gets a texture id of the mod's
+  own (`CreateNewTextureID` + `DrawSetTextureFile`), never the one `DrawGetTextureId` finds: that id belongs to a game
+  panel that may `DestroyTextureID` it when it goes, and the dictionary can give the slot to another texture.
 
 ## What the player sees (client side)
 
