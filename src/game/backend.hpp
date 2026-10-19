@@ -22,6 +22,7 @@ namespace game
         char tag[3] = {}; // two letters for the slot
         bool active = false; // in the player's hands now
         std::string melee; // weapon_melee: which one ("fireaxe" ...), for its icon
+        int wear = -1; // weapon_melee: its wear ([melee] durability: 0 .. inv::k_wear_broken; -1: none)
     };
 
     // A player's inventory: on a game client the local player's, shared by the HUD (render thread) and the game code (main
@@ -64,6 +65,7 @@ namespace game
         // when a heavy swing was let go (for its flash at the crosshair).
         float melee_hold = 0.f;
         float melee_queue = 0.f;
+        float melee_shove_hold = 0.f; // heavy_shove_hold (0: no heavy shove)
         ULONGLONG melee_winding_since = 0;
         bool melee_can_heavy = true;
         ULONGLONG melee_heavy_at = 0;

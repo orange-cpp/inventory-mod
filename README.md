@@ -165,29 +165,69 @@ a preview of both.
 
 ## Melee
 
-With `[melee]` in the host's `inventory_mod.toml` (on in the example) melee weapons swing as in No More Room in Hell 2.
-Pressing the attack winds the swing up and letting it go swings: let go before `heavy_hold` seconds (0.6) it is a
-light swing, the weapon's own; held longer it is a heavy one: `heavy_damage` % of the damage (200), a longer wait
-after it (`heavy_recovery` %, 150) and, with `[stamina]`, `heavy_stamina` (25) instead of a swing's cost. An exhausted
-survivor only swings light. Winding up slows you down, to `wind_speed` % (65) of your speed as the swing charges
-(back at once when you let go). A shove while winding up calls the swing off. An attack let go while the weapon is still
-waiting after the last swing is kept for `queue` seconds (0.8) and swings as soon as it is ready, so swings can be
-chained by pressing early. A light swing does not kill a common by itself, as in NMRiH2: `light_damage` % (40) of the
-weapon's damage, so three to the body; a hit to the head does `head_damage` % (200) on top, so two light ones to the
-head, and a heavy swing kills. One swing that hits several infected does less to each further one: `cleave` % (70)
-of what the one before took, never less than `cleave_min` % (30) of the first. Teammates hit take the game's own
-friendly fire.
+With `[melee]` in the host's `inventory_mod.toml` (on in the example) melee weapons fight as in No More Room in Hell 2.
 
-The wind-up shows on the weapon in your hands: as you hold the attack it is drawn back, raised and turned, and once a
-heavy swing is ready it trembles; let go, it snaps forward into the game's swing with a follow-through, a deeper lunge
-for a heavy one. (L4D2 has no wind-up animations of its own, so this is a pose laid over the viewmodel; other players
-see the game's own swings.)
+| With a melee weapon | |
+|---|---|
+| tap the attack | a light swing |
+| hold the attack, let go | a heavy swing once the ring at the crosshair is orange (`heavy_hold`, 0.6 s, times the weapon class's) |
+| shove while holding | calls the swing off |
+| the reload key while holding | throws the weapon |
+| hold the reload key | block |
+| hold the shove, let go | a heavy shove (`heavy_shove_hold`, 0.5 s) |
+| attack again during the recovery | the next swing comes as soon as it can (`queue`, 0.8 s) |
 
-Winding up needs the mod on the player's own game (it holds the attack button back from the game, so the game's own
-prediction does not swing early); the server checks how long they wound up. A player without the mod, and the bots,
-swing as the game does, always light, with the cleave. A ring at the crosshair fills while a swing winds up and turns
-orange when it will be heavy (grey while exhausted); `ring` under `[melee]` in `inventory_mod_settings.toml` ("Melee:
-wind-up ring" on the menu page) turns it off.
+**Damage.** The game's swing kills a common outright; here a swing does a share of a full hit (a common's health when
+new, 50; anything else the game's own damage): `light_damage` % (40) for a light one, `heavy_damage` % (200) for a
+heavy one, `head_damage` % (200) more to the head. With `head_only` (on) the body alone never kills a common: it is left
+at 1 health, and the head finishes it. So a common takes three light hits, two to the head; a heavy hit to the head
+kills, and a heavy hit staggers what it does not kill. One swing into a crowd does less to each further one (`cleave`,
+`cleave_min`). Teammates take the game's own friendly fire.
+
+**Weapon classes.** Each melee weapon has NMRiH2's class: blade one-handed (machete, knife), blunt one-handed
+(crowbar, frying pan, tonfa, riot shield), blade two-handed (fireaxe, katana, pitchfork), blunt two-handed (bats,
+guitar, golf club, shovel); a custom one is blunt one-handed. The class scales the wind-up, the damage, the stamina
+and the cleave, and sets the durability: two-handers wind up slower and hit harder; blades cut through a crowd and
+wear out sooner, blunt weapons hit one target hard and last. `[melee.weapons.<name>]` sets one weapon's own (`class`,
+`heavy_hold`, `light_damage`, `heavy_damage`, `cleave`, `stamina` %, `durability` in hits).
+
+**Stamina** (with `[stamina]`). A heavy swing costs `heavy_stamina` (25), each target hit `hit_stamina` (3), winding up
+`wind_stamina` (4) a second, each times the class's; run out while winding up and the swing goes off by itself, a light
+one. Exhausted, only light swings and no block. Winding up slows you to `wind_speed` % (65) as it charges, blocking to
+`block_speed` % (60).
+
+**Durability.** Each target hit wears the weapon (a heavy hit 1.5, a swing into a wall 3, a thrown hit 2); at its
+durability (`durability` %, 100, of the class's: 150 to 300 hits) it breaks, with a notice ("about to break" at 80 %).
+A stored weapon keeps its wear in the inventory (a bar on its box); the one in your hands shows a bar under the
+crosshair once half worn. A weapon carried in the hands across a chapter change comes back new (the game gives it
+again).
+
+**Block.** Holding the reload key with a melee weapon blocks a common's hit from the front: you take `block` % (25)
+of it, for `block_stamina` (6); raised just in time (`deflect`, 0.25 s before the hit) you take nothing and the common
+staggers. Specials and the witch are not blocked.
+
+**Heavy shove.** Held, the shove costs `heavy_shove_stamina` (20), recovers slower and knocks back every infected in
+front within reach.
+
+**Throw.** The reload key while winding up throws the weapon along your aim (`throw_speed`, 900): the first infected it
+passes takes `throw_damage` % (250) of a full hit and staggers; the weapon falls there to be picked up again.
+
+**A wall.** A swing that goes into a wall (`wall_bounce`) before it hits anything stops short: you stagger back a step,
+your view kicks and the weapon wears more. The floor and props do not count.
+
+**How it looks.** The weapon in your hands is drawn back, raised and turned as the swing winds up, and trembles once a
+heavy swing is ready; let go, it snaps forward into the game's swing with a follow-through, a deeper lunge for a heavy
+one or a throw. Blocking holds it across the body; a heavy shove draws the arms in first. A hit jolts it and kicks your
+view (`view_punch`, 3 degrees for a heavy hit). A heavy swing comes down from above where the weapon has such a swing
+(`overhead`: the bats, the frying pan, the machete; the fireaxe and the katana only swing sideways). Others see you
+raise the weapon when you start to wind up (`gesture`). (L4D2 has no wind-up animations of its own: the pose is laid
+over the viewmodel.)
+
+Winding up, the heavy shove and the throw need the mod on the player's own game (it holds the buttons back from the
+game, so the game's own prediction does not swing early); the server checks how long they wound up. A player without
+the mod, and the bots, swing as the game does, always light, with the damage, the cleave and the wear. A ring at the
+crosshair fills while a swing winds up and turns orange when it will be heavy (grey while exhausted); `ring` under
+`[melee]` in `inventory_mod_settings.toml` ("Melee: wind-up ring" on the menu page) turns it off.
 
 ## Settings in the game's menu
 

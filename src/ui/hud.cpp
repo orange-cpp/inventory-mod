@@ -3,6 +3,7 @@
 #include "core/config.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "inv/melee.hpp"
 #include "ui/audio.hpp"
 #include "ui/icons.hpp"
 #include "ui/postfx.hpp"
@@ -307,6 +308,20 @@ namespace hud
             return out;
         }
 
+        // [melee] durability: what is left of a melee weapon, a thin bar along the bottom of its box (green, yellow,
+        // red as it wears); nothing while it is new.
+        void draw_wear(ImDrawList* dl, int x0, int y1, int x1, int wear)
+        {
+            if (wear <= 0)
+                return;
+            const float left = 1.f - std::clamp(static_cast<float>(wear) / static_cast<float>(inv::k_wear_broken), 0.f, 1.f);
+            const ImVec4 color = left > 0.5f ? ImVec4(0.45f, 0.85f, 0.35f, 1.f) : left > 0.2f ? ImVec4(0.95f, 0.8f, 0.25f, 1.f)
+                                                                                         : ImVec4(0.9f, 0.25f, 0.2f, 1.f);
+            const int h = 3;
+            nc::FillRect(dl, x0 + 3, y1 - h - 2, x1 - 3, y1 - 2, ImVec4(0.f, 0.f, 0.f, 0.6f));
+            nc::FillRect(dl, x0 + 3, y1 - h - 2, x0 + 3 + static_cast<int>(static_cast<float>(x1 - x0 - 6) * left), y1 - 2, color);
+        }
+
         void draw_slot(ImDrawList* dl, int x, int y, int size, const inv::Stack& stack, bool selected, bool hovered,
                        int number)
         {
@@ -329,6 +344,8 @@ namespace hud
                     nc::AddText(dl, fonts.Header, x + (size - tw) / 2, y + (size - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
                                 stack.def->tag);
                 }
+                if (!stack.weapon.melee.empty())
+                    draw_wear(dl, x, y + size, x + size, stack.weapon.wear);
                 // the item in the player's hands lives in this box: a bar along the bottom, and it counts in the number
                 if (stack.held)
                     nc::FillRect(dl, x + 3, y + size - 4, x + size - 3, y + size - 2, ImVec4(0.45f, 0.85f, 0.35f, 1.f));
@@ -392,6 +409,8 @@ namespace hud
                         nc::AddText(dl, fonts.Header, x + (wide - tw) / 2, y0 + (size - static_cast<int>(fonts.Size)) / 2,
                                     ImVec4(1.f, 1.f, 1.f, 1.f), weapon.tag);
                     }
+                    if (!weapon.melee.empty())
+                        draw_wear(dl, x, y0 + size, x + wide, weapon.wear);
                 }
                 char number[8];
                 std::snprintf(number, sizeof(number), "%d", i + 1);
@@ -577,6 +596,7 @@ namespace hud
                     if (!draw_icon(dl, x0 + pad, y0 + pad, x1 - pad, y1 - pad, stack.weapon.melee.c_str()))
                         nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
                                     melee_title(stack.weapon.melee).c_str());
+                    draw_wear(dl, x0, y1, x1, stack.weapon.wear);
                     continue;
                 }
                 // a gun: like the panel's gun box, its rounds on the left (magazine over reserve), its icon on the right
@@ -885,6 +905,17 @@ namespace hud
                     }
                 }
             }
+            // the melee weapon in the hands, once half worn: what is left of it under the ring, red when nearly broken
+            for (const game::NativeWeapon& w : session.native)
+                if (w.active && !w.melee.empty() && w.wear >= inv::k_wear_broken / 2)
+                {
+                    const float left = 1.f - std::clamp(static_cast<float>(w.wear) / static_cast<float>(inv::k_wear_broken), 0.f, 1.f);
+                    const float wide = 40.f * scale, high = std::max(2.f, 3.f * scale);
+                    const ImVec2 p0(center.x - wide * 0.5f, center.y + radius + 8.f * scale);
+                    dl->AddRectFilled(p0, ImVec2(p0.x + wide, p0.y + high), IM_COL32(0, 0, 0, 120));
+                    dl->AddRectFilled(p0, ImVec2(p0.x + wide * left, p0.y + high),
+                                      left > 0.2f ? IM_COL32(240, 200, 60, 220) : IM_COL32(230, 60, 50, 230));
+                }
             // a heavy swing let go: the ring flashes outward
             if (session.melee_heavy_at != 0 && now >= session.melee_heavy_at && now - session.melee_heavy_at < 300)
             {

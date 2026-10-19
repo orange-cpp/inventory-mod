@@ -22,6 +22,8 @@ namespace inv
         // of the incendiary / explosive rounds are still loaded.
         int upgrades = 0;
         int special = 0;
+        // A melee weapon's wear ([melee] durability): 0 new .. inv::k_wear_broken (10000) broken.
+        int wear = 0;
     };
 
     struct Stack

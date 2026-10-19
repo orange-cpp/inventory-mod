@@ -50,8 +50,8 @@ Crash dumps go to the game folder (`left4dead2_crash_*.mdmp`); `tools/mdmp_summa
 - The hooks and game calls live in `game::detail` modules, one per topic, each with a header that declares what other
   modules use: `entities` (Env, the entity list, players), `weapons` (use, drop, store, pick up), `native_slots`,
   `pickup` (+use hooks, spawners), `weapon_panel` (client HUD hooks), `map_guns`, `rounds`, `addons`, `players`
-  (other players, `Activation`), `unload`, `ammo_piles`, `infection`, `stamina`, `melee` (the server's swing and damage hooks, the client's
-  GetButtonBits hook), `lifecycle` (deaths, new games, the
+  (other players, `Activation`), `unload`, `ammo_piles`, `infection`, `stamina`, `melee` (the server's swing, shove, damage, wear, block,
+  throw; `melee_client.cpp`: the client's buttons and viewmodel animation), `lifecycle` (deaths, new games, the
   FireEvent and GameFrame hooks that dispatch to the others), `client_remote`, `client_view`. A module checks and hooks
   its own functions.
 - `src/game/sdk.hpp` declares what the mod knows of the game's binaries: build stamps, RVAs, vtable slots, offsets and

@@ -6,6 +6,7 @@
 #include "core/log.hpp"
 #include "game/backend.hpp"
 #include "game/map_guns.hpp"
+#include "game/melee.hpp"
 #include "game/native_slots.hpp"
 #include "inv/rules.hpp"
 
@@ -72,6 +73,8 @@ namespace game::detail
             if (const char* melee = is_melee ? mem::read_or<const char*>(w + k_off_melee_name) : nullptr;
                 melee != nullptr && mem::safe_copy(name, melee, sizeof(name) - 1) && name[0] != '\0')
                 state.melee = name;
+            if (is_melee)
+                state.wear = melee_wear(weapon); // [melee] durability
             if (is_gun(def))
             {
                 state.upgrades = mem::read_or<int>(w + k_off_upgrades, 0) & 7;
@@ -138,6 +141,8 @@ namespace game::detail
         if (const inv::ItemDef* def = named ? inv::find_item(name) : nullptr)
             write_upgrades(weapon, *def, state); // incendiary / explosive rounds, laser sight
         add_to_pool(player, named ? name : nullptr, ammo_type_of(weapon), state.ammo);
+        if (!state.melee.empty())
+            set_melee_wear(weapon, state.wear); // [melee] durability
     }
 
     // What GiveNamedItem gets for a stored weapon: a melee weapon by its script name (as `give fireaxe` does).
@@ -609,6 +614,8 @@ namespace game::detail
             return nullptr;
         if (entity != nullptr && def.weapon())
             know_gun(entity);
+        if (entity != nullptr && !state.melee.empty())
+            set_melee_wear(entity, state.wear); // [melee] durability
         return entity;
     }
 

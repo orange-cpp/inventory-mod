@@ -1,6 +1,7 @@
 #include "inv/rules.hpp"
 
 #include "inv/items.hpp"
+#include "inv/melee.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -159,6 +160,60 @@ namespace inv
 
         MeleeRules g_melee;
 
+        void read_melee_weapon(const std::string& name, const toml::table& table, MeleeWeaponRules& out, Rules& rules)
+        {
+            for (const auto& [key, node] : table)
+            {
+                const std::string where = "melee.weapons." + name + "." + std::string(key.str());
+                if (key == "class")
+                {
+                    MeleeClass c;
+                    if (const auto text = node.value_exact<std::string>(); text && melee_class_from_name(*text, c))
+                        out.klass = static_cast<MeleeClassId>(c);
+                    else
+                        rules.errors.push_back(at_line(node, where + " must be \"blade_1h\", \"blunt_1h\", \"blade_2h\" or \"blunt_2h\""));
+                    continue;
+                }
+                if (key == "durability")
+                {
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 0 || *n > 100000)
+                        rules.errors.push_back(at_line(node, where + " must be a whole number of hits, 0 or more (0: never breaks)"));
+                    else
+                        out.durability = static_cast<int>(*n);
+                    continue;
+                }
+                struct Number
+                {
+                    const char* key;
+                    std::optional<float> MeleeWeaponRules::*field;
+                    double low, high;
+                };
+                static constexpr Number k_numbers[] = {
+                    {"heavy_hold", &MeleeWeaponRules::heavy_hold, 0.1, 3},
+                    {"light_damage", &MeleeWeaponRules::light_damage, 0, 1000},
+                    {"heavy_damage", &MeleeWeaponRules::heavy_damage, 0, 1000},
+                    {"cleave", &MeleeWeaponRules::cleave, 0, 100},
+                    {"stamina", &MeleeWeaponRules::stamina, 0, 1000},
+                };
+                const Number* found = nullptr;
+                for (const Number& n : k_numbers)
+                    if (key == n.key)
+                        found = &n;
+                const auto value = node.is_boolean() ? std::nullopt : number(node);
+                if (found == nullptr)
+                    rules.errors.push_back(at_line(node, "unknown setting " + where));
+                else if (!value || *value < found->low || *value > found->high)
+                {
+                    char range[64];
+                    std::snprintf(range, sizeof(range), " must be a number from %g to %g", found->low, found->high);
+                    rules.errors.push_back(at_line(node, where + range));
+                }
+                else
+                    out.*found->field = static_cast<float>(*value);
+            }
+        }
+
         // [melee] (see rules.hpp)
         void read_melee(const toml::table& table, Rules& rules)
         {
@@ -171,20 +226,66 @@ namespace inv
                 double low, high;
             };
             static constexpr Number k_numbers[] = {
-                {"heavy_hold", &MeleeRules::heavy_hold, 0.1, 3},         {"heavy_damage", &MeleeRules::heavy_damage, 0, 1000},
-                {"heavy_recovery", &MeleeRules::heavy_recovery, 50, 400}, {"heavy_stamina", &MeleeRules::heavy_stamina, 0, 100},
-                {"light_damage", &MeleeRules::light_damage, 0, 1000},     {"cleave", &MeleeRules::cleave, 0, 100},
-                {"head_damage", &MeleeRules::head_damage, 0, 1000},       {"wind_speed", &MeleeRules::wind_speed, 10, 100},
-                {"cleave_min", &MeleeRules::cleave_min, 0, 100},          {"queue", &MeleeRules::queue, 0, 3},
+                {"heavy_hold", &MeleeRules::heavy_hold, 0.1, 3},
+                {"heavy_damage", &MeleeRules::heavy_damage, 0, 1000},
+                {"heavy_recovery", &MeleeRules::heavy_recovery, 50, 400},
+                {"heavy_stamina", &MeleeRules::heavy_stamina, 0, 100},
+                {"light_damage", &MeleeRules::light_damage, 0, 1000},
+                {"head_damage", &MeleeRules::head_damage, 0, 1000},
+                {"cleave", &MeleeRules::cleave, 0, 100},
+                {"cleave_min", &MeleeRules::cleave_min, 0, 100},
+                {"queue", &MeleeRules::queue, 0, 3},
+                {"wind_speed", &MeleeRules::wind_speed, 10, 100},
+                {"wind_stamina", &MeleeRules::wind_stamina, 0, 100},
+                {"hit_stamina", &MeleeRules::hit_stamina, 0, 100},
+                {"durability", &MeleeRules::durability, 0, 1000},
+                {"block", &MeleeRules::block, 0, 100},
+                {"block_stamina", &MeleeRules::block_stamina, 0, 100},
+                {"block_speed", &MeleeRules::block_speed, 10, 100},
+                {"deflect", &MeleeRules::deflect, 0, 2},
+                {"heavy_shove_hold", &MeleeRules::heavy_shove_hold, 0, 3},
+                {"heavy_shove_stamina", &MeleeRules::heavy_shove_stamina, 0, 100},
+                {"throw_damage", &MeleeRules::throw_damage, 0, 1000},
+                {"throw_speed", &MeleeRules::throw_speed, 100, 3000},
+                {"view_punch", &MeleeRules::view_punch, 0, 30},
+            };
+            struct Flag
+            {
+                const char* key;
+                bool MeleeRules::*field;
+            };
+            static constexpr Flag k_flags[] = {
+                {"enabled", &MeleeRules::enabled},         {"head_only", &MeleeRules::head_only},
+                {"wall_bounce", &MeleeRules::wall_bounce}, {"overhead", &MeleeRules::overhead},
+                {"gesture", &MeleeRules::gesture},
             };
             for (const auto& [key, node] : table)
             {
-                if (key == "enabled")
+                if (key == "weapons")
+                {
+                    if (const toml::table* weapons = node.as_table())
+                        for (const auto& [name, entry] : *weapons)
+                        {
+                            if (const toml::table* one = entry.as_table())
+                                read_melee_weapon(std::string(name.str()), *one, melee.weapons[std::string(name.str())], rules);
+                            else
+                                rules.errors.push_back(at_line(entry, "melee.weapons." + std::string(name.str()) +
+                                                                          " must be a table, like { class = \"blade_2h\" }"));
+                        }
+                    else
+                        rules.errors.push_back(at_line(node, "melee.weapons must be a table of weapons"));
+                    continue;
+                }
+                const Flag* flag = nullptr;
+                for (const Flag& f : k_flags)
+                    if (key == f.key)
+                        flag = &f;
+                if (flag != nullptr)
                 {
                     if (const auto on = node.value_exact<bool>())
-                        melee.enabled = *on;
+                        melee.*flag->field = *on;
                     else
-                        rules.errors.push_back(at_line(node, "melee.enabled must be true or false"));
+                        rules.errors.push_back(at_line(node, "melee." + std::string(key.str()) + " must be true or false"));
                     continue;
                 }
                 const Number* found = nullptr;

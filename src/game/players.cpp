@@ -186,7 +186,8 @@ namespace game::detail
                 if (stack.def->weapon()) // a weapon's rounds and kind, as in the save file
                     line += ' ' + std::to_string(stack.weapon.clip) + ' ' + std::to_string(stack.weapon.ammo) + ' ' +
                             (stack.weapon.melee.empty() ? std::string("-") : stack.weapon.melee) + ' ' +
-                            std::to_string(stack.weapon.upgrades) + ' ' + std::to_string(stack.weapon.special);
+                            std::to_string(stack.weapon.upgrades) + ' ' + std::to_string(stack.weapon.special) + ' ' +
+                            std::to_string(stack.weapon.wear);
                 line += ',';
             }
             line += '|';
@@ -198,7 +199,8 @@ namespace game::detail
                     line += '-';
                 else
                     line += (s.native[i].active ? "*" : "") + s.native[i].classname +
-                            (s.native[i].melee.empty() ? std::string() : ":" + s.native[i].melee);
+                            (s.native[i].melee.empty() ? std::string() : ":" + s.native[i].melee) +
+                            (s.native[i].melee.empty() || s.native[i].wear < 0 ? std::string() : ":" + std::to_string(s.native[i].wear));
             }
             line += '|';
             line += s.message; // sent once

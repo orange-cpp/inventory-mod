@@ -21,6 +21,7 @@
 //   [round_weight]             # what one reserve round weighs (360 rifle rounds at 0.01: 3.6)
 //   assault_rifle = 0.01
 
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -110,23 +111,56 @@ namespace inv
 
     // [melee]: the melee of No More Room in Hell 2.  Pressing the attack winds the swing up and letting go swings: let
     // go before heavy_hold seconds it is a light swing, after it a heavy one (more damage, more stamina, a longer
-    // wait).  A shove while winding up calls the swing off.  A swing asked for during the last one's wait is kept for
-    // `queue` seconds and comes as soon as the weapon is ready.  One swing that hits several targets does less to
-    // each further one (cleave).  A light swing does not kill a common infected (50 health) by itself: about three to
-    // the body, two to the head; a heavy one does.  Winding up needs the mod on the player's client; without it every swing is light.
+    // wait); winding up slows the player and uses stamina, and running out lets the swing go by itself.  A shove while
+    // winding up calls the swing off; the reload key while winding up throws the weapon.  A swing asked for during the
+    // last one's wait is kept for `queue` seconds and comes as soon as the weapon is ready.  One swing that hits several
+    // targets does less to each further one (cleave), and every target hit costs stamina.  The game's swing kills a
+    // common infected outright; here a light swing does light_damage % of a common's health (three to the body), the
+    // head takes head_damage % more, and with head_only the body alone never kills one.  Holding the reload key with a
+    // melee weapon blocks the commons' hits from the front (raised just in time: a deflect); holding the shove is a
+    // heavy shove.  Weapons wear out and break.  Winding up needs the mod on the player's client; without it every
+    // swing is light.
     //
     //   [melee]
     //   enabled = true
-    //   heavy_hold = 0.6             # seconds the attack is held for a heavy swing
-    //   heavy_damage = 200           # % of the weapon's damage a heavy swing does
+    //   heavy_hold = 0.6             # seconds the attack is held for a heavy swing (times the class's)
+    //   heavy_damage = 200           # % of a full hit a heavy swing does (a common's health; others: the game's damage)
     //   heavy_recovery = 150         # % of the weapon's wait after a heavy swing
     //   heavy_stamina = 25           # with [stamina]: what a heavy swing costs (instead of its `swing`)
-    //   light_damage = 40            # % of the weapon's damage a light swing does
+    //   light_damage = 40            # % of a full hit a light swing does
     //   head_damage = 200            # % more on a hit to the head (on top of light / heavy)
+    //   head_only = true             # a common is killed only by a hit to the head (the body leaves it at 1)
     //   cleave = 70                  # each further target of one swing takes this % of what the one before took
     //   cleave_min = 30              # but never less than this % of what the first took
     //   queue = 0.8                  # seconds a swing asked for during the last one's wait is kept
     //   wind_speed = 65              # % of the normal speed while winding up a heavy swing (eased in with the charge)
+    //   wind_stamina = 4             # with [stamina]: used per second of winding up
+    //   hit_stamina = 3              # with [stamina]: used per target hit (and the rest waits)
+    //   durability = 100             # % of each class's durability (0: weapons never break)
+    //   block = 25                   # % of a common's hit taken while blocking it from the front
+    //   block_stamina = 6            # with [stamina]: used per blocked hit (exhausted: no block)
+    //   block_speed = 60             # % of the normal speed while blocking
+    //   deflect = 0.25               # seconds: a block raised this recently takes nothing and staggers the attacker
+    //   heavy_shove_hold = 0.5       # seconds the shove is held for a heavy shove (0: no heavy shove)
+    //   heavy_shove_stamina = 20     # with [stamina]: what a heavy shove costs (instead of its `shove`)
+    //   throw_damage = 250           # % of a full hit a thrown weapon does
+    //   throw_speed = 900            # how fast it flies (units a second)
+    //   wall_bounce = true           # a swing into a wall stops short: the player staggers, the weapon wears more
+    //   view_punch = 3               # degrees the view kicks on a heavy hit (a light one a third)
+    //   overhead = true              # a heavy swing comes down from above where the weapon has such a swing
+    //   gesture = true               # other players see the weapon raised while winding up
+    //
+    //   [melee.weapons.fireaxe]      # one weapon's own: class (blade_1h, blunt_1h, blade_2h, blunt_2h), heavy_hold,
+    //   class = "blade_2h"           # light_damage, heavy_damage, cleave, stamina (% of the costs), durability (hits)
+    //   durability = 250
+    // A melee weapon class (inv::MeleeClass in melee.hpp: 0 blade_1h, 1 blunt_1h, 2 blade_2h, 3 blunt_2h).
+    using MeleeClassId = int;
+    struct MeleeWeaponRules
+    {
+        std::optional<MeleeClassId> klass;
+        std::optional<float> heavy_hold, light_damage, heavy_damage, cleave, stamina;
+        std::optional<int> durability;
+    };
     struct MeleeRules
     {
         bool enabled = false;
@@ -136,10 +170,27 @@ namespace inv
         float heavy_stamina = 25.f;
         float light_damage = 40.f;
         float head_damage = 200.f;
+        bool head_only = true;
         float cleave = 70.f;
         float cleave_min = 30.f;
         float queue = 0.8f;
         float wind_speed = 65.f;
+        float wind_stamina = 4.f;
+        float hit_stamina = 3.f;
+        float durability = 100.f;
+        float block = 25.f;
+        float block_stamina = 6.f;
+        float block_speed = 60.f;
+        float deflect = 0.25f;
+        float heavy_shove_hold = 0.5f;
+        float heavy_shove_stamina = 20.f;
+        float throw_damage = 250.f;
+        float throw_speed = 900.f;
+        bool wall_bounce = true;
+        float view_punch = 3.f;
+        bool overhead = true;
+        bool gesture = true;
+        std::map<std::string, MeleeWeaponRules> weapons; // by script name ("fireaxe")
     };
     // The last apply_rules' [melee] (the defaults, disabled, without one).
     const MeleeRules& melee_rules();

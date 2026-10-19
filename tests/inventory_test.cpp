@@ -144,6 +144,15 @@ namespace
 
     void text_round_trip()
     {
+        {
+            inv::Inventory w({.slots = 2, .weapon_slots = 1});
+            inv::WeaponState axe;
+            axe.melee = "fireaxe";
+            axe.wear = 4321;
+            CHECK(w.add_weapon(item("weapon_melee"), axe) >= 0);
+            inv::Inventory back({.slots = 2, .weapon_slots = 1});
+            CHECK(back.from_text(w.to_text()) && back.slot(2).weapon.wear == 4321 && back.slot(2).weapon.melee == "fireaxe");
+        }
         inv::Inventory a({.slots = 6});
         a.add(item("weapon_pain_pills"), 6);
         a.add(item("weapon_first_aid_kit"), 1);
@@ -342,8 +351,8 @@ molotov = 1
 
         // [melee]
         CHECK(!inv::melee_rules().enabled);
-        const inv::Rules melee = inv::apply_rules("[melee]\nheavy_hold = 0.8\nheavy_damage = 300\ncleave = 50\nqueue = 9\nblock = 1\n");
-        CHECK(melee.errors.size() == 2); // queue is at most 3; no "block"
+        const inv::Rules melee = inv::apply_rules("[melee]\nheavy_hold = 0.8\nheavy_damage = 300\ncleave = 50\nqueue = 9\nparry = 1\n");
+        CHECK(melee.errors.size() == 2); // queue is at most 3; no "parry"
         CHECK(inv::melee_rules().enabled && inv::melee_rules().heavy_hold == 0.8f && inv::melee_rules().heavy_damage == 300.f);
         CHECK(inv::melee_rules().cleave == 50.f && inv::melee_rules().queue == 0.8f && inv::melee_rules().heavy_recovery == 150.f);
         CHECK(inv::melee_rules().light_damage == 40.f && inv::melee_rules().head_damage == 200.f); // the defaults
@@ -367,47 +376,128 @@ molotov = 1
             using inv::MeleeInput;
             constexpr int a = inv::k_button_attack, wind = inv::k_button_winding, heavy = inv::k_button_heavy;
             MeleeInput in;
-            CHECK(in.command(a, 0.0, false, true, 5.f, 100.f, 0.6f, 0.8f) == a); // no melee weapon: the game's own
-            CHECK(in.command(a | 8, 0.0, true, true, 5.f, 100.f, 0.f, 0.8f) == (a | 8)); // [melee] off
-            CHECK(in.command(0, 0.0, true, true, 5.f, 100.f, 0.6f, 0.8f) == 0);
-            CHECK(in.command(a | 8, 1.0, true, true, 5.f, 100.f, 0.6f, 0.8f) == (8 | wind) && in.state() == MeleeInput::State::winding);
+            // buttons, clock, melee in hand, can heavy, next attack, client clock, heavy_hold, queue (no heavy shove)
+            const auto cmd = [&](int b, double now, bool melee, bool can, float next, float clock, float hold, float queue) {
+                inv::MeleeFrame f;
+                f.buttons = b;
+                f.now = now;
+                f.melee = melee;
+                f.can_heavy = can;
+                f.next_attack = next;
+                f.game_time = clock;
+                f.hold = hold;
+                f.queue = queue;
+                return in.command(f);
+            };
+            CHECK(cmd(a, 0.0, false, true, 5.f, 100.f, 0.6f, 0.8f) == a); // no melee weapon: the game's own
+            CHECK(cmd(a | 8, 0.0, true, true, 5.f, 100.f, 0.f, 0.8f) == (a | 8)); // [melee] off
+            CHECK(cmd(0, 0.0, true, true, 5.f, 100.f, 0.6f, 0.8f) == 0);
+            CHECK(cmd(a | 8, 1.0, true, true, 5.f, 100.f, 0.6f, 0.8f) == (8 | wind) && in.state() == MeleeInput::State::winding);
             CHECK(in.peek(a | 8) == (8 | wind));
-            CHECK(in.command(a, 1.2, true, true, 5.f, 100.f, 0.6f, 0.8f) == wind);
-            CHECK(in.command(0, 1.3, true, true, 5.f, 100.f, 0.6f, 0.8f) == a && !in.heavy()); // let go at 0.3 s: light
-            CHECK(in.command(0, 1.35, true, true, 5.f, 100.f, 0.6f, 0.8f) == a); // the weapon has not swung yet
-            CHECK(in.command(0, 1.4, true, true, 6.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle); // it swung
+            CHECK(cmd(a, 1.2, true, true, 5.f, 100.f, 0.6f, 0.8f) == wind);
+            CHECK(cmd(0, 1.3, true, true, 5.f, 100.f, 0.6f, 0.8f) == a && !in.heavy()); // let go at 0.3 s: light
+            CHECK(cmd(0, 1.35, true, true, 5.f, 100.f, 0.6f, 0.8f) == a); // the weapon has not swung yet
+            CHECK(cmd(0, 1.4, true, true, 6.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle); // it swung
             // held 0.7 s: heavy
-            in.command(a, 2.0, true, true, 6.f, 100.f, 0.6f, 0.8f);
-            CHECK(in.command(0, 2.7, true, true, 6.f, 100.f, 0.6f, 0.8f) == (a | heavy) && in.heavy());
-            CHECK(in.command(0, 2.8, true, true, 7.f, 100.f, 0.6f, 0.8f) == 0);
+            cmd(a, 2.0, true, true, 6.f, 100.f, 0.6f, 0.8f);
+            CHECK(cmd(0, 2.7, true, true, 6.f, 100.f, 0.6f, 0.8f) == (a | heavy) && in.heavy());
+            CHECK(cmd(0, 2.8, true, true, 7.f, 100.f, 0.6f, 0.8f) == 0);
             // exhausted when it started: never heavy
-            in.command(a, 3.0, true, false, 7.f, 100.f, 0.6f, 0.8f);
-            CHECK(in.command(0, 4.0, true, true, 7.f, 100.f, 0.6f, 0.8f) == a);
-            CHECK(in.command(0, 4.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0);
+            cmd(a, 3.0, true, false, 7.f, 100.f, 0.6f, 0.8f);
+            CHECK(cmd(0, 4.0, true, true, 7.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(cmd(0, 4.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0);
             // a shove calls it off until the attack is let go
-            in.command(a, 5.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
-            CHECK(in.command(a | inv::k_button_attack2, 5.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == inv::k_button_attack2);
-            CHECK(in.command(a, 5.5, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::cancelled);
-            CHECK(in.command(0, 5.6, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle);
+            cmd(a, 5.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            CHECK(cmd(a | inv::k_button_attack2, 5.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == inv::k_button_attack2);
+            CHECK(cmd(a, 5.5, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::cancelled);
+            CHECK(cmd(0, 5.6, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle);
             // the queue: let go while the weapon is still waiting; the swing comes when it is ready, or is dropped
-            in.command(a, 6.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
-            CHECK(in.command(0, 6.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
-            CHECK(in.command(0, 6.8, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
-            CHECK(in.command(0, 7.0, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle); // 0.9 s
+            cmd(a, 6.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            CHECK(cmd(0, 6.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(cmd(0, 6.8, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(cmd(0, 7.0, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle); // 0.9 s
             // pressed again before the swing came: winding from then on
-            in.command(a, 8.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
-            in.command(0, 8.1, true, true, 8.f, 100.f, 0.6f, 0.8f);
-            CHECK(in.command(a, 8.2, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
-            CHECK(in.command(a, 8.3, true, true, 9.f, 100.f, 0.6f, 0.8f) == wind && in.winding_since() == 8.2);
-            CHECK(in.command(0, 8.9, true, true, 9.f, 100.f, 0.6f, 0.8f) == (a | heavy));
+            cmd(a, 8.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            cmd(0, 8.1, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            CHECK(cmd(a, 8.2, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(cmd(a, 8.3, true, true, 9.f, 100.f, 0.6f, 0.8f) == wind && in.winding_since() == 8.2);
+            CHECK(cmd(0, 8.9, true, true, 9.f, 100.f, 0.6f, 0.8f) == (a | heavy));
             // the server's correction of the wait (a heavy swing's) while waiting to swing is not the swing
-            in.command(a, 10.0, true, true, 9.f, 100.f, 0.6f, 0.8f);
-            CHECK(in.command(0, 10.1, true, true, 9.f, 8.f, 0.6f, 0.8f) == a); // ready at 9; the clock is 8
-            CHECK(in.command(0, 10.2, true, true, 9.5f, 8.1f, 0.6f, 0.8f) == a); // corrected to 9.5
-            CHECK(in.command(0, 10.3, true, true, 9.5f, 8.2f, 0.6f, 0.8f) == a);
-            CHECK(in.command(0, 10.4, true, true, 10.5f, 9.5f, 0.6f, 0.8f) == 0); // it swung
+            cmd(a, 10.0, true, true, 9.f, 100.f, 0.6f, 0.8f);
+            CHECK(cmd(0, 10.1, true, true, 9.f, 8.f, 0.6f, 0.8f) == a); // ready at 9; the clock is 8
+            CHECK(cmd(0, 10.2, true, true, 9.5f, 8.1f, 0.6f, 0.8f) == a); // corrected to 9.5
+            CHECK(cmd(0, 10.3, true, true, 9.5f, 8.2f, 0.6f, 0.8f) == a);
+            CHECK(cmd(0, 10.4, true, true, 10.5f, 9.5f, 0.6f, 0.8f) == 0); // it swung
             // a weapon switch while releasing drops it
-            CHECK(in.command(0, 9.0, false, true, 0.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle);
+            CHECK(cmd(0, 9.0, false, true, 0.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle);
+        }
+
+
+        // the heavy shove, the throw, running out of stamina while winding up
+        {
+            using inv::MeleeInput;
+            constexpr int a = inv::k_button_attack, s2 = inv::k_button_attack2, r = inv::k_button_reload;
+            MeleeInput in;
+            inv::MeleeFrame f;
+            f.melee = true;
+            f.hold = 0.6f;
+            f.queue = 0.8f;
+            f.shove_hold = 0.5f;
+            f.game_time = 100.f;
+            f.next_shove = 3.f;
+            const auto at = [&](int b, double now) {
+                f.buttons = b;
+                f.now = now;
+                return in.command(f);
+            };
+            CHECK(at(s2, 1.0) == 0 && in.shove() == MeleeInput::Shove::holding); // held back
+            CHECK(at(0, 1.1) == s2 && !in.heavy_shove()); // a tap: the game's shove when let go
+            f.next_shove = 4.f;
+            CHECK(at(0, 1.2) == 0 && in.shove() == MeleeInput::Shove::idle); // it shoved
+            at(s2, 2.0);
+            CHECK(at(0, 2.6) == (s2 | inv::k_button_heavy_shove) && in.heavy_shove()); // held 0.6 s: heavy
+            f.next_shove = 5.f;
+            at(0, 2.7);
+            // the reload key while winding up throws: the throw bit for a moment, the swing called off
+            at(a, 3.0);
+            CHECK(at(a | r, 3.1) == inv::k_button_throw && in.state() == MeleeInput::State::cancelled && in.thrown_at() == 3.1);
+            CHECK(at(a, 3.2) == inv::k_button_throw);
+            CHECK(at(a, 3.3) == 0);
+            CHECK(at(0, 3.4) == 0 && in.state() == MeleeInput::State::idle);
+            // the reload key alone (a block) is the game's own
+            CHECK(at(r, 3.5) == r && in.state() == MeleeInput::State::idle);
+            at(0, 3.6);
+            // out of stamina while winding up a heavy swing: it goes off by itself, light
+            at(a, 4.0);
+            f.can_heavy = false;
+            CHECK(at(a, 4.5) == a && in.state() == MeleeInput::State::releasing && !in.heavy());
+        }
+
+        // the weapon classes: [melee]'s numbers scaled by the class, overridden per weapon
+        {
+            inv::apply_rules("[melee]\n[melee.weapons.katana]\nclass = \"blunt_1h\"\ndurability = 77\nheavy_hold = 1.5\n"
+                             "[melee.weapons.frying_pan]\nstamina = 50\n");
+            const inv::MeleeRules& m = inv::melee_rules();
+            const inv::MeleeProfile axe = inv::melee_profile("fireaxe", m);
+            const inv::MeleeProfile knife = inv::melee_profile("knife", m);
+            CHECK(axe.klass == inv::MeleeClass::blade_2h && knife.klass == inv::MeleeClass::blade_1h);
+            CHECK(axe.heavy_hold > m.heavy_hold && knife.heavy_hold < m.heavy_hold); // two hands wind up slower
+            CHECK(axe.cleave > knife.cleave && knife.durability < axe.durability);
+            CHECK(inv::melee_profile("custom_sword", m).klass == inv::MeleeClass::blunt_1h); // unknown: blunt one-handed
+            const inv::MeleeProfile katana = inv::melee_profile("katana", m);
+            CHECK(katana.klass == inv::MeleeClass::blunt_1h && katana.durability == 77 && katana.heavy_hold == 1.5f);
+            CHECK(inv::melee_profile("frying_pan", m).stamina == 50.f);
+            CHECK(inv::apply_rules("[melee]\ndurability = 0\n").errors.empty() && inv::melee_profile("fireaxe", inv::melee_rules()).durability == 0);
+            CHECK(inv::apply_rules("[melee.weapons.fireaxe]\nclass = \"sword\"\nsharpness = 2\n").errors.size() == 2);
+            CHECK(inv::apply_rules("[melee]\nhead_only = 1\n").errors.size() == 1);
+            inv::apply_rules("");
+            // the overhead heavy swing: straight down first, else a diagonal one
+            const int axe_dirs[] = {2, 3}, bat_dirs[] = {2, 7, 4}, pan_dirs[] = {5, 0};
+            CHECK(inv::melee_overhead_swing(axe_dirs, 2) == -1 && inv::melee_overhead_swing(bat_dirs, 3) == 1 &&
+                  inv::melee_overhead_swing(pan_dirs, 2) == 1 && inv::melee_overhead_swing(nullptr, 0) == -1);
+            // wear: durability hits break it
+            CHECK(inv::melee_wear_after(0, 1.f, 200) == 50 && inv::melee_wear_after(9990, 1.f, 200) == inv::k_wear_broken);
+            CHECK(inv::melee_wear_after(100, 3.f, 0) == 100); // never breaks
         }
 
         // [ammo_piles]

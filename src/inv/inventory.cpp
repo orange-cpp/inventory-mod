@@ -319,7 +319,7 @@ namespace inv
             if (s.def->weapon())
                 out += ' ' + std::to_string(s.weapon.clip) + ' ' + std::to_string(s.weapon.ammo) + ' ' +
                        (s.weapon.melee.empty() ? std::string("-") : s.weapon.melee) + ' ' + std::to_string(s.weapon.upgrades) +
-                       ' ' + std::to_string(s.weapon.special);
+                       ' ' + std::to_string(s.weapon.special) + ' ' + std::to_string(s.weapon.wear);
             out += '\n';
         }
         return out;
@@ -369,6 +369,9 @@ namespace inv
                     stack.weapon.upgrades = upgrades;
                 if (parse_int(next_token(line), special) && special >= 0)
                     stack.weapon.special = special;
+                int wear = 0; // (a file from before the durability has none)
+                if (parse_int(next_token(line), wear) && wear >= 0)
+                    stack.weapon.wear = wear;
             }
             // the right kind of box at that number, else (a weapon in an item box, a box number past the end) later
             const bool fits = index >= 0 && index < total_slots() && (index >= slot_count()) == def->weapon() &&

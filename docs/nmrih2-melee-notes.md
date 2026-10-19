@@ -106,5 +106,11 @@ is around it:
 - GE_StaminaStarved: an exhausted survivor only swings light.
 - Cleave (CleaveDamageMultiplier by HitCount): each further target of one swing takes `cleave` % of the one before.
 
-Not ported: third-person wind-up animations (other players see the game's own swings), the alternating L2R / R2L swings (L4D2's own swing animations alternate already), blocking and deflecting,
-the heavy shove, weapon durability (DisposableWeaponComponent).
+Built after (2026-10-19): the weapon classes (`1hBlade`, `1hBlunt`, `2hBlade`, `2hBlunt`: wind-up, damage, stamina,
+cleave, durability), durability and breaking (DisposableWeaponComponent), stamina per hit (`_PerHit`) and while winding
+up, block and deflect (Block, MeleeDeflect), the heavy shove (HeavyShove), the throw (Throw from Holding), only the
+head killing, the hit's impact, a swing into a wall, the heavy swing from above where the weapon's script has one, and
+a raise gesture others see.
+
+Not ported: a third-person wind-up pose (others see a gesture, not the hold), new viewmodel animations (the pose is
+procedural; the scripts' `strongattacks` are not read by the game).

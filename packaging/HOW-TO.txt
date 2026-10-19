@@ -105,13 +105,17 @@ Stamina (when the host's inventory_mod.toml has [stamina])
   HUD and the mod's boxes.
 
 Melee (when the host's inventory_mod.toml has [melee])
-  Melee weapons swing as in No More Room in Hell 2. Hold the attack to wind the swing up (the weapon draws back) and
-  let go to swing: a quick tap is a light swing, holding it until the ring at the crosshair turns orange and the weapon
-  trembles (about half a second) is a heavy one: twice the damage, but slower to recover and, with stamina, more
-  tiring. You walk slower while winding up. A light swing does not kill a zombie by itself: about three to the body,
-  two to the head; a heavy one kills. Exhausted, you only swing light. Shove while
-  winding up to call the swing off. Press again while the last swing is still recovering and the next one comes as
-  soon as it can. One swing into a crowd does less to each infected after the first.
+  Melee weapons fight as in No More Room in Hell 2:
+    tap the attack                 a light swing
+    hold the attack, let go        a heavy swing once the ring at the crosshair turns orange and the weapon trembles
+    shove while holding            calls the swing off
+    reload key while holding       throws the weapon (pick it up again where it lands)
+    hold the reload key            block a zombie's hit from the front (just in time: you take nothing, it staggers)
+    hold the shove, let go         a heavy shove that knocks them back
+  A light swing does not kill a zombie by itself, and only the head finishes one: about three hits to the body, two
+  to the head; a heavy hit to the head kills. Heavy swings, hits, winding up and blocking tire you; you walk slower
+  while winding up or blocking. Weapons wear out and break (a bar on a stored weapon's box, and under the crosshair
+  for the one in your hands once half worn). A swing into a wall bounces off and staggers you.
   Turn the ring off in the window's Settings tab ("Melee") or on Options > Inventory Mod.
 
 Files the mod writes next to the DLL

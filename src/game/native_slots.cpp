@@ -75,7 +75,11 @@ namespace game::detail
                 entry.active = handle == active;
                 if (std::strcmp(name, "weapon_melee") == 0) // which melee weapon, for its icon
                     if (const inv::ItemDef* melee = inv::find_item(name))
-                        entry.melee = weapon_state(player, weapon, *melee, true).melee;
+                    {
+                        const inv::WeaponState state = weapon_state(player, weapon, *melee, true);
+                        entry.melee = state.melee;
+                        entry.wear = state.wear;
+                    }
                 list[static_cast<std::size_t>(slot)] = std::move(entry);
             }
         }

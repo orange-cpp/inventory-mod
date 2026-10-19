@@ -89,6 +89,19 @@ namespace game::sdk
 
     constexpr std::uintptr_t k_off_edict = 0x28;
     constexpr std::uintptr_t k_off_health = 0xEC; // m_iHealth (SendProp at 0x1016D343: push 0xEC / push "m_iHealth")
+    constexpr std::uintptr_t k_off_max_health = 0xE8; // m_iMaxHealth (SendProp at 0x102FEEA7; a common: z_health, 50)
+    // A common infected (class Infected, primary vtable 0x106D9DB4): slot 82 MyInfectedPointer (0x10299380: mov eax,
+    // ecx); its INextBot part at +0x1A40 (vtable 0x106D9C6C), whose slot 28 OnShoved(CBaseEntity* pusher) (0x10298FE0,
+    // thiscall, ret 4) makes it stumble away from the pusher's centre, as a shove does (the melee weapon's collateral
+    // shove calls it so, 0x103EBCA0).  While byte +0x1D94 is 1 a shove from behind only pushes (else it kills: the
+    // game sets it so while AllowBash says "push only")
+    constexpr int k_vt_my_infected = 82;
+    constexpr std::uintptr_t k_off_infected_nextbot = 0x1A40;
+    constexpr std::uintptr_t k_rva_infected_nextbot_vtable = 0x6D9C6C;
+    constexpr int k_vt_nextbot_on_shoved = 28;
+    constexpr std::uintptr_t k_off_infected_push_only = 0x1D94;
+    using MyInfectedFn = void*(__thiscall*)(void* entity);
+    using OnShovedFn = void(__thiscall*)(void* nextbot, void* pusher);
     constexpr std::uintptr_t k_off_team = 0x238; // m_iTeamNum
     constexpr std::uintptr_t k_off_entity_name = 0x140; // m_iName (targetname)
     constexpr std::uintptr_t k_off_model_name = 0x24C; // m_ModelName (datamap, FIELD_MODELNAME: a pointer to the text)
@@ -102,7 +115,7 @@ namespace game::sdk
     constexpr std::uintptr_t k_rva_take_damage = 0x55C70;
     constexpr std::size_t k_damage_info_size = 0x60;
     constexpr std::uintptr_t k_off_damage_inflictor = 0x30, k_off_damage_attacker = 0x34, k_off_damage_weapon = 0x38,
-                             k_off_damage = 0x3C;
+                             k_off_damage = 0x3C, k_off_damage_type = 0x48, k_off_damage_force = 0x0, k_off_damage_position = 0xC;
     using TakeDamageFn = int(__fastcall*)(void* self, void* edx, const void* info);
 
     // ---- server.dll: CBasePlayer, CTerrorPlayer ----------------------------------------------------------------------
@@ -145,6 +158,17 @@ namespace game::sdk
     using CommitSuicideFn = void(__thiscall*)(void* player, bool explode, bool force);
     using SetShovePenaltyFn = void(__thiscall*)(void* player, int penalty);
 
+    // CTerrorPlayer::OnStaggered(CBaseEntity* source, const Vector* from) (0x1032CE80, non-virtual, thiscall, ret 8;
+    // what the VScript "Stagger" wraps, 0x1032D730): the player staggers away from `from` (or from source's origin);
+    // nothing for a ghost or an incapacitated player; it breaks pins.  Specials: z_max_stagger_duration, survivors:
+    // survivor_max_tongue_stagger_duration / _distance (1.5 s, 200)
+    constexpr std::uintptr_t k_rva_stagger_player = 0x32CE80;
+    using StaggerPlayerFn = void(__fastcall*)(void* player, void* edx, void* source, const Vec3* from);
+    // CBasePlayer::ViewPunch(const QAngle&) (0x1007CD30, non-virtual, thiscall, ret 4): m_vecPunchAngleVel += it * 20,
+    // the game's spring-damped kick (nothing while sv_suppress_viewpunch)
+    constexpr std::uintptr_t k_rva_view_punch = 0x7CD30;
+    using ViewPunchFn = void(__fastcall*)(void* player, void* edx, const Vec3* angles);
+
     // ---- server.dll: weapons -----------------------------------------------------------------------------------------
 
     // CBaseCombatWeapon (SendProp / datamap definitions: push <offset> / push "<name>")
@@ -179,6 +203,57 @@ namespace game::sdk
     constexpr int k_vt_primary_attack = 282;
     constexpr std::uintptr_t k_rva_melee_primary_attack = 0x3EC3B0;
     using PrimaryAttackFn = void(__fastcall*)(void* weapon, void* edx);
+    // slot 283 SecondaryAttack (0x103EB1F0, void thiscall): the shove.  It calls slot 435 (0x103F06F0, "StartSwing":
+    // z_gun_swing_interval, z_gun_swing_duration, z_gun_range), which sets both attack times to curtime + interval
+    constexpr int k_vt_secondary_attack = 283;
+    constexpr std::uintptr_t k_rva_melee_secondary_attack = 0x3EB1F0;
+    constexpr char k_melee_secondary_prologue[] = "56 57 8B F1 E8 ?? ?? ?? ?? 8B F8 85 FF 0F 84 ?? ?? ?? ?? 8B 06 8B 90 7C";
+    constexpr std::size_t k_melee_secondary_prologue_length = 24;
+    // The melee weapon's swings (its script's "primaryattacks"; scripts/melee/<kind>.txt, parsed by 0x103D5780): the
+    // CMeleeWeaponInfo database (0x10868F08) by the weapon's m_hMeleeWeaponInfo (+0x17DC), looked up by 0x103D5FF0
+    // (thiscall (db, handle), ret 4; the swing start 0x103EC080 calls it so: `mov eax, [esi+0x17DC]; push eax; mov ecx,
+    // db; call`).  The info's primary attacks are a CUtlVector of 0x30-byte entries (memory +0xC20, count +0xC2C):
+    // +0x04 the third-person activity, +0x08 its idle one, +0x0C startdir (N 0, S 1, E 2, W 3, NE 4, SE 5, SW 6, NW 7).
+    // The next one is the weapon's m_iNextPrimaryAttackIndex (+0x17F8; the client's +0xD08), reset to 0 when
+    // melee_combo_reset_time (1.2 s) passed since m_flLastAttackTime (+0x1828; the client's +0xD38).  Chosen by
+    // 0x103EAF30 (the client's 0x1030DA10): thiscall (weapon, info), ret 4, returns the viewmodel activity.  The game
+    // never reads the scripts' "strongattacks" (no such string in either DLL).
+    constexpr std::uintptr_t k_off_melee_info_handle = 0x17DC;
+    constexpr std::uintptr_t k_off_melee_next_attack = 0x17F8, k_off_melee_last_attack = 0x1828;
+    constexpr std::uintptr_t k_cw_melee_next_attack = 0xD08, k_cw_melee_last_attack = 0xD38;
+    constexpr std::uintptr_t k_off_info_attacks = 0xC20, k_off_info_attack_count = 0xC2C;
+    constexpr std::size_t k_attack_size = 0x30;
+    constexpr std::uintptr_t k_off_attack_idle_activity = 0x08, k_off_attack_start_dir = 0x0C;
+    constexpr std::uintptr_t k_rva_melee_swing_start = 0x3EC080;
+    constexpr std::uintptr_t k_rva_choose_attack = 0x3EAF30, k_rva_c_choose_attack = 0x30DA10;
+    using ChooseAttackFn = int(__fastcall*)(void* weapon, void* edx, void* info);
+    using MeleeInfoLookupFn = void*(__thiscall*)(void* database, std::uint32_t handle);
+    // CTerrorPlayer::DoAnimationEvent(int event, int data) (slot 510, 0x102FBB30, thiscall, ret 8): event 66 plays
+    // the activity `data` in gesture slot 0 when it is free, networked through m_NetGesture* (+0x2ADC ...)
+    constexpr int k_vt_do_animation_event = 510;
+    constexpr std::uintptr_t k_rva_do_animation_event = 0x2FBB30;
+    constexpr int k_anim_event_gesture = 66;
+    using DoAnimationEventFn = void(__thiscall*)(void* player, int event, int data);
+
+    // UTIL_TraceLine(const Vector& start, const Vector& end, unsigned mask, const ITraceFilter*, trace_t*) (0x100101E0,
+    // cdecl; it builds a Ray_t and calls the engine's EngineTraceServer003 slot 5 TraceRay).  A CTraceFilterWorldOnly
+    // is a bare object whose vtable is 0x1068E3AC (ShouldHitEntity: false; GetTraceType: 1, the world only).
+    // trace_t is 0x54 bytes: plane.normal +0x18, fraction +0x2C, startsolid +0x37, m_pEnt +0x4C.  MASK_SOLID 0x0200400B.
+    constexpr std::uintptr_t k_rva_trace_line = 0x101E0;
+    constexpr std::uintptr_t k_rva_trace_filter_world_only = 0x68E3AC;
+    constexpr std::size_t k_trace_size = 0x54;
+    constexpr std::uintptr_t k_off_trace_normal = 0x18, k_off_trace_fraction = 0x2C, k_off_trace_start_solid = 0x37;
+    constexpr unsigned k_mask_solid = 0x0200400Bu;
+    using TraceLineFn = void(__cdecl*)(const Vec3* start, const Vec3* end, unsigned mask, const void* filter, void* trace);
+
+    // CBaseCombatWeapon::WeaponSound(WeaponSound_t type, float soundtime) (0x1004BDA0, slot 301, not overridden by the
+    // melee weapon; thiscall, ret 8): the melee swing's trace plays type 10 (melee_hit_world, of the script's sound
+    // names at 0x107A1878: melee_miss 8, melee_hit 9, melee_hit_world 10) when it hits something that is not a combat
+    // character: the world, a prop, a door
+    constexpr int k_vt_weapon_sound = 301;
+    constexpr std::uintptr_t k_rva_weapon_sound = 0x4BDA0;
+    constexpr int k_sound_melee_hit_world = 10;
+    using WeaponSoundFn = void(__fastcall*)(void* weapon, void* edx, int type, float soundtime);
 
     // CTerrorGun::Use (0x103E8700, slot 106 of CTerrorGun's vtable 0x106D5544)
     constexpr std::uintptr_t k_rva_gun_use = 0x3E8700;
@@ -352,6 +427,7 @@ namespace game::sdk
 
     // weapon m_flNextPrimaryAttack (RecvProp at 0x10015974: push 0x960 / "m_flNextPrimaryAttack"; datamap 0x106BCBFC)
     constexpr std::uintptr_t k_cw_next_primary = 0x960;
+    constexpr std::uintptr_t k_cw_next_secondary = 0x964; // m_flNextSecondaryAttack (ReloadOrSwitchWeapons compares both)
     // C_BaseCombatWeapon::ReloadOrSwitchWeapons + 0x72 (0x10017922): `mov eax, [gpGlobals]` (the client's
     // CGlobalVars*, at 0x106C49A8), then curtime (+0xC) compared with m_flNextPrimaryAttack (+0x960)
     constexpr std::uintptr_t k_rva_c_globals_read = 0x17922;

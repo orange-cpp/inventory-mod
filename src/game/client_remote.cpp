@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -130,9 +131,9 @@ namespace game::detail
             char name[64] = {};
             inv::WeaponState state;
             char melee[64] = {};
-            const int read = std::sscanf(parts[1].substr(start, comma - start).c_str(), "%d %63s %d %d %d %d %63s %d %d",
+            const int read = std::sscanf(parts[1].substr(start, comma - start).c_str(), "%d %63s %d %d %d %d %63s %d %d %d",
                                          &index, name, &count, &held, &state.clip, &state.ammo, melee, &state.upgrades,
-                                         &state.special);
+                                         &state.special, &state.wear);
             if (read >= 4)
                 if (const inv::ItemDef* def = inv::find_item(name))
                 {
@@ -166,11 +167,18 @@ namespace game::detail
                 melee = name.substr(colon + 1);
                 name.erase(colon);
             }
+            int wear = -1; // "fireaxe:1234": its wear
+            if (const std::size_t colon = melee.find(':'); colon != std::string::npos)
+            {
+                wear = std::atoi(melee.c_str() + colon + 1);
+                melee.erase(colon);
+            }
             if (!name.empty() && name != "-")
             {
                 native[slot] = describe_weapon(name.c_str());
                 native[slot].active = active;
                 native[slot].melee = melee;
+                native[slot].wear = wear;
             }
             start = comma + 1;
         }
@@ -227,10 +235,15 @@ namespace game::detail
             });
             return true;
         }
-        // [melee]: "@mel@ <hold ms> <queue ms>"
+        // [melee]: "@mel@ <hold ms> <queue ms> <shove hold ms>", "@mhi@ <heavy>"
         if (text != nullptr && std::strcmp(head, k_melee_marker) == 0)
         {
             mem::guarded([&] { apply_melee_line(text); });
+            return true;
+        }
+        if (text != nullptr && std::strcmp(head, k_melee_hit_marker) == 0)
+        {
+            mem::guarded([&] { apply_melee_hit_line(text); });
             return true;
         }
         return g_process_print.original()(state, edx, msg);
