@@ -113,6 +113,24 @@ swing_speed = 60       # exhausted: % of the normal swing and shove rate
 damage = 50            # exhausted: % of the normal melee damage
 bots = false           # the survivor bots too
 
+# Melee, as in No More Room in Hell 2: holding the attack with a melee weapon winds the swing up, letting go swings.
+# Let go before heavy_hold seconds it is a light swing, after it a heavy one: more damage, more stamina, a longer wait.
+# A shove while winding up calls the swing off. A swing asked for during the last one's wait is kept for `queue`
+# seconds and comes as soon as the weapon is ready. One swing that hits several targets does less to each further one.
+# Winding up needs the mod on the player's game; without it every swing is a light one.
+[melee]
+enabled = true
+heavy_hold = 0.6       # seconds the attack is held for a heavy swing
+heavy_damage = 200     # % of the weapon's damage a heavy swing does
+heavy_recovery = 150   # % of the weapon's wait after a heavy swing
+heavy_stamina = 25     # with [stamina]: what a heavy swing costs (instead of its `swing`)
+light_damage = 40      # % of the weapon's damage a light swing does (a common takes about three to the body)
+head_damage = 200      # % on a hit to the head, on top of light / heavy (two light ones, one heavy)
+cleave = 70            # each further target of one swing takes this % of what the one before took
+cleave_min = 30        # but never less than this % of what the first took
+queue = 0.8            # seconds a swing asked for during the last one's wait is kept
+wind_speed = 65        # % of the normal speed while winding up (eased in as the swing charges)
+
 # Ammo piles: a map's ammo pile is not endless. It holds a random ammo type of `kinds`, min_magazines to max_magazines
 # magazines of it (rolled on its first use, then it is tinted that type's colour). Anyone takes as many as they can
 # carry (the type's most, the weight limit; a bot only for a gun it has), the rest stays; an empty pile is gone.

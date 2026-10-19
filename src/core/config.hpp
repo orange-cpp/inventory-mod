@@ -53,6 +53,8 @@ namespace core
         bool stamina_vignette = true; // the screen's edges darken as it runs low (postfx)
         bool stamina_cover_game_hud = true; // the vignette over the game's HUD too (false: under it, on the 3D picture)
         bool stamina_cover_mod_hud = true; // ... and over the mod's boxes, wheel and window (only with the game's HUD)
+        // [melee] (the host's inventory_mod.toml turns it on): a ring at the crosshair fills while a swing winds up
+        bool melee_ring = true;
         // inventory_mod.toml (the rules) was read: its limits win over the settings' (see rules_load)
         bool rules_file = false;
     };

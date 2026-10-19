@@ -163,11 +163,37 @@ each gasp), and, as for the infection, `cover_game_hud` and `cover_mod_hud` (whe
 HUD, and the mod's boxes, wheel and window: "Vignette covers the game's HUD" / "... the mod's HUD"). The Debug tab has
 a preview of both.
 
+## Melee
+
+With `[melee]` in the host's `inventory_mod.toml` (on in the example) melee weapons swing as in No More Room in Hell 2.
+Pressing the attack winds the swing up and letting it go swings: let go before `heavy_hold` seconds (0.6) it is a
+light swing, the weapon's own; held longer it is a heavy one: `heavy_damage` % of the damage (200), a longer wait
+after it (`heavy_recovery` %, 150) and, with `[stamina]`, `heavy_stamina` (25) instead of a swing's cost. An exhausted
+survivor only swings light. Winding up slows you down, to `wind_speed` % (65) of your speed as the swing charges
+(back at once when you let go). A shove while winding up calls the swing off. An attack let go while the weapon is still
+waiting after the last swing is kept for `queue` seconds (0.8) and swings as soon as it is ready, so swings can be
+chained by pressing early. A light swing does not kill a common by itself, as in NMRiH2: `light_damage` % (40) of the
+weapon's damage, so three to the body; a hit to the head does `head_damage` % (200) on top, so two light ones to the
+head, and a heavy swing kills. One swing that hits several infected does less to each further one: `cleave` % (70)
+of what the one before took, never less than `cleave_min` % (30) of the first. Teammates hit take the game's own
+friendly fire.
+
+The wind-up shows on the weapon in your hands: as you hold the attack it is drawn back, raised and turned, and once a
+heavy swing is ready it trembles; let go, it snaps forward into the game's swing with a follow-through, a deeper lunge
+for a heavy one. (L4D2 has no wind-up animations of its own, so this is a pose laid over the viewmodel; other players
+see the game's own swings.)
+
+Winding up needs the mod on the player's own game (it holds the attack button back from the game, so the game's own
+prediction does not swing early); the server checks how long they wound up. A player without the mod, and the bots,
+swing as the game does, always light, with the cleave. A ring at the crosshair fills while a swing winds up and turns
+orange when it will be heavy (grey while exhausted); `ring` under `[melee]` in `inventory_mod_settings.toml` ("Melee:
+wind-up ring" on the menu page) turns it off.
+
 ## Settings in the game's menu
 
 Options > Inventory Mod (main menu and the in-game menu) is a page of the game's own menu, in its own style, with all
 of the mod's settings as drop-downs in two columns: the HUD, the infection and stamina on the left; the keys (from a
-list: free letters, `[ ] \ ; ' , . /`, Insert, Delete, Home, Page Up / Down, None) and the limits on the right;
+list: free letters, `[ ] \ ; ' , . /`, Insert, Delete, Home, Page Up / Down, None), the limits and the melee's ring on the right;
 then "Inventory window" (the mod's window) and Done. The window has no Settings tab while the page is there. A choice is saved to `inventory_mod_settings.toml` at once. It
 comes with the addon `inventory_mod_menu.vpk` in the `addons` folder next to the DLL (built by
 `python -I tools/make_menu_addon.py`): the Options flyout with the button, the page's layout and each drop-down's
@@ -238,7 +264,8 @@ says why and the inventory only edits its own list.
 ## Layout
 
 ```
-src/inv/       the model, no Windows or ImGui (tested on its own); rules.cpp reads inventory_mod.toml
+src/inv/       the model, no Windows or ImGui (tested on its own); rules.cpp reads inventory_mod.toml, melee.cpp
+               is the melee's wind-up as user-command buttons
 src/core/      log, config, MinHook wrapper
 src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel, window), icons.cpp (the game's
                own weapon and item icons, read from its VTF sheets), postfx.cpp (the infection and stamina shaders),
@@ -246,7 +273,7 @@ src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel,
                the wheel is drawn with them)
 src/game/      backend.hpp (the seam), game.cpp (the real backend: the request queue and init),
                one module per topic (entities, weapons, pickup, rounds, players, infection,
-               stamina, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets
+               stamina, melee, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets
                and signatures), mem.cpp (guarded reads and calls)
 tests/         inventory_test.cpp
 assets/        the screamer picture, textures/ (each round type's ammo pack)

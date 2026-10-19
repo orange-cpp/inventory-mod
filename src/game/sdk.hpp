@@ -88,6 +88,7 @@ namespace game::sdk
     using TeleportFn = void(__thiscall*)(void* entity, const Vec3* position, const Vec3* angles, const Vec3* velocity);
 
     constexpr std::uintptr_t k_off_edict = 0x28;
+    constexpr std::uintptr_t k_off_health = 0xEC; // m_iHealth (SendProp at 0x1016D343: push 0xEC / push "m_iHealth")
     constexpr std::uintptr_t k_off_team = 0x238; // m_iTeamNum
     constexpr std::uintptr_t k_off_entity_name = 0x140; // m_iName (targetname)
     constexpr std::uintptr_t k_off_model_name = 0x24C; // m_ModelName (datamap, FIELD_MODELNAME: a pointer to the text)
@@ -117,6 +118,10 @@ namespace game::sdk
     constexpr int k_vt_commit_suicide = 476; // CommitSuicide(bool explode, bool force), 0x10174210
 
     constexpr std::uintptr_t k_off_life_state = 0xF0; // CBasePlayer::m_lifeState (0: alive)
+    // CBaseCombatCharacter::m_LastHitGroup (datamap at 0x100449B3: "m_LastHitGroup", 0x1838): where the last trace
+    // attack hit, set before the damage is applied (HITGROUP_HEAD 1)
+    constexpr std::uintptr_t k_off_last_hit_group = 0x1838;
+    constexpr int k_hitgroup_head = 1;
     constexpr std::uintptr_t k_off_flags = 0x13C; // CBasePlayer::m_fFlags (FL_ONGROUND 1)
     constexpr std::uintptr_t k_off_player_ammo = 0x1874; // CBasePlayer::m_iAmmo[32]: the reserve of each ammo type
     constexpr std::uintptr_t k_off_my_weapons = 0x18F4; // CBaseCombatCharacter::m_hMyWeapons
@@ -166,6 +171,14 @@ namespace game::sdk
     // CTerrorMeleeWeapon::m_strMapSetScriptName (datamap entry 0x107BDF20: FIELD_STRING, keyvalue "melee_script_name"):
     // which melee weapon it is, "fireaxe", "katana" ...  (The same offset as m_upgradeBitVec: another class.)
     constexpr std::uintptr_t k_off_melee_name = 0x17E0;
+
+    // CTerrorMeleeWeapon (primary vtable 0x106D611C, 448 slots): slot 282 PrimaryAttack (0x103EC3B0, void __thiscall:
+    // "melee attack failed - !player->CanAttack()"), which starts the swing (0x103EC080: m_flNextPrimaryAttack =
+    // curtime + the weapon's refire, the secondary time too)
+    constexpr std::uintptr_t k_rva_melee_vtable = 0x6D611C;
+    constexpr int k_vt_primary_attack = 282;
+    constexpr std::uintptr_t k_rva_melee_primary_attack = 0x3EC3B0;
+    using PrimaryAttackFn = void(__fastcall*)(void* weapon, void* edx);
 
     // CTerrorGun::Use (0x103E8700, slot 106 of CTerrorGun's vtable 0x106D5544)
     constexpr std::uintptr_t k_rva_gun_use = 0x3E8700;
@@ -336,6 +349,29 @@ namespace game::sdk
     constexpr std::uintptr_t k_cw_ammo_type = 0x97C; // weapon m_iPrimaryAmmoType
     constexpr std::uintptr_t k_cw_clip = 0x984; // weapon m_iClip1
     constexpr std::uintptr_t k_cw_fire_on_empty = 0x9BE; // weapon m_bFireOnEmpty (datamap entry at 0x106BCECC)
+
+    // weapon m_flNextPrimaryAttack (RecvProp at 0x10015974: push 0x960 / "m_flNextPrimaryAttack"; datamap 0x106BCBFC)
+    constexpr std::uintptr_t k_cw_next_primary = 0x960;
+    // C_BaseCombatWeapon::ReloadOrSwitchWeapons + 0x72 (0x10017922): `mov eax, [gpGlobals]` (the client's
+    // CGlobalVars*, at 0x106C49A8), then curtime (+0xC) compared with m_flNextPrimaryAttack (+0x960)
+    constexpr std::uintptr_t k_rva_c_globals_read = 0x17922;
+    // C_TerrorViewModel (primary vtable 0x105C1054, 230 slots) slot 222 CalcViewModelView(C_BasePlayer* owner, const
+    // Vector& eye_position, const QAngle& eye_angles) (0x10288F40, thiscall, ret 0xC; terrorviewmodel.cpp): the
+    // viewmodel's place each frame, from the eyes; it ends with SetLocalOrigin (0x10042C00) and SetLocalAngles
+    // (0x10042CE0)
+    constexpr std::uintptr_t k_rva_c_viewmodel_vtable = 0x5C1054;
+    constexpr int k_c_vt_calc_viewmodel_view = 222;
+    constexpr std::uintptr_t k_rva_c_calc_viewmodel_view = 0x288F40;
+    using CalcViewModelViewFn = void(__fastcall*)(void* viewmodel, void* edx, void* owner, const Vec3* eye_position,
+                                                  const Vec3* eye_angles);
+    // C_TerrorMeleeWeapon's primary vtable (its complete object locator's offset 0)
+    constexpr std::uintptr_t k_rva_c_melee_vtable = 0x609BFC;
+    // CInput (vtable 0x1057575C) slot 2 GetButtonBits(bool reset) (0x10131570, thiscall, ret 4): the buttons of the
+    // user command; CInput::CreateMove (slot 3, 0x101341F0) stores GetButtonBits(1) in CUserCmd::buttons (+0x24)
+    constexpr std::uintptr_t k_rva_c_input_vtable = 0x57575C;
+    constexpr int k_c_vt_get_button_bits = 2;
+    constexpr std::uintptr_t k_rva_c_get_button_bits = 0x131570;
+    using GetButtonBitsFn = int(__fastcall*)(void* input, void* edx, int reset);
 
     // Reload (slot 269 of the primary vtable): C_TerrorGun's (vtable 0x10609034 -> 0x1030C150) and C_PumpShotgun's
     // (0x105FF6FC -> 0x102F1CF0); HandleFireOnEmpty 0x100156D0

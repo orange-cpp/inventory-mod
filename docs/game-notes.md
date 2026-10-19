@@ -367,12 +367,33 @@ mov [..], <offset>`) and checked in the game:
 | the game's shove fatigue | `m_iShovePenalty` set back to 0 with `SetShovePenalty(int)` `0x102CB750` (thiscall, `cmp [esi+0x2CF0], edi`), which marks the edict changed. Seen: shoves in a row stay at 0.77 s |
 | slower | `CBasePlayer::m_flLaggedMovementValue` +0x20D0, the game's movement speed scale (the client predicts with it). It slows the player's whole movement clock, falls too, so it is set on the ground only; leaving the ground the horizontal velocity is scaled instead |
 | networked writes | a field written by the mod only reaches the players if the entity says it changed: `edict->m_fStateFlags \|= 0x101` (FL_EDICT_CHANGED \| FL_FULL_EDICT_CHANGED) and the change accessor's serial (+2) 0, as `0x100ED4B0` does through `VEngineServer022` slot 97 `GetChangeAccessor(edict)` (the server's own engine pointer `0x107F7698` is the same interface) |
-| less damage | `CBaseEntity::TakeDamage(const CTakeDamageInfo&)` `0x10055C70` (thiscall, `ret 4`, prologue `55 8B EC 83 EC 6C 57 8B F9 8B 0D`; warns "CBaseEntity::TakeDamage:  with inputInfo.GetDamageForce() == vec3_origin"), hooked. `CTakeDamageInfo` is 0x60 bytes (its copy constructor `0x10010140`): `m_hInflictor` +0x30, `m_hAttacker` +0x34 (`GetAttacker` `0x1003D4B0`), `m_hWeapon` +0x38, `m_flDamage` +0x3C, `m_bitsDamageType` +0x48. Seen: a melee hit on a common is weapon and inflictor `weapon_melee`, type `0x80200004`, 50 damage (then a 0 one); exhausted it became 25 and the common took two hits |
+| less damage | `CBaseEntity::TakeDamage(const CTakeDamageInfo&)` `0x10055C70` (thiscall, `ret 4`, prologue `55 8B EC 83 EC 6C 57 8B F9 8B 0D`; warns "CBaseEntity::TakeDamage:  with inputInfo.GetDamageForce() == vec3_origin"), hooked (since [melee], by `src/game/melee.cpp`, which asks the stamina for its factor). `CTakeDamageInfo` is 0x60 bytes (its copy constructor `0x10010140`): `m_hInflictor` +0x30, `m_hAttacker` +0x34 (`GetAttacker` `0x1003D4B0`), `m_hWeapon` +0x38, `m_flDamage` +0x3C, `m_bitsDamageType` +0x48. Seen: a melee hit on a common is weapon and inflictor `weapon_melee`, type `0x80200004`, 50 damage (then a 0 one); exhausted it became 25 and the common took two hits |
 
 Exhausted, the wait for the next swing or shove is stretched (seen: 0.99 s became 1.65 s at `swing_speed = 60`). The
 stamina reaches the player as `@sta@ <per mille, -1: none> <1: exhausted>` (at most ten a second while it changes), or
 straight into the host's session. The HUD draws the bar; postfx runs a second, small pixel shader (1512 bytes) before
 the infection's: the edges darken and lose colour from half down, and while exhausted close in, blur and pulse.
+
+## Melee ([melee], No More Room in Hell 2's)
+
+See `src/game/melee.cpp` and `src/inv/melee.*`; the NMRiH2 side is in `docs/nmrih2-melee-notes.md`. Seen working in the
+game on 2026-10-19 (a listen server and the dedicated server).
+
+| What | Where / how |
+|---|---|
+| the swing (server) | `CTerrorMeleeWeapon` primary vtable `0x106D611C` (448 slots; RTTI `.?AVCTerrorMeleeWeapon@@`), slot 282 `PrimaryAttack` `0x103EC3B0` (void thiscall, prologue `56 57 8B F1 E8 .. .. .. .. 8B F8 85 FF 0F 84 .. .. .. .. 8B 87 D8 33 00 00`; "melee attack failed - !player->CanAttack()" / "!IsWeaponVisible()"). It calls `0x103EC080`, the swing's start: `m_flNextPrimaryAttack` = curtime + the refire (`0x1004C810`), the secondary time too. Slot 281 is `0x103D0930`, 283 `0x103EB1F0` (the shove). Hooked: after the original, the wait moved on = a swing started. Seen: a fireaxe's wait is 0.92 s (1.39 at `heavy_recovery = 150`), a katana's 1.09 at 150 |
+| the buttons of the swing | `PrimaryAttack` runs while the player's user command is processed, so `CBasePlayer::m_nButtons` +0x1CB4 holds that command's buttons. `CUserCmd::buttons` goes to the server as 32 bits: bits 28 (winding up) and 29 (heavy), which the game does not use, arrive intact (seen) |
+| the user command's buttons (client) | `CInput` (vtable `0x1057575C`; RTTI `.?AVCInput@@`) slot 2 `GetButtonBits(bool reset)` `0x10131570` (thiscall, `ret 4`, prologue `55 8B EC 83 EC 08 56 8B F1 8B 0D`): the kbuttons (+attack ...) as `IN_*` bits. Slot 3 `CreateMove` `0x101341F0` stores `GetButtonBits(1)` (`push 1; call [edx+8]` at `0x10134547`) in `CUserCmd::buttons` (+0x24); the prediction and the server both use that command. Hooked |
+| a melee weapon in the hands (client) | `C_TerrorMeleeWeapon`'s primary vtable `0x10609BFC` (the one of its 6 whose complete object locator has offset 0; 440 slots); the client's active weapon `m_hActiveWeapon` +0x1084 |
+| the weapon's wait (client) | `m_flNextPrimaryAttack` +0x960 (RecvProp at `0x10015974`: `push 0x960 / push "m_flNextPrimaryAttack"`; datamap entry `0x106BCBFC`): moves on when the client predicts the swing. The server's longer wait after a heavy swing reaches the client a round trip later as a prediction correction |
+| the client's clock | `C_BaseCombatWeapon::ReloadOrSwitchWeapons` `0x100178B0` + 0x72: `mov eax, [0x106C49A8]` (the client's `CGlobalVars*`), `movss xmm0, [eax+0xC]` (curtime), `comiss xmm0, [esi+0x960]` |
+| the head | `CBaseCombatCharacter::m_LastHitGroup` +0x1838 (datamap at `0x100449B3`: `mov [..], "m_LastHitGroup" / mov [..], 0x1838`), `HITGROUP_HEAD` 1, set by the swing's trace attack before the damage. Read only of the infected team (3): commons, the witch, the specials. `m_iHealth` +0xEC (SendProp at `0x1016D343`) for the log |
+| the viewmodel (client) | `C_TerrorViewModel` primary vtable `0x105C1054` (230 slots; RTTI `.?AVC_TerrorViewModel@@`; `C_BaseViewModel`'s is `0x1053FADC`, whose own virtuals start at slot 219), slot 222 `CalcViewModelView(owner, const Vector& eye_position, const QAngle& eye_angles)` `0x10288F40` (thiscall, `ret 0xC`, prologue `55 8B EC 83 EC 48 A1 .. .. .. .. 33 C5 89 45 FC 8B 45 10`; asserts with "terrorviewmodel.cpp"): copies the eye position and angles, adds the bob and lag (`0x102880D0`, `0x10288BF0`, vtable +0x374), then `SetLocalOrigin` `0x10042C00` and `SetLocalAngles` `0x10042CE0`. Hooked: the wind-up pose goes into the eye position and angles it is given; the camera is not moved |
+| slower while winding up | `CBasePlayer::m_flLaggedMovementValue` +0x20D0, as the stamina's (see "Stamina"): the stamina's tick multiplies `melee_move_scale` into its own; without `[stamina]` `melee_frame` sets it, on the ground only |
+| the damage | the `TakeDamage` hook above. Seen: a heavy swing's hit 0.2 - 0.3 s after it started; one light swing into a crowd hit four commons within 0.1 s; each target hit gets a few more calls of 0 damage after the first (-1 for one that is dying) |
+
+The server's rules reach a player's client as `@mel@ <heavy_hold ms> <queue ms>` (`0 0`: none), when they change and
+once the player is known to run the mod; the host's go straight into its session.
 
 ## Ammo maxima
 

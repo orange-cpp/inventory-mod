@@ -1,6 +1,7 @@
 // Tests of the inventory model.  A plain program: exit code 0 when every check passes.
 
 #include "inv/inventory.hpp"
+#include "inv/melee.hpp"
 #include "inv/rules.hpp"
 
 #include <cmath>
@@ -338,6 +339,76 @@ molotov = 1
         CHECK(inv::apply_rules("[stamina]\nenabled = false\n").errors.empty() && !inv::stamina_rules().enabled);
         inv::apply_rules("");
         CHECK(!inv::stamina_rules().enabled);
+
+        // [melee]
+        CHECK(!inv::melee_rules().enabled);
+        const inv::Rules melee = inv::apply_rules("[melee]\nheavy_hold = 0.8\nheavy_damage = 300\ncleave = 50\nqueue = 9\nblock = 1\n");
+        CHECK(melee.errors.size() == 2); // queue is at most 3; no "block"
+        CHECK(inv::melee_rules().enabled && inv::melee_rules().heavy_hold == 0.8f && inv::melee_rules().heavy_damage == 300.f);
+        CHECK(inv::melee_rules().cleave == 50.f && inv::melee_rules().queue == 0.8f && inv::melee_rules().heavy_recovery == 150.f);
+        CHECK(inv::melee_rules().light_damage == 40.f && inv::melee_rules().head_damage == 200.f); // the defaults
+        CHECK(inv::melee_rules().wind_speed == 65.f);
+        CHECK(!inv::apply_rules("[melee]\nwind_speed = 5\n").errors.empty() && inv::melee_rules().wind_speed == 65.f);
+        CHECK(inv::apply_rules("[melee]\nhead_damage = 300\nlight_damage = 100\n").errors.empty() &&
+              inv::melee_rules().head_damage == 300.f && inv::melee_rules().light_damage == 100.f);
+        CHECK(!inv::apply_rules("[melee]\nheavy_hold = 0\n").errors.empty() && inv::melee_rules().heavy_hold == 0.6f);
+        CHECK(inv::apply_rules("[melee]\nenabled = false\n").errors.empty() && !inv::melee_rules().enabled);
+        inv::apply_rules("");
+        CHECK(!inv::melee_rules().enabled);
+
+        // the cleave: 70 % of the one before, never under 30 % of the first
+        CHECK(inv::cleave_scale(0, 70.f, 30.f) == 1.f);
+        CHECK(std::fabs(inv::cleave_scale(1, 70.f, 30.f) - 0.7f) < 1e-5f && std::fabs(inv::cleave_scale(2, 70.f, 30.f) - 0.49f) < 1e-5f);
+        CHECK(std::fabs(inv::cleave_scale(5, 70.f, 30.f) - 0.3f) < 1e-5f);
+        CHECK(inv::cleave_scale(3, 100.f, 30.f) == 1.f);
+
+        // the wind-up: the attack is held back while held, given when let go until the weapon swings
+        {
+            using inv::MeleeInput;
+            constexpr int a = inv::k_button_attack, wind = inv::k_button_winding, heavy = inv::k_button_heavy;
+            MeleeInput in;
+            CHECK(in.command(a, 0.0, false, true, 5.f, 100.f, 0.6f, 0.8f) == a); // no melee weapon: the game's own
+            CHECK(in.command(a | 8, 0.0, true, true, 5.f, 100.f, 0.f, 0.8f) == (a | 8)); // [melee] off
+            CHECK(in.command(0, 0.0, true, true, 5.f, 100.f, 0.6f, 0.8f) == 0);
+            CHECK(in.command(a | 8, 1.0, true, true, 5.f, 100.f, 0.6f, 0.8f) == (8 | wind) && in.state() == MeleeInput::State::winding);
+            CHECK(in.peek(a | 8) == (8 | wind));
+            CHECK(in.command(a, 1.2, true, true, 5.f, 100.f, 0.6f, 0.8f) == wind);
+            CHECK(in.command(0, 1.3, true, true, 5.f, 100.f, 0.6f, 0.8f) == a && !in.heavy()); // let go at 0.3 s: light
+            CHECK(in.command(0, 1.35, true, true, 5.f, 100.f, 0.6f, 0.8f) == a); // the weapon has not swung yet
+            CHECK(in.command(0, 1.4, true, true, 6.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle); // it swung
+            // held 0.7 s: heavy
+            in.command(a, 2.0, true, true, 6.f, 100.f, 0.6f, 0.8f);
+            CHECK(in.command(0, 2.7, true, true, 6.f, 100.f, 0.6f, 0.8f) == (a | heavy) && in.heavy());
+            CHECK(in.command(0, 2.8, true, true, 7.f, 100.f, 0.6f, 0.8f) == 0);
+            // exhausted when it started: never heavy
+            in.command(a, 3.0, true, false, 7.f, 100.f, 0.6f, 0.8f);
+            CHECK(in.command(0, 4.0, true, true, 7.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(in.command(0, 4.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0);
+            // a shove calls it off until the attack is let go
+            in.command(a, 5.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            CHECK(in.command(a | inv::k_button_attack2, 5.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == inv::k_button_attack2);
+            CHECK(in.command(a, 5.5, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::cancelled);
+            CHECK(in.command(0, 5.6, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle);
+            // the queue: let go while the weapon is still waiting; the swing comes when it is ready, or is dropped
+            in.command(a, 6.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            CHECK(in.command(0, 6.1, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(in.command(0, 6.8, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(in.command(0, 7.0, true, true, 8.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle); // 0.9 s
+            // pressed again before the swing came: winding from then on
+            in.command(a, 8.0, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            in.command(0, 8.1, true, true, 8.f, 100.f, 0.6f, 0.8f);
+            CHECK(in.command(a, 8.2, true, true, 8.f, 100.f, 0.6f, 0.8f) == a);
+            CHECK(in.command(a, 8.3, true, true, 9.f, 100.f, 0.6f, 0.8f) == wind && in.winding_since() == 8.2);
+            CHECK(in.command(0, 8.9, true, true, 9.f, 100.f, 0.6f, 0.8f) == (a | heavy));
+            // the server's correction of the wait (a heavy swing's) while waiting to swing is not the swing
+            in.command(a, 10.0, true, true, 9.f, 100.f, 0.6f, 0.8f);
+            CHECK(in.command(0, 10.1, true, true, 9.f, 8.f, 0.6f, 0.8f) == a); // ready at 9; the clock is 8
+            CHECK(in.command(0, 10.2, true, true, 9.5f, 8.1f, 0.6f, 0.8f) == a); // corrected to 9.5
+            CHECK(in.command(0, 10.3, true, true, 9.5f, 8.2f, 0.6f, 0.8f) == a);
+            CHECK(in.command(0, 10.4, true, true, 10.5f, 9.5f, 0.6f, 0.8f) == 0); // it swung
+            // a weapon switch while releasing drops it
+            CHECK(in.command(0, 9.0, false, true, 0.f, 100.f, 0.6f, 0.8f) == 0 && in.state() == MeleeInput::State::idle);
+        }
 
         // [ammo_piles]
         CHECK(!inv::ammo_pile_rules().enabled && inv::ammo_pile_rules().kinds.size() == 7);

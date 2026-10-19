@@ -50,6 +50,8 @@ add_library(inventory_core STATIC
     src/inv/items.hpp
     src/inv/inventory.cpp
     src/inv/inventory.hpp
+    src/inv/melee.cpp
+    src/inv/melee.hpp
     src/inv/rules.cpp
     src/inv/rules.hpp)
 target_include_directories(inventory_core PUBLIC src)
@@ -116,6 +118,8 @@ add_library(inventory_mod SHARED
     src/game/lifecycle.hpp
     src/game/map_guns.cpp
     src/game/map_guns.hpp
+    src/game/melee.cpp
+    src/game/melee.hpp
     src/game/mem.cpp
     src/game/mem.hpp
     src/game/native_slots.cpp

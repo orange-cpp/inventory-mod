@@ -20,6 +20,7 @@
 #include "game/entities.hpp"
 #include "game/infection.hpp"
 #include "game/lifecycle.hpp"
+#include "game/melee.hpp"
 #include "game/mem.hpp"
 #include "game/native_slots.hpp"
 #include "game/pickup.hpp"
@@ -308,6 +309,8 @@ namespace game
         {
             install_client_reload_hooks(client); // a gun unloaded in the hands stays empty on the client too
             install_weapon_panel(client); // the game's own weapon-selection panel
+            if (!g_dedicated)
+                install_client_melee(client); // [melee]'s wind-up: the attack button held back (see melee.cpp)
         }
 
         // other players (a dedicated server's, a listen server's guests): their inventories, their requests and the
@@ -320,6 +323,7 @@ namespace game
             install_server_command();
             install_infection();
             install_stamina();
+            install_melee(); // after the stamina: gpGlobals
             install_client_commands();
             install_transition_restore(); // a chapter transition keeps the reserve of the stored guns (see lifecycle)
         }

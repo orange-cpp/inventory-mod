@@ -845,6 +845,55 @@ namespace hud
             }
         }
 
+        // ---- the melee wind-up --------------------------------------------------------------------------------------
+        //
+        // Session::melee_winding_since (the client's input, [melee]): a ring round the crosshair fills while the attack
+        // is held, over the server's heavy_hold; full, the swing let go is a heavy one (the ring turns orange and
+        // pulses), and letting go flashes it outward.  A tap shows nothing (it appears after a moment of holding).
+        // While exhausted it stays grey: the swing will be light.  The settings' [melee] ring turns it off.
+        void draw_melee(const game::Session& session)
+        {
+            if (!core::config().melee_ring || session.melee_hold <= 0.f)
+                return;
+            const ULONGLONG now = GetTickCount64();
+            ImDrawList* dl = ImGui::GetBackgroundDrawList();
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            const float scale = core::config().hud_scale * std::max(1.f, display.y / 900.f);
+            const ImVec2 center(std::round(display.x * 0.5f), std::round(display.y * 0.5f));
+            const float radius = 26.f * scale, thick = std::max(2.f, 3.f * scale);
+            constexpr float k_top = -1.5707963f, k_turn = 6.2831853f;
+            if (session.melee_winding_since != 0 && now >= session.melee_winding_since)
+            {
+                const float held = static_cast<float>(now - session.melee_winding_since) / 1000.f;
+                const float charge = std::clamp(held / session.melee_hold, 0.f, 1.f);
+                const float alpha = std::clamp((held - 0.12f) / 0.1f, 0.f, 1.f);
+                if (alpha > 0.f)
+                {
+                    const bool full = charge >= 1.f && session.melee_can_heavy;
+                    const float pulse = full ? 0.5f + 0.5f * std::sin(static_cast<float>(now % 100000ULL) / 1000.f * 12.f) : 0.f;
+                    dl->PathArcTo(center, radius, 0.f, k_turn, 48);
+                    dl->PathStroke(IM_COL32(0, 0, 0, static_cast<int>(110.f * alpha)), ImDrawFlags_Closed, thick + 2.f);
+                    ImU32 color = IM_COL32(235, 235, 225, static_cast<int>(220.f * alpha));
+                    if (!session.melee_can_heavy)
+                        color = IM_COL32(150, 150, 150, static_cast<int>(150.f * alpha));
+                    else if (full)
+                        color = IM_COL32(240, 150, 40, static_cast<int>((200.f + 55.f * pulse) * alpha));
+                    if (charge > 0.f)
+                    {
+                        dl->PathArcTo(center, radius, k_top, k_top + k_turn * charge, std::max(4, static_cast<int>(48.f * charge)));
+                        dl->PathStroke(color, ImDrawFlags_None, full ? thick + 1.f * pulse : thick);
+                    }
+                }
+            }
+            // a heavy swing let go: the ring flashes outward
+            if (session.melee_heavy_at != 0 && now >= session.melee_heavy_at && now - session.melee_heavy_at < 300)
+            {
+                const float t = static_cast<float>(now - session.melee_heavy_at) / 300.f;
+                dl->PathArcTo(center, radius * (1.f + 0.6f * t), 0.f, k_turn, 48);
+                dl->PathStroke(IM_COL32(240, 150, 40, static_cast<int>(230.f * (1.f - t))), ImDrawFlags_Closed, thick * (1.f - 0.5f * t));
+            }
+        }
+
         // ---- the screamer -------------------------------------------------------------------------------------------
         //
         // When the clock runs out (Session::infection_turned_at): the settings' picture over everything for a moment,
@@ -1823,6 +1872,14 @@ namespace hud
             }
             nc::EndGroupBox();
 
+            if (nc::BeginGroupBox("Melee", ImVec2(0, 0)))
+            {
+                changed |= nc::Checkbox("Wind-up ring at the crosshair", &cfg.melee_ring);
+                nc::SetItemTooltip("Fills while the attack is held with a melee weapon; full: the swing is a heavy one.");
+                nc::TextDisabled("Light and heavy swings are [melee] in the host's inventory_mod.toml.");
+            }
+            nc::EndGroupBox();
+
             if (nc::BeginGroupBox("Limits", ImVec2(0, 0)))
             {
                 int slots = cfg.slots;
@@ -1936,6 +1993,8 @@ namespace hud
             }
             if (session.playing || g_stamina_preview)
                 draw_stamina(session);
+            if (session.playing)
+                draw_melee(session);
             if (session.playing || g_infection_preview)
                 draw_infection(session);
             draw_screamer(session);
@@ -2041,6 +2100,7 @@ namespace hud
                 else if (key == "stamina_vignette") cfg.stamina_vignette = on;
                 else if (key == "stamina_cover_game_hud") cfg.stamina_cover_game_hud = on;
                 else if (key == "stamina_cover_mod_hud") cfg.stamina_cover_mod_hud = on;
+                else if (key == "melee_ring") cfg.melee_ring = on;
                 else if (key == "key_toggle") cfg.key_toggle = std::atoi(value.c_str());
                 else if (key == "key_prev") cfg.key_prev = std::atoi(value.c_str());
                 else if (key == "key_next") cfg.key_next = std::atoi(value.c_str());

@@ -76,10 +76,11 @@ SETTINGS = [
      [(str(n), str(n)) for n in (0, 1, 2, 3, 4, 6, 8)]),
     ("max_weight", "Weight limit", "What you can carry." + LIMIT_NOTE,
      [("0", "None")] + [(str(n), str(n)) for n in (10, 15, 20, 25, 30, 40, 50)]),
+    ("melee_ring", "Melee: wind-up ring", "A ring at the crosshair fills while a melee swing winds up.", ON_OFF),
 ]
-# the right-hand column: the keys and the limits
+# the right-hand column: the keys, the limits and the melee's ring (the left one is full: its buttons end at the frame)
 RIGHT = {"key_toggle", "key_prev", "key_next", "key_use", "key_drop", "key_store", "key_pickup", "key_unload", "slots", "weapon_slots",
-         "max_weight"}
+         "max_weight", "melee_ring"}
 
 FLYOUT_BUTTON = '''
 	"BtnInventoryMod"	[$WIN32]

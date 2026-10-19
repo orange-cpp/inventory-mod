@@ -9,6 +9,7 @@
 #include "game/client_view.hpp"
 #include "game/entities.hpp"
 #include "game/infection.hpp"
+#include "game/melee.hpp"
 #include "game/native_slots.hpp"
 #include "game/players.hpp"
 #include "game/stamina.hpp"
@@ -224,6 +225,12 @@ namespace game::detail
                 s.stamina = permille < 0 ? -1.f : std::min(permille, 1000) / 1000.f;
                 s.stamina_exhausted = exhausted != 0;
             });
+            return true;
+        }
+        // [melee]: "@mel@ <hold ms> <queue ms>"
+        if (text != nullptr && std::strcmp(head, k_melee_marker) == 0)
+        {
+            mem::guarded([&] { apply_melee_line(text); });
             return true;
         }
         return g_process_print.original()(state, edx, msg);

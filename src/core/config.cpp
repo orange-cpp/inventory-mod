@@ -118,6 +118,8 @@ namespace core
             c.stamina_cover_game_hud = stamina["cover_game_hud"].value_or(c.stamina_cover_game_hud);
             c.stamina_cover_mod_hud = stamina["cover_mod_hud"].value_or(c.stamina_cover_mod_hud);
 
+            c.melee_ring = root["melee"]["ring"].value_or(c.melee_ring);
+
             const toml::node_view limits = root["limits"];
             c.slots = clamp_slots(limits["slots"].value_or(static_cast<std::int64_t>(c.slots)));
             c.weapon_slots = clamp_weapon_slots(limits["weapon_slots"].value_or(static_cast<std::int64_t>(c.weapon_slots)));
@@ -310,6 +312,8 @@ namespace core
                 c.stamina_cover_game_hud ? "true" : "false");
         fprintf(f, "cover_mod_hud = %s    # and over the mod's boxes, wheel and window (only with cover_game_hud)\n",
                 c.stamina_cover_mod_hud ? "true" : "false");
+        fprintf(f, "\n[melee]   # how a melee swing's wind-up shows (the host's inventory_mod.toml turns it on)\n");
+        fprintf(f, "ring = %s       # a ring at the crosshair fills while the attack is held\n", c.melee_ring ? "true" : "false");
         fprintf(f, "\n[limits]   # when you play alone or host and there is no inventory_mod.toml\n");
         fprintf(f, "slots = %d          # the most item boxes\n", g_own_slots);
         fprintf(f, "weapon_slots = %d    # the most weapon boxes\n", g_own_weapon_slots);

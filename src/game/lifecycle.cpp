@@ -10,6 +10,7 @@
 #include "game/map_guns.hpp"
 #include "game/players.hpp"
 #include "game/rounds.hpp"
+#include "game/melee.hpp"
 #include "game/stamina.hpp"
 #include "game/weapons.hpp"
 #include "inv/rules.hpp"
@@ -408,6 +409,7 @@ namespace game::detail
         if (simulating)
             mem::guarded([] {
                 stamina_frame();
+                melee_frame();
                 drop_dead_inventories();
                 cap_reserves();
                 place_map_packs_due();

@@ -85,6 +85,8 @@ namespace game::detail
             s.stamina = -1.f;
             s.stamina_exhausted = false;
         }
+        if (!in_game)
+            s.melee_hold = s.melee_queue = 0.f; // the next server says again whether it has [melee]
     }
 
     // The client's half of reload_held_back.  The game predicts its own weapon on the client: client.dll runs the
@@ -118,6 +120,16 @@ namespace game::detail
                 player = g_get_client_entity(g_client_entities, g_get_local_player(g_engine_client));
         });
         return player;
+    }
+
+    void* client_active_weapon(void* player)
+    {
+        if (player == nullptr || g_get_client_entity_from_handle == nullptr)
+            return nullptr;
+        const std::uint32_t handle = mem::read_or<std::uint32_t>(reinterpret_cast<std::uintptr_t>(player) + k_c_active_weapon, k_invalid_handle);
+        void* weapon = nullptr;
+        mem::guarded([&] { weapon = g_get_client_entity_from_handle(g_client_entities, handle); });
+        return weapon;
     }
 
     // The unload key was pressed: the gun in the hands (as the client sees it) does not reload by itself.

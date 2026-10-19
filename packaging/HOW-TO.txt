@@ -104,6 +104,16 @@ Stamina (when the host's inventory_mod.toml has [stamina])
   either off in the window's Settings tab ("Stamina"); there you can also keep the darkened edges under the game's
   HUD and the mod's boxes.
 
+Melee (when the host's inventory_mod.toml has [melee])
+  Melee weapons swing as in No More Room in Hell 2. Hold the attack to wind the swing up (the weapon draws back) and
+  let go to swing: a quick tap is a light swing, holding it until the ring at the crosshair turns orange and the weapon
+  trembles (about half a second) is a heavy one: twice the damage, but slower to recover and, with stamina, more
+  tiring. You walk slower while winding up. A light swing does not kill a zombie by itself: about three to the body,
+  two to the head; a heavy one kills. Exhausted, you only swing light. Shove while
+  winding up to call the swing off. Press again while the last swing is still recovering and the next one comes as
+  soon as it can. One swing into a crowd does less to each infected after the first.
+  Turn the ring off in the window's Settings tab ("Melee") or on Options > Inventory Mod.
+
 Files the mod writes next to the DLL
   inventory_mod_settings.toml  your settings and keys (the Settings tab writes it)
   inventory_mod.inventory  your inventory when you play alone / host (on someone else's server it is kept there)

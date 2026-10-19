@@ -6,6 +6,7 @@
 #include "core/log.hpp"
 #include "game/backend.hpp"
 #include "game/lifecycle.hpp"
+#include "game/melee.hpp"
 #include "game/players.hpp"
 #include "inv/rules.hpp"
 
@@ -25,8 +26,9 @@ namespace game::detail
     // active weapon's next secondary attack time moves on) use stamina; regen_delay seconds after the last use it
     // comes back.  At 0 the survivor is exhausted until it is back to `recover`: their m_flLaggedMovementValue
     // (the game's own movement speed scale) eases down to `slow` while on the ground, the wait after each swing or
-    // shove is stretched to `swing_speed`, and CBaseEntity::TakeDamage scales the damage their melee weapon does
-    // to `damage`.  The game's own shove fatigue (m_iShovePenalty) is kept at 0 meanwhile.
+    // shove is stretched to `swing_speed`, and the damage their melee weapon does is `damage` % (the TakeDamage
+    // hook is melee.cpp's: stamina_damage_scale).  The game's own shove fatigue (m_iShovePenalty) is kept at 0
+    // meanwhile.  [melee]'s heavy swing costs more (stamina_spend, from its PrimaryAttack hook).
     //
     // Checked in the game (2026-10-16): a shove waits 0.77 s (pistol or melee) and moves both attack times on, a
     // melee swing too (with the shove penalty not raised); a reload moves the secondary time a tenth or two;
@@ -39,14 +41,8 @@ namespace game::detail
     //   CBaseCombatWeapon m_flNextPrimaryAttack +0x13F0, m_flNextSecondaryAttack +0x13F4 (game time).
     //   gpGlobals: server.dll PlayerInfoManager002 slot 1 GetGlobalVars (0x101897E0: mov eax, [0x107F7690]);
     //       CGlobalVars curtime +0xC (what most of server.dll reads of it, compared with m_flNextPrimaryAttack).
-    //   server.dll 0x10055C70 CBaseEntity::TakeDamage(const CTakeDamageInfo&) (thiscall, ret 4; it warns
-    //       "CBaseEntity::TakeDamage:  with inputInfo.GetDamageForce() == vec3_origin").  CTakeDamageInfo is 0x60
-    //       bytes (its copy constructor 0x10010140): m_hInflictor +0x30, m_hAttacker +0x34 (what its GetAttacker,
-    //       0x1003D4B0, reads), m_hWeapon +0x38, m_flDamage +0x3C, m_bitsDamageType +0x48.
 
     constexpr float k_run_speed = 130.f; // faster than this on the ground is running (a walk is 85, a run 220, a limp 150)
-
-    core::Hook<TakeDamageFn> g_take_damage;
 
     SetShovePenaltyFn g_set_shove_penalty = nullptr;
 
@@ -234,7 +230,7 @@ namespace game::detail
         const float target = st.exhausted ? rules.slow / 100.f : 1.f;
         const float step = 1.5f * dt;
         st.speed = st.speed < target ? std::min(target, st.speed + step) : std::max(target, st.speed - step);
-        const float apply = on_ground ? st.speed : 1.f;
+        const float apply = on_ground ? st.speed * melee_move_scale(player) : 1.f; // ([melee]'s wind-up slows too)
         if (apply != st.applied || (apply != 1.f && mem::read_or<float>(p + k_off_lagged_movement, apply) != apply))
         {
             write_float(player, k_off_lagged_movement, apply);
@@ -297,49 +293,50 @@ namespace game::detail
         }
     }
 
-    // An exhausted survivor's melee weapon does less damage.
-    int __fastcall hk_take_damage(void* self, void* edx, const void* info)
+    Stamina* stamina_of(void* player)
     {
-        if (!g_stamina.empty() && info != nullptr)
-        {
-            alignas(16) unsigned char copy[k_damage_info_size];
-            bool scaled = false;
-            mem::guarded([&] {
-                const std::uintptr_t i = reinterpret_cast<std::uintptr_t>(info);
-                void* attacker = entity_from_handle(*reinterpret_cast<const std::uint32_t*>(i + k_off_damage_attacker));
-                if (attacker == nullptr)
-                    return;
-                for (const auto& entry : g_stamina)
-                {
-                    const Stamina& st = entry.second;
-                    if (st.player != attacker)
-                        continue;
-                    if (!st.exhausted || !st.melee || st.weapon == nullptr)
-                        return;
-                    if (entity_from_handle(*reinterpret_cast<const std::uint32_t*>(i + k_off_damage_weapon)) != st.weapon &&
-                        entity_from_handle(*reinterpret_cast<const std::uint32_t*>(i + k_off_damage_inflictor)) != st.weapon)
-                        return;
-                    std::memcpy(copy, info, sizeof(copy));
-                    // (seen in the game: a common infected's 50 became 25, so it took two hits)
-                    *reinterpret_cast<float*>(copy + k_off_damage) *= inv::stamina_rules().damage / 100.f;
-                    scaled = true;
-                    return;
-                }
-            });
-            if (scaled)
-                return g_take_damage.original()(self, edx, copy);
-        }
-        return g_take_damage.original()(self, edx, info);
+        if (player == nullptr)
+            return nullptr;
+        for (auto& entry : g_stamina)
+            if (entry.second.player == player)
+                return &entry.second;
+        return nullptr;
+    }
+
+    // An exhausted survivor's melee weapon does less damage.  (Seen in the game: a common infected's 50 became 25,
+    // so it took two hits.)
+    float stamina_damage_scale(void* attacker, void* weapon)
+    {
+        const Stamina* st = stamina_of(attacker);
+        if (st == nullptr || !st->exhausted || !st->melee || st->weapon == nullptr || st->weapon != weapon)
+            return 1.f;
+        return inv::stamina_rules().damage / 100.f;
+    }
+
+    bool stamina_exhausted(void* player)
+    {
+        const Stamina* st = stamina_of(player);
+        return st != nullptr && st->exhausted;
+    }
+
+    void stamina_spend(void* player, float cost, const char* what)
+    {
+        Stamina* st = stamina_of(player);
+        if (st == nullptr || !inv::stamina_rules().enabled)
+            return;
+        if (cost < 0.f)
+            st->value = std::min(100.f, st->value - cost);
+        else
+            stamina_use(user_id_of(player), *st, cost, game_time(), what);
     }
 
     void install_stamina()
     {
-        // the game's clock, and TakeDamage for an exhausted survivor's melee damage
+        // the game's clock (an exhausted survivor's melee damage is melee.cpp's TakeDamage hook)
         const auto server_create = reinterpret_cast<CreateInterfaceFn>(
             GetProcAddress(reinterpret_cast<HMODULE>(g.server.base), "CreateInterface"));
         void* info_manager = server_create != nullptr ? server_create("PlayerInfoManager002", nullptr) : nullptr;
         const std::uintptr_t get_globals = info_manager != nullptr ? mem::vslot(info_manager, 1) : 0;
-        const std::uintptr_t take_damage = g.server.base + k_rva_take_damage;
         if (get_globals != 0 && mem::find_pattern(get_globals, 6, "A1 ?? ?? ?? ?? C3") == get_globals)
             g_globals = mem::read_or<void*>(mem::read_or<std::uintptr_t>(get_globals + 1));
         const std::uintptr_t set_shove_penalty = g.server.base + k_rva_set_shove_penalty;
@@ -351,9 +348,7 @@ namespace game::detail
         if (g_globals != nullptr && same_engine && change_accessor != 0 &&
             mem::find_pattern(accessor_call, 18, "51 8B 0D ?? ?? ?? ?? 8B 11 8B 82 84 01 00 00 FF D0 C3") == accessor_call &&
             mem::find_pattern(set_shove_penalty, 16, "55 8B EC 56 57 8B 7D 08 8B F1 39 BE F0 2C 00 00") == set_shove_penalty &&
-            game_frame_installed() &&
-            mem::find_pattern(take_damage, 11, "55 8B EC 83 EC 6C 57 8B F9 8B 0D") == take_damage &&
-            g_take_damage.create("TakeDamage", reinterpret_cast<void*>(take_damage), hk_take_damage) && g_take_damage.enable())
+            game_frame_installed())
         {
             g_change_accessor = reinterpret_cast<ChangeAccessorFn>(change_accessor);
             g_set_shove_penalty = reinterpret_cast<SetShovePenaltyFn>(set_shove_penalty);

@@ -58,6 +58,15 @@ namespace game
         // Stamina ([stamina] in the rules): 0 .. 1, -1 when there is none; exhausted: it ran out and is not back yet.
         float stamina = -1.f;
         bool stamina_exhausted = false;
+        // [melee] (the server's rules): how long the attack is held for a heavy swing, and how long a swing asked for
+        // during the last one's wait is kept, in seconds (0: no [melee], the game's own swings).  And the wind-up, from
+        // the client's input (main thread): since when (GetTickCount64, 0: not winding), whether it can be heavy, and
+        // when a heavy swing was let go (for its flash at the crosshair).
+        float melee_hold = 0.f;
+        float melee_queue = 0.f;
+        ULONGLONG melee_winding_since = 0;
+        bool melee_can_heavy = true;
+        ULONGLONG melee_heavy_at = 0;
         // Server side, main thread only: the player's reserve (m_iAmmo, by the game's index) when the chapter ended,
         // waiting for the next chapter: the game brings back only the reserve of the guns in the hands, and a stored
         // gun's reserve is the player's (see "a chapter transition" in game/lifecycle.cpp).

@@ -157,6 +157,56 @@ namespace inv
             g_stamina = stamina;
         }
 
+        MeleeRules g_melee;
+
+        // [melee] (see rules.hpp)
+        void read_melee(const toml::table& table, Rules& rules)
+        {
+            MeleeRules melee;
+            melee.enabled = true; // a table at all switches it on, unless it says otherwise
+            struct Number
+            {
+                const char* key;
+                float MeleeRules::*field;
+                double low, high;
+            };
+            static constexpr Number k_numbers[] = {
+                {"heavy_hold", &MeleeRules::heavy_hold, 0.1, 3},         {"heavy_damage", &MeleeRules::heavy_damage, 0, 1000},
+                {"heavy_recovery", &MeleeRules::heavy_recovery, 50, 400}, {"heavy_stamina", &MeleeRules::heavy_stamina, 0, 100},
+                {"light_damage", &MeleeRules::light_damage, 0, 1000},     {"cleave", &MeleeRules::cleave, 0, 100},
+                {"head_damage", &MeleeRules::head_damage, 0, 1000},       {"wind_speed", &MeleeRules::wind_speed, 10, 100},
+                {"cleave_min", &MeleeRules::cleave_min, 0, 100},          {"queue", &MeleeRules::queue, 0, 3},
+            };
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled")
+                {
+                    if (const auto on = node.value_exact<bool>())
+                        melee.enabled = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "melee.enabled must be true or false"));
+                    continue;
+                }
+                const Number* found = nullptr;
+                for (const Number& n : k_numbers)
+                    if (key == n.key)
+                        found = &n;
+                if (found == nullptr)
+                {
+                    rules.errors.push_back(at_line(node, "unknown setting melee." + std::string(key.str())));
+                    continue;
+                }
+                const auto value = node.is_boolean() ? std::nullopt : number(node);
+                char range[64];
+                std::snprintf(range, sizeof(range), " must be a number from %g to %g", found->low, found->high);
+                if (!value || *value < found->low || *value > found->high)
+                    rules.errors.push_back(at_line(node, "melee." + std::string(key.str()) + range));
+                else
+                    melee.*found->field = static_cast<float>(*value);
+            }
+            g_melee = melee;
+        }
+
         AmmoPileRules g_ammo_piles;
 
         // [ammo_piles] (see rules.hpp)
@@ -290,6 +340,11 @@ namespace inv
         return g_stamina;
     }
 
+    const MeleeRules& melee_rules()
+    {
+        return g_melee;
+    }
+
     Rules apply_rules(std::string_view text)
     {
         Rules rules;
@@ -412,6 +467,10 @@ namespace inv
         if (const toml::table* stamina = root["stamina"].as_table())
             read_stamina(*stamina, rules);
 
+        g_melee = MeleeRules{};
+        if (const toml::table* melee = root["melee"].as_table())
+            read_melee(*melee, rules);
+
         g_ammo_piles = AmmoPileRules{};
         if (const toml::table* piles = root["ammo_piles"].as_table())
             read_ammo_piles(*piles, rules);
@@ -422,7 +481,7 @@ namespace inv
 
         for (const auto& [key, node] : root)
             if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection" &&
-                key != "stamina" && key != "round_weight" && key != "ammo_piles" &&
+                key != "stamina" && key != "melee" && key != "round_weight" && key != "ammo_piles" &&
                 key != "map_guns")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
         return rules;

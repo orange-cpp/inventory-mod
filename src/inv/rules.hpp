@@ -108,6 +108,42 @@ namespace inv
     // The last apply_rules' [stamina] (the defaults, disabled, without one).
     const StaminaRules& stamina_rules();
 
+    // [melee]: the melee of No More Room in Hell 2.  Pressing the attack winds the swing up and letting go swings: let
+    // go before heavy_hold seconds it is a light swing, after it a heavy one (more damage, more stamina, a longer
+    // wait).  A shove while winding up calls the swing off.  A swing asked for during the last one's wait is kept for
+    // `queue` seconds and comes as soon as the weapon is ready.  One swing that hits several targets does less to
+    // each further one (cleave).  A light swing does not kill a common infected (50 health) by itself: about three to
+    // the body, two to the head; a heavy one does.  Winding up needs the mod on the player's client; without it every swing is light.
+    //
+    //   [melee]
+    //   enabled = true
+    //   heavy_hold = 0.6             # seconds the attack is held for a heavy swing
+    //   heavy_damage = 200           # % of the weapon's damage a heavy swing does
+    //   heavy_recovery = 150         # % of the weapon's wait after a heavy swing
+    //   heavy_stamina = 25           # with [stamina]: what a heavy swing costs (instead of its `swing`)
+    //   light_damage = 40            # % of the weapon's damage a light swing does
+    //   head_damage = 200            # % more on a hit to the head (on top of light / heavy)
+    //   cleave = 70                  # each further target of one swing takes this % of what the one before took
+    //   cleave_min = 30              # but never less than this % of what the first took
+    //   queue = 0.8                  # seconds a swing asked for during the last one's wait is kept
+    //   wind_speed = 65              # % of the normal speed while winding up a heavy swing (eased in with the charge)
+    struct MeleeRules
+    {
+        bool enabled = false;
+        float heavy_hold = 0.6f;
+        float heavy_damage = 200.f;
+        float heavy_recovery = 150.f;
+        float heavy_stamina = 25.f;
+        float light_damage = 40.f;
+        float head_damage = 200.f;
+        float cleave = 70.f;
+        float cleave_min = 30.f;
+        float queue = 0.8f;
+        float wind_speed = 65.f;
+    };
+    // The last apply_rules' [melee] (the defaults, disabled, without one).
+    const MeleeRules& melee_rules();
+
     // [ammo_piles]: a map's ammo pile is not endless.  It holds a random ammo type of `kinds`, from min_magazines to
     // max_magazines magazines of it; anyone takes as many as they can carry (a bot: only for a gun it has), the rest
     // stays, and an empty pile is gone.  With replace_map_piles each of the map's piles becomes a pack of its rolled type

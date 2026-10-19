@@ -450,6 +450,7 @@ namespace ui::overlay
             {"stamina_vignette", PageSetting::Bool, {}},
             {"stamina_cover_game_hud", PageSetting::Bool, {}},
             {"stamina_cover_mod_hud", PageSetting::Bool, {}},
+            {"melee_ring", PageSetting::Bool, {}},
             {"key_toggle", PageSetting::Int, {}},
             {"key_prev", PageSetting::Int, {}},
             {"key_next", PageSetting::Int, {}},
@@ -484,6 +485,7 @@ namespace ui::overlay
             else if (k == "stamina_vignette") number = c.stamina_vignette;
             else if (k == "stamina_cover_game_hud") number = c.stamina_cover_game_hud;
             else if (k == "stamina_cover_mod_hud") number = c.stamina_cover_mod_hud;
+            else if (k == "melee_ring") number = c.melee_ring;
             else if (k == "key_toggle") number = static_cast<float>(c.key_toggle);
             else if (k == "key_prev") number = static_cast<float>(c.key_prev);
             else if (k == "key_next") number = static_cast<float>(c.key_next);
@@ -587,7 +589,7 @@ namespace ui::overlay
         {
             game::mem::guarded([&] {
                 gameui_fn<SetTitleFn>(k_rva_set_title)(self, "Inventory Mod", 0,
-                                                       "The inventory mod's settings: its HUD, the infection and stamina.", 0,
+                                                       "The inventory mod's settings: its HUD, the infection, stamina and melee.", 0,
                                                        0, 0, 0x7FFFFFFF);
             });
         }
