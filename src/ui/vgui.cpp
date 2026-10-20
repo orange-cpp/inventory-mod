@@ -42,6 +42,8 @@ namespace ui::vgui
         void* g_schemes = nullptr;
 
         PanelNameFn g_panel_name = nullptr;
+        PanelRectFn g_panel_size = nullptr;
+        PanelRectFn g_panel_abs_pos = nullptr;
         GetSchemeFn g_get_scheme = nullptr;
         GetISchemeFn g_get_ischeme = nullptr;
         SurfaceColorFn g_set_color = nullptr;
@@ -58,6 +60,7 @@ namespace ui::vgui
         SurfaceSoundFn g_play_sound = nullptr;
         SurfaceSubRectFn g_sub_rect = nullptr;
         SurfacePolygonFn g_polygon = nullptr;
+        SurfaceAlphaFn g_alpha_multiplier = nullptr; // (optional: the scoreboard line's fade)
 
         core::Hook<PaintTraverseFn> g_paint_traverse;
         std::atomic<unsigned> g_overlay_panel{0}; // FocusOverlayPanel's VPANEL, once seen
@@ -180,6 +183,48 @@ namespace ui::vgui
             ui::overlay::queue_in_frame_pass();
         }
 
+        // The scoreboard's mutators line.  The scoreboard's title label ("MissionTitle" of Resource/UI/ScoreBoard.res:
+        // "Dead Center, Normal") is found as it paints: its screen rectangle, and the alpha multiplier the scoreboard
+        // set for its children from its fade (1 when it shows fully, less while it fades in or out).  The line is
+        // drawn when the outermost PaintTraverse (the root's) returns: still inside the surface's StartDrawing, with the
+        // root's (the whole screen's) context, and after every panel.  Drawn in the HUD's pass (after FocusOverlayPanel)
+        // or right after the title, it was under something the game paints over the top of the screen later in the
+        // frame (seen 2026-10-20: dimmed, with the multiplier at 1).  The multiplier is 1 again there, so the fade is
+        // the title's, applied by hand.
+        struct Title
+        {
+            int x = 0, y = 0, w = 0, h = 0;
+            float alpha = 1.f;
+            bool pending = false; // painted in this frame, the line not drawn yet
+        } g_title;
+        int g_depth = 0; // PaintTraverse calls under way (main thread)
+
+        void find_title(void* panels, unsigned vpanel)
+        {
+            Title title;
+            g_panel_abs_pos(panels, vpanel, title.x, title.y);
+            g_panel_size(panels, vpanel, title.w, title.h);
+            title.alpha = g_alpha_multiplier != nullptr ? g_alpha_multiplier(g_surface) : 1.f;
+            title.pending = true;
+            g_title = title;
+        }
+
+        bool scoreboard_guarded(void* panels, unsigned vpanel, bool draw)
+        {
+            __try
+            {
+                if (draw)
+                    hud::paint_scoreboard(g_title.x, g_title.y, g_title.w, g_title.h, g_title.alpha);
+                else
+                    find_title(panels, vpanel);
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
         // (a separate function: __try cannot share one with objects that need unwinding)
         bool paint_guarded()
         {
@@ -196,7 +241,32 @@ namespace ui::vgui
 
         void __fastcall hk_paint_traverse(void* panels, void* edx, unsigned vpanel, bool force_repaint, bool allow_force)
         {
+            ++g_depth;
             g_paint_traverse.original()(panels, edx, vpanel, force_repaint, allow_force);
+            --g_depth;
+            // the scoreboard's title: only painted while the scoreboard shows (every panel's name is looked at: a
+            // VPANEL may be made again, and a name is one virtual call); the line once the root has painted
+            if (g_panel_size != nullptr && g_panel_abs_pos != nullptr && !g_broken && g_fonts_w != 0)
+            {
+                bool ok = true;
+                if (g_depth > 0)
+                {
+                    const char* name = nullptr;
+                    mem::guarded([&] { name = g_panel_name(panels, vpanel); });
+                    if (name != nullptr && name[0] == 'M' && std::strcmp(name, "MissionTitle") == 0)
+                        ok = scoreboard_guarded(panels, vpanel, false);
+                }
+                else if (g_title.pending)
+                {
+                    g_title.pending = false;
+                    ok = scoreboard_guarded(panels, vpanel, true);
+                }
+                if (!ok)
+                {
+                    g_panel_size = nullptr; // (no more tries)
+                    INV_LOG("vgui: fault while painting the scoreboard's mutators line: it is off");
+                }
+            }
             unsigned overlay = g_overlay_panel.load(std::memory_order_relaxed);
             if (overlay == 0)
             {
@@ -272,6 +342,17 @@ namespace ui::vgui
         g_schemes = schemes;
         g_surface = surface;
         g_panel_name = slot_fn<PanelNameFn>(panels, k_vt_panel_get_name);
+        // (optional: only the scoreboard's mutators line needs them)
+        if (slot_is(surface, k_vt_surface_get_alpha_multiplier, "D9 41 10 C3"))
+            g_alpha_multiplier = slot_fn<SurfaceAlphaFn>(surface, k_vt_surface_get_alpha_multiplier);
+        if (slot_is(panels, k_vt_panel_get_size, "55 8B EC 8B 55 10 8B 4D 08 8B 01 8B 40 34 52 8B") &&
+            slot_is(panels, k_vt_panel_get_abs_pos, "55 8B EC 8B 55 10 8B 4D 08 8B 01 8B 40 48 52 8B"))
+        {
+            g_panel_size = slot_fn<PanelRectFn>(panels, k_vt_panel_get_size);
+            g_panel_abs_pos = slot_fn<PanelRectFn>(panels, k_vt_panel_get_abs_pos);
+        }
+        else
+            INV_LOG("vgui: IPanel GetSize / GetAbsPos (slots 5, 10) do not look as expected: no mutators on the scoreboard");
         g_get_scheme = slot_fn<GetSchemeFn>(schemes, k_vt_schemes_get_scheme);
         g_get_ischeme = slot_fn<GetISchemeFn>(schemes, k_vt_schemes_get_ischeme);
         g_set_color = slot_fn<SurfaceColorFn>(surface, k_vt_surface_set_color);

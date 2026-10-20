@@ -808,3 +808,22 @@ ConVar its parent's too, but not for a ConCommand, whose +0x1C is its completion
   back at the next roll.
 
 Not yet seen working in the game.
+
+The scoreboard (Tab) shows the chapter's mutators under its title. It is client.dll's CClientScoreBoardDialog
+"scores" (Resource/UI/ScoreBoard.res); the title "Dead Center, Normal" is its Label "MissionTitle". The PaintTraverse
+hook looks up the name of every panel it paints. When MissionTitle paints, the hook records its screen rectangle
+through IPanel slot 10 GetAbsPos and slot 5 GetSize. L4D2's VPanelWrapper (vtable 0x100480CC) does not use the SDK's
+order: it forwards each slot to the VPanel's (vtable 0x10047FFC). Slot 5 goes to VPanel+0x34 (slot 13, 0x1001D8A0,
+which reads +0x2C/+0x2E), and slot 10 goes to VPanel+0x48 (slot 18, 0x1001D9D0, the absolute position at +0x44/+0x46).
+Slot 9, which the SDK's order would make GetAbsPos, takes one argument. hud::paint_scoreboard draws "Mutator: ..." at
+the label's bottom-left. Seen working in the game on 2026-10-20, drawn at the root's end as
+below.
+
+Something the game paints over the top of the screen later in the frame dimmed the line in two places: the HUD's pass
+(after FocusOverlayPanel), and right after the title, where the alpha multiplier was 1.000. So the line is drawn when
+the outermost PaintTraverse (the root's) returns, counted by nesting depth in the hook. That is still inside the
+surface's StartDrawing, with the root's context, and after every panel. The scoreboard fades in and out. Its fade is
+the alpha multiplier as read right after the title paints: a panel's PaintTraverse sets it for its children, and
+DrawSetTextColor (slot 19, 0x10008800) multiplies by it (+0x10). It is read through CMatSystemSurface slot 106
+DrawGetAlphaMultiplier (0x10009F10, `fld [ecx+0x10]; ret`; slot 105, 0x10009EE0, sets it clamped to 0 .. 1). At the
+root's end it is 1 again, so the line applies that fade itself.

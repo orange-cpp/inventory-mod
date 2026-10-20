@@ -16,6 +16,9 @@ namespace hud
     // Every frame the game paints its panels (main thread, ui/vgui.cpp): everything but the inventory window, with the
     // game's VGUI surface.
     void paint_vgui();
+    // Main thread (ui/vgui.cpp), once every panel has painted in a frame that painted the scoreboard's title label
+    // (its screen rectangle, and the scoreboard's fade 0 .. 1): the chapter's mutators under it.
+    void paint_scoreboard(int x, int y, int w, int h, float alpha);
     // The inventory window or the radial wheel is open, so the overlay takes the mouse from the game.
     bool wants_input();
     // ... and the keyboard too (the window; the wheel leaves it to the game, so the player can keep walking).

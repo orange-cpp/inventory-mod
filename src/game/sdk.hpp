@@ -414,6 +414,12 @@ namespace game::sdk
     constexpr int k_vt_panel_get_name = 36, k_vt_panel_paint_traverse = 41;
     constexpr std::uintptr_t k_rva_panel_get_name = 0x1EAC0, k_rva_panel_paint_traverse = 0x1EBE0;
     using PanelNameFn = const char*(__thiscall*)(void* panels, unsigned vpanel);
+    // VPanelWrapper forwards each slot to the VPanel's own (vtable 0x10047FFC; L4D2's order is not the SDK's): slot 5
+    // GetSize(vpanel, int& wide, int& tall) (0x1001E6E0 -> VPanel slot 13 0x1001D8A0: +0x2C, +0x2E) and slot 10
+    // GetAbsPos(vpanel, int& x, int& y) (0x1001E780 -> VPanel slot 18 0x1001D9D0: the layout's absolute position at
+    // +0x44 / +0x46, through the surface's +0x20C).  For the scoreboard's title (hud: the chapter's mutators).
+    constexpr int k_vt_panel_get_size = 5, k_vt_panel_get_abs_pos = 10;
+    using PanelRectFn = void(__thiscall*)(void* panels, unsigned vpanel, int& a, int& b);
     using PaintTraverseFn = void(__fastcall*)(void* panels, void* edx, unsigned vpanel, bool force_repaint, bool allow_force);
 
     // vgui2.dll "VGUI_Scheme010" (CSchemeManager, vtable 0x10046FCC): slot 5 GetScheme(tag), slot 8 GetIScheme(handle);
@@ -445,6 +451,9 @@ namespace game::sdk
     constexpr int k_vt_surface_play_sound = 75; // PlaySound(file under sound/): the engine's callback at +0x102D0
     constexpr int k_vt_surface_textured_sub_rect = 98; // (x0, y0, x1, y1, s0, t0, s1, t1)
     constexpr int k_vt_surface_textured_polygon = 99; // (n, Vertex_t*, clip)
+    // DrawGetAlphaMultiplier (0x10009F10: `fld [ecx+0x10]; ret`; slot 105, 0x10009EE0, sets the field clamped to 0 .. 1;
+    // DrawSetTextColor, slot 19 0x10008800, multiplies its alpha by it): the scoreboard line reads its fade
+    constexpr int k_vt_surface_get_alpha_multiplier = 106;
     struct SurfaceVertex // vgui::Vertex_t
     {
         float x, y, u, v;
@@ -461,6 +470,7 @@ namespace game::sdk
     using SurfaceScreenSizeFn = void(__thiscall*)(void* surface, int& w, int& h);
     using SurfaceTextSizeFn = void(__thiscall*)(void* surface, unsigned font, const wchar_t* text, int& w, int& h);
     using SurfaceSoundFn = void(__thiscall*)(void* surface, const char* file);
+    using SurfaceAlphaFn = float(__thiscall*)(void* surface);
     using SurfaceSubRectFn = void(__thiscall*)(void* surface, int x0, int y0, int x1, int y1, float s0, float t0, float s1, float t1);
     using SurfacePolygonFn = void(__thiscall*)(void* surface, int n, SurfaceVertex* vertices, bool clip);
 

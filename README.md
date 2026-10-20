@@ -170,7 +170,8 @@ mod see nothing. When you ping an item or an enemy your survivor says it, with t
 With `[mutators]` in the host's `inventory_mod.toml` a chapter can get mutators. When a chapter starts (the next one, or
 a new campaign; a lost round keeps the chapter's) the host rolls: with `chance` % (30 in the example) the chapter gets
 `count` different ones from `pool`. A map in `[mutators.maps]` gets its own list instead (`[]`: never any there). Every
-player with the mod is told, and with `announce` the HUD says "Mutator: Fog"; the Debug tab shows the chapter's.
+player with the mod is told, and with `announce` the HUD says "Mutator: Fog"; the scoreboard (Tab) shows the
+chapter's under its title, and so does the Debug tab.
 
 - **Fog** (`[mutators.fog]`): the game's own distance fog, thick and near (`density` 0 .. 1, 0.6), in the map's fog
   colour or a `color` of its own (`"40 60 40"`). Each player's game draws it (client.dll's fog ConVars), so it works

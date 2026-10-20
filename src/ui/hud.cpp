@@ -2309,6 +2309,29 @@ namespace hud
         paint_hud(copy, painter, ImVec2(static_cast<float>(w), static_cast<float>(h)), true);
     }
 
+    void paint_scoreboard(int x, int y, int /*w*/, int h, float alpha)
+    {
+        // the chapter's mutators under the title: "Dead Center, Normal" / "Mutator: Fog" (the text is copied under the
+        // lock and drawn without it: see paint_vgui)
+        std::string mutators;
+        {
+            game::Session& session = game::local_session();
+            std::unique_lock lock(session.mutex, std::try_to_lock);
+            if (!lock.owns_lock())
+                return;
+            mutators = session.mutators;
+        }
+        if (mutators.empty())
+            return;
+        const bool several = mutators.find(',') != std::string::npos;
+        const int a = static_cast<int>(std::clamp(alpha, 0.f, 1.f) * 255.f + 0.5f); // (as the scoreboard fades)
+        if (a <= 0)
+            return;
+        VguiPainter painter;
+        painter.text(HudFont::Text, static_cast<float>(x), static_cast<float>(y + h), IM_COL32(230, 230, 230, a),
+                     (several ? "Mutators: " : "Mutator: ") + mutators, true);
+    }
+
     bool wants_input()
     {
         return g.open || g.wheel;
