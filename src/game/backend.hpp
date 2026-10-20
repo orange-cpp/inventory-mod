@@ -138,6 +138,12 @@ namespace game
         virtual void infect_self() // development: infects the player ([infection] in the rules must be on)
         {
         }
+        // development: a fog over the map (client.dll's own fog, see fog.cpp); density 0 .. 1; off: the map's own
+        virtual void fog(bool on, float density)
+        {
+            (void)on;
+            (void)density;
+        }
 
         // On the game's main thread, when the window gets k_msg_pump.
         virtual void pump()

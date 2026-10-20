@@ -18,6 +18,7 @@
 #include "game/client_remote.hpp"
 #include "game/client_view.hpp"
 #include "game/entities.hpp"
+#include "game/fog.hpp"
 #include "game/infection.hpp"
 #include "game/lifecycle.hpp"
 #include "game/melee.hpp"
@@ -113,6 +114,10 @@ namespace game
             {
                 post({Command::Infect, 0, 0, {}});
             }
+            void fog(bool on, float density) override
+            {
+                post({Command::Fog, on ? 1 : 0, static_cast<int>(density * 1000.f)});
+            }
             void move(int from, int to) override
             {
                 post({Command::Move, from, to});
@@ -131,6 +136,7 @@ namespace game
                                 (core::config().inventory_view == core::view_wheel ||
                                  (core::config().show_hotbar && core::shows_slots())));
                 refresh_view();
+                fog_tick();
                 reload_menus(); // once, at the main menu, after the menu's addon is mounted
                 for (;;)
                 {
@@ -181,6 +187,7 @@ namespace game
                     DropWeapon,
                     DropAmmo, // text: the ammo kind, count: how many (0: all)
                     Infect, // development: infects the player
+                    Fog, // development: the fog over the map (slot: on, count: density in thousandths)
                     Ping, // marks what the player looks at ([ping])
                     Move // slot: from, count: to (the HUD moved it locally already)
                 } kind;
@@ -230,6 +237,9 @@ namespace game
                     if (void* player = local_player())
                         infect(player, "test");
                     break;
+                case Command::Fog:
+                    set_fog(command.slot != 0, static_cast<float>(command.count) / 1000.f);
+                    break;
                 case Command::Ping:
                     do_ping();
                     break;
@@ -274,6 +284,9 @@ namespace game
                 case Command::Infect:
                     std::snprintf(text, sizeof(text), "inv_infect");
                     break;
+                case Command::Fog:
+                    set_fog(command.slot != 0, static_cast<float>(command.count) / 1000.f); // (the client's own)
+                    return;
                 case Command::Ping:
                     std::snprintf(text, sizeof(text), "inv_ping");
                     break;
@@ -321,6 +334,7 @@ namespace game
         {
             install_client_reload_hooks(client); // a gun unloaded in the hands stays empty on the client too
             install_weapon_panel(client); // the game's own weapon-selection panel
+            install_client_fog(client); // the Debug tab's fog
             if (!g_dedicated)
                 install_client_melee(client); // [melee]'s wind-up: the attack button held back (see melee.cpp)
         }

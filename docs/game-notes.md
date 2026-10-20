@@ -766,3 +766,14 @@ the server and the client together at the first fire.
 
 The game's default `config.cfg` binds U to `messagemode2` (team chat); while the player is a living survivor the mod's
 window procedure swallows its own keys, so the mod's U wins over the game's then.
+
+## The fog (Debug tab, `fog.cpp`)
+
+client.dll registers the fog ConVars as static initializers (`push 0x4000; push "<default>"; push "<name>"; mov ecx,
+<ConVar>; call ConVar::ConVar`; 0x4000 is FCVAR_CHEAT): fog_override (registration function `0x105084B0`) at `0x107A5780`,
+fog_start `0x107A57C8`, fog_end `0x107A5810`, fog_color `0x107A5858`, fog_enable `0x107A58A0`, fog_maxdensity `0x107A5A50`
+(found at run time by `68 <name> B9 <ConVar>`, as the server's ammo maxima are). `fog_override 1` makes the client draw
+these ConVars' fog (units, `fog_color "r g b"`) instead of the map's env_fog_controller: the engine's own depth-correct
+distance fog on the world, props and sky; `fog_override 0` gives the map's back. The cheat flag is taken off the ConVars
+(m_nFlags +0x14, parent +0x1C) so ClientCmd_Unrestricted (slot 107) can set them with sv_cheats off. Not yet seen working
+in the game.

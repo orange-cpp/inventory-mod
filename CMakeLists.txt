@@ -110,6 +110,8 @@ add_library(inventory_mod SHARED
     src/game/client_view.hpp
     src/game/entities.cpp
     src/game/entities.hpp
+    src/game/fog.cpp
+    src/game/fog.hpp
     src/game/game.cpp
     src/game/game.hpp
     src/game/infection.cpp

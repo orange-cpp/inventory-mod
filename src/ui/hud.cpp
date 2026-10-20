@@ -1062,6 +1062,8 @@ namespace hud
         // postfx.cpp (the edges darken from half down; while exhausted they close in and pulse with each gasp).
         // Without the shader the HUD darkens the edges itself.  The settings' [stamina] turns either off.  The values
         // ease in draw(), each frame; paint_hud draws the bar from them.
+        bool g_fog_enabled = false; // the Debug tab's fog over the map (game/fog.cpp), kept for later use
+        float g_fog_density = 0.5f;
         bool g_stamina_preview = false; // the Debug tab's preview
         float g_stamina_preview_value = 0.3f;
         bool g_stamina_preview_exhausted = false;
@@ -2026,6 +2028,12 @@ namespace hud
                 nc::Checkbox("Preview the infection effect", &g_infection_preview);
                 if (g_infection_preview)
                     nc::SliderFloat("Infection:", &g_infection_preview_severity, 0.f, 1.f, "%.2f");
+                if (nc::Checkbox("Fog over the map", &g_fog_enabled))
+                    game::backend().fog(g_fog_enabled, g_fog_density);
+                nc::SetItemTooltip("The game's own distance fog (client.dll's fog_* ConVars): a real fog in the 3D world, in place of\n"
+                                   "the map's, off to get the map's back.");
+                if (g_fog_enabled && nc::SliderFloat("Fog:", &g_fog_density, 0.f, 1.f, "%.2f"))
+                    game::backend().fog(true, g_fog_density);
                 nc::Checkbox("Preview the stamina bar and vignette", &g_stamina_preview);
                 if (g_stamina_preview)
                 {

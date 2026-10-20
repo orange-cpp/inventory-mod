@@ -11,6 +11,7 @@ namespace game::detail
 
     extern void* g_engine_client; // engine.dll VEngineClient013 (nullptr: not found)
     extern sdk::IsInGameFn g_is_in_game;
+    extern sdk::ClientCmdFn g_client_cmd; // VEngineClient013 slot 107 ClientCmd_Unrestricted (nullptr: not found)
 
     // The engine's client interface and the ProcessPrint hook, then what the player sees (client_view).
     void install_client_remote();
