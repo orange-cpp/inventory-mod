@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <imgui.h>
 #include <imgui_nullcore/imgui_nullcore.hpp>
 #include <map>
@@ -533,10 +534,14 @@ namespace hud
         }
 
         // The player's reserve of the ammo gun `classname` takes (shared by every gun of that type), -1: none (a melee
-        // weapon, a pistol: endless).
+        // weapon: none).  The pistol takes the SMG rounds, the magnum the sniper rounds (game::retarget_ammo_types).
         int shared_reserve(const game::Session& session, const char* classname)
         {
             const char* kind = inv::ammo_kind(classname);
+            if (kind == nullptr && std::strcmp(classname, "weapon_pistol") == 0)
+                kind = "smg";
+            else if (kind == nullptr && std::strcmp(classname, "weapon_pistol_magnum") == 0)
+                kind = "sniperrifle";
             const int index = kind != nullptr ? inv::ammo_index(kind) : -1;
             return index >= 0 && index < 32 ? session.ammo_pool[index] : -1;
         }
@@ -811,6 +816,29 @@ namespace hud
                 game::backend().use(target.index);
         }
 
+        // What the game's own melee / pistol box leaves out, drawn over it (its box ends 6.7 units above where the
+        // item boxes begin, same width; measured as in draw_column): a melee weapon's durability bar and a pistol's
+        // reserve (the SMG / sniper rounds, game::retarget_ammo_types; the game's box shows the magazine only).
+        void draw_native_extras(const game::Session& session, Painter& p, ImVec2 display)
+        {
+            const float unit = display.y / 480.f;
+            const float right = display.x - 8.3f * unit;
+            const float weapon_w = 53.3f * unit;
+            const float weapons_top = display.y * 0.5f - 22.7f * unit;
+            const float nx1 = std::floor(right), nx0 = std::floor(right - weapon_w);
+            const float ny1 = std::floor(weapons_top - 6.7f * unit);
+            const float pad = std::floor(unit * 2.f);
+            for (const game::NativeWeapon& w : session.native)
+            {
+                if (!w.melee.empty())
+                    draw_wear(p, nx0, ny1, nx1, w.wear);
+                else if (w.classname == "weapon_pistol" || w.classname == "weapon_pistol_magnum")
+                    if (const int reserve = shared_reserve(session, w.classname.c_str()); reserve >= 0)
+                        p.text(HudFont::Hint, nx0 + pad * 2.f, ny1 - p.line(HudFont::Hint) - pad, IM_COL32(168, 168, 168, 255),
+                               std::to_string(reserve));
+            }
+        }
+
         void draw_column(const game::Session& session, Painter& p, ImVec2 display)
         {
             const inv::Inventory& inventory = session.inventory;
@@ -831,6 +859,7 @@ namespace hud
             // throwable box below it started 6.7 units lower), one under the other where the panel's item boxes began.
             const float weapon_w = 53.3f * unit, weapon_h = 20.f * unit, weapon_pitch = 26.7f * unit;
             const float weapons_top = display.y * 0.5f - 22.7f * unit;
+
             for (int k = 0; k < shown_weapons(inventory); ++k)
             {
                 const int i = inventory.first_weapon_slot() + k;
@@ -1794,6 +1823,8 @@ namespace hud
                 else
                     draw_column(session, p, display);
             }
+            if (!core::config().replace_native && session.playing)
+                draw_native_extras(session, p, display); // (whatever the view: the game's panel is there)
             draw_stamina_bar(p, display);
             if (session.playing)
             {

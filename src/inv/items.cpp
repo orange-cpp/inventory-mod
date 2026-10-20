@@ -134,7 +134,7 @@ namespace inv
             {"weapon_rifle", "assaultrifle"}, {"weapon_rifle_ak47", "assaultrifle"}, {"weapon_rifle_desert", "assaultrifle"},
             {"weapon_rifle_sg552", "assaultrifle"}, {"weapon_smg", "smg"}, {"weapon_smg_silenced", "smg"},
             {"weapon_smg_mp5", "smg"}, {"weapon_pumpshotgun", "shotgun"}, {"weapon_shotgun_chrome", "shotgun"},
-            {"weapon_autoshotgun", "shotgun"}, {"weapon_shotgun_spas", "shotgun"}, // (game::merge_shotgun_shells)
+            {"weapon_autoshotgun", "shotgun"}, {"weapon_shotgun_spas", "shotgun"}, // (game::retarget_ammo_types)
             {"weapon_hunting_rifle", "huntingrifle"}, {"weapon_sniper_military", "sniperrifle"},
             {"weapon_sniper_awp", "sniperrifle"}, {"weapon_sniper_scout", "sniperrifle"},
             {"weapon_grenade_launcher", "grenadelauncher"}, {"weapon_rifle_m60", "m60"}, {"weapon_chainsaw", "chainsaw"},

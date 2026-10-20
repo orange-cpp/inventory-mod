@@ -84,12 +84,22 @@ namespace game::detail
         return state;
     }
 
+    // The ammo type the mod makes a gun of game type `type` take (retarget_ammo_types); `type` itself for the rest.
+    static int shared_ammo_type(int type)
+    {
+        switch (type)
+        {
+        case k_ammo_type_autoshotgun: return k_ammo_type_shotgun;
+        case k_ammo_type_pistol: return k_ammo_type_smg;
+        case k_ammo_type_magnum: return k_ammo_type_sniperrifle;
+        default: return type;
+        }
+    }
+
     int ammo_type_of(void* weapon)
     {
-        const int type = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_ammo_type, -1);
-        if (type == k_ammo_type_autoshotgun)
-            return k_ammo_type_shotgun; // (one nobody has carried yet: merge_shotgun_shells)
-        return type >= 0 && type < 32 ? type : -1;
+        const int type = shared_ammo_type(mem::read_or<int>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_ammo_type, -1));
+        return type >= 0 && type < 32 ? type : -1; // (a gun nobody has carried yet: retarget_ammo_types)
     }
 
     AmmoPool read_pool(void* player)
@@ -800,7 +810,11 @@ namespace game::detail
     // the server's value), and whatever the game put into the player's m_iAmmo[8] (a gun picked up, an ammo pile
     // used before the change) joins m_iAmmo[7], up to its most.  The game's own code reads the field (Reload,
     // GiveAmmo, the ammo piles' refill), so from then on the auto shotguns load and refill from the shells.
-    void merge_shotgun_shells()
+    //
+    // The same is done to the pistols (type 1) and the magnums (type 2), whose reserve is endless: they take the
+    // SMG rounds (5) and the sniper rounds (10).  Nothing is merged for them (the game keeps no reserve of its own
+    // in m_iAmmo[1] and [2]).  Not yet seen in the game.
+    void retarget_ammo_types()
     {
         const int max = inv::ammo_max("shotgun");
         for (int index = 1; index <= 64; ++index)
@@ -814,8 +828,11 @@ namespace game::detail
             {
                 void* weapon = entity_from_handle(handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i)));
                 const auto w = reinterpret_cast<std::uintptr_t>(weapon);
-                if (weapon != nullptr && mem::read_or<int>(w + k_off_ammo_type, -1) == k_ammo_type_autoshotgun &&
-                    mem::guarded([&] { *reinterpret_cast<int*>(w + k_off_ammo_type) = k_ammo_type_shotgun; }))
+                if (weapon == nullptr)
+                    continue;
+                const int type = mem::read_or<int>(w + k_off_ammo_type, -1);
+                const int shared = shared_ammo_type(type);
+                if (shared != type && mem::guarded([&] { *reinterpret_cast<int*>(w + k_off_ammo_type) = shared; }))
                     state_changed(weapon);
             }
             const int extra = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(reserve_of(player, k_ammo_type_autoshotgun)), 0);

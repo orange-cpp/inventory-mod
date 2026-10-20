@@ -410,7 +410,7 @@ namespace game::detail
             mem::guarded([] {
                 stamina_frame();
                 melee_frame();
-                merge_shotgun_shells();
+                retarget_ammo_types();
                 drop_dead_inventories();
                 cap_reserves();
                 place_map_packs_due();

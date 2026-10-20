@@ -454,11 +454,16 @@ server.dll's ammo types give the auto shotguns (`weapon_autoshotgun`, `weapon_sh
 `ammo_shotgun_max` 72). A weapon's `m_iPrimaryAmmoType` (+0x140C) is set from its script when it is precached, and is
 a SendProp (`0x1004AFEC`: `push 0x140C / push "m_iPrimaryAmmoType"`, 8 bits; client +0x97C, its RecvProp at
 `0x10015A8C`), so the server's value is what the owner's client predicts with. Every GameFrame
-(`merge_shotgun_shells`), each living survivor's guns of type 8 are set to 7 (the edict marked changed), and any
+(`retarget_ammo_types`), each living survivor's guns of type 8 are set to 7 (the edict marked changed), and any
 `m_iAmmo[8]` the game gave (a fresh gun's rounds, a pile used before the change) joins `m_iAmmo[7]` up to its most;
 `ammo_type_of` already reads 8 as 7 for a gun nobody has carried yet. The game's own code (Reload, GiveAmmo, the
 ammo piles' refill) reads the field, so the auto shotguns then reload and refill from the shells. Not yet seen in the
 game.
+
+The pistols (`AMMO_TYPE_PISTOL` 1) and the magnums (`AMMO_TYPE_MAGNUM` 2), whose reserve is endless, get the same
+treatment in `retarget_ammo_types`: their `m_iPrimaryAmmoType` is set to the SMG's (5) and the sniper rifles' (10), so
+they reload from, and show, those rounds. Nothing is merged for them. Not yet seen in the game: whether the game's
+reload code still gives the pistols endless rounds regardless of the type.
 
 ## Rounds (the reserve as a thing of its own)
 

@@ -21,6 +21,8 @@ L4D2 is a **32-bit** process, so everything here is built for x86.
   laser sight stays). Not the pistols, the M60 or the chainsaw. A gun on the ground stays there, empty; a map's gun
   spawner gives up one gun, which lies there empty (the spawner goes when it had one left). A gun unloaded in your hands
   stays empty until you reload or fire. The rounds taken make the game's pick-up sound.
+- **Pistol ammo**: the pistols no longer have an endless reserve: the pistol reloads from SMG rounds, the magnum from
+  sniper rounds (the same reserve the SMGs and sniper rifles use).
 - **Use**: puts the selected item in your hands, if the player's slot for it is free.
 - **Drop**: puts the selected item on the ground in front of you, like `ent_create` does.
 - **Auto-store**: pressing +use (E) on a supported item while your slot for it is full puts it into the inventory

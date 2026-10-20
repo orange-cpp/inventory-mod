@@ -182,8 +182,11 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_next_secondary = 0x13F4; // m_flNextSecondaryAttack
     constexpr std::uintptr_t k_off_ammo_type = 0x140C; // m_iPrimaryAmmoType (SendProp, 8 bits, at 0x1004AFEC)
     // The game's ammo types of the pump shotguns (AMMO_TYPE_SHOTGUN) and the auto shotguns (AMMO_TYPE_AUTOSHOTGUN);
-    // the mod makes the auto shotguns take the first (merge_shotgun_shells)
+    // the mod makes the auto shotguns take the first (retarget_ammo_types)
     constexpr int k_ammo_type_shotgun = 7, k_ammo_type_autoshotgun = 8;
+    // The pistols' (AMMO_TYPE_PISTOL, AMMO_TYPE_MAGNUM) and the types the mod makes them take instead: the SMGs'
+    // (AMMO_TYPE_SMG 5) and the sniper rifles' (AMMO_TYPE_SNIPERRIFLE 10); see retarget_ammo_types
+    constexpr int k_ammo_type_pistol = 1, k_ammo_type_magnum = 2, k_ammo_type_smg = 5, k_ammo_type_sniperrifle = 10;
     constexpr std::uintptr_t k_off_clip = 0x1414; // m_iClip1
     constexpr std::uintptr_t k_off_in_reload = 0x144D; // m_bInReload (SendProp at 0x1004C5A6: push 0x144D / push "m_bInReload")
     constexpr std::uintptr_t k_off_fire_on_empty = 0x144E; // m_bFireOnEmpty (datamap, FIELD_BOOLEAN)
