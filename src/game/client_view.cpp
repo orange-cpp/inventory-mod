@@ -7,6 +7,7 @@
 #include "game/backend.hpp"
 #include "game/client_remote.hpp"
 #include "game/entities.hpp"
+#include "game/ping.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -85,6 +86,8 @@ namespace game::detail
             s.stamina = -1.f;
             s.stamina_exhausted = false;
         }
+        if (!in_game)
+            ping_clear();
         if (!in_game)
             s.melee_hold = 0.f; // the next server says again whether it has [melee]
     }

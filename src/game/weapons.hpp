@@ -18,7 +18,7 @@ namespace game::detail
     void install_create_event(void* events);
 
     inv::WeaponState weapon_state(void* player, void* weapon, const inv::ItemDef& def, bool carried);
-    int ammo_type_of(void* weapon); // -1: none
+    int ammo_type_of(void* weapon); // -1: none; the auto shotguns' is the shotguns' (see merge_shotgun_shells)
     bool carries_ammo_type(void* player, int type);
 
     // The player's reserve of every ammo type.
@@ -31,6 +31,8 @@ namespace game::detail
     void write_pool(void* player, const AmmoPool& pool);
     void add_to_pool(void* player, const char* classname, int type, int rounds);
     int* reserve_of(void* player, int type);
+    // Every tick: the auto shotguns survivors carry take the pump shotguns' shells (see weapons.cpp).
+    void merge_shotgun_shells();
 
     void take_from_inventory(const inv::ItemDef& def, int count);
     void put_away_carried(void* player, const char* switching_to);

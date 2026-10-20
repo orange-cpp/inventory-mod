@@ -1,7 +1,8 @@
 # inventory-mod
 
-An inventory system for Left 4 Dead 2, as a DLL loaded into `left4dead2.exe`. The HUD uses the
-[imgui-nullcore](../imgui-nullcore) look, drawn over the game by hooking `IDirect3DDevice9::Present`. The inventory
+An inventory system for Left 4 Dead 2, as a DLL loaded into `left4dead2.exe`. The HUD (boxes, ammo counter, stamina
+bar, melee ring, radial wheel) is drawn by the game itself, with its VGUI surface, fonts and icons; the inventory window
+(I) uses the [imgui-nullcore](../imgui-nullcore) look, drawn over the game by hooking `IDirect3DDevice9::Present`. The inventory
 talks to the game's own functions (found by reverse engineering, see [docs/game-notes.md](docs/game-notes.md)).
 
 L4D2 is a **32-bit** process, so everything here is built for x86.
@@ -72,11 +73,11 @@ magnum, melee weapons, chainsaw, SMGs, shotguns, rifles, sniper rifles, M60, gre
 **Weapons** go into weapon boxes of their own (up to `weapon_slots`, 8 by default; a box appears only while it holds a weapon), drawn like the game's gun and melee
 boxes, between the game's melee box and the item grid. Each keeps what is in it: a gun its magazine, a melee weapon
 which one it is ("fireaxe", "katana" ...). The reserve is yours and shared, as in the game, by every gun of the same
-ammo type (M16, AK-47, SCAR and SG552 share rifle rounds; the SMGs, the pump shotguns, the auto shotguns, the sniper
-rifles each share theirs): storing a gun leaves it with you, a gun taken out uses it (the game does not hand out a
+ammo type (M16, AK-47, SCAR and SG552 share rifle rounds; all four shotguns, pump and auto, share one kind of shell;
+the SMGs and the sniper rifles each share theirs): storing a gun leaves it with you, a gun taken out uses it (the game does not hand out a
 fresh reserve), and a gun picked up off the ground into a box adds the rounds it carried, up to the most you can
 carry of that type. That maximum is the rules file's `[ammo]` table (`assault_rifle = 360`, `smg`, `shotgun`,
-`auto_shotgun`, `hunting_rifle`, `sniper_rifle`, `grenade_launcher`, `m60`, `chainsaw`); the mod also sets the game's
+`hunting_rifle`, `sniper_rifle`, `grenade_launcher`, `m60`, `chainsaw`); the mod also sets the game's
 own `ammo_<type>_max` to it, so ammo piles stop there too. A stored gun shows its magazine and the reserve it would use
 (your reserve of its type, e.g. "50 / 290"). The store key stores the gun or melee weapon in your
 hands, the pick-up key takes one off the ground, and taking one out (the wheel, double click in the window) swaps it
@@ -112,11 +113,14 @@ under it in time with the picture, the ears ring past a third of the way and the
 clock runs out a screamer jumps at the player: a face over the whole screen, lunging and shaking, with a scream. Each
 player chooses for themselves in the Settings tab ("Infection") or under `[infection]` in `inventory_mod_settings.toml`:
 `effect`, `sound`, `screamer` (true / false), `cover_game_hud` and `cover_mod_hud` (whether the effect also covers
-the game's HUD, and the mod's boxes, wheel and window; off, they stay clear over it: "Effect covers the game's HUD" /
-"... the mod's HUD"; the mod's HUD is covered only together with the game's), `screamer_chance` (how likely the screamer is each time the clock runs
+the game's HUD with the mod's boxes and wheel, which the game draws with its own, and the mod's inventory window; off,
+they stay clear over it: "Effect covers the game's HUD" / "... the mod's window"; the window is covered only together
+with the HUD), `screamer_chance` (how likely the screamer is each time the clock runs
 out: 0 never, 1 always, 0.3 about one time in three), and `screamer_image` (next to the DLL or a full path; PNG, JPEG, BMP;
 `inventory_mod_screamer.jpg` by default, shipped with the mod) and `screamer_sound` (a 16-bit PCM .wav under the game's
 `left4dead2/sound`, next to the DLL or a full path; the witch's scream by default). The Debug tab has "Screamer (test)".
+The screamer and the screen effects are drawn into the game's own frame (after the HUD), so a stream or a recording
+(OBS, Discord, Steam) shows them whichever hooked the game first; only the inventory window is drawn at `Present`.
 
 ## Rounds
 
@@ -146,6 +150,19 @@ With `[map_guns]` (on in the example) a gun nobody has held yet, lying in the ma
 dropped from a box, keeps what it had. With `spawners_once` (on) a weapon spawner of the map, for guns or melee
 weapons, gives one and is gone; item spawners (pills, kits) are the game's.
 
+## Pings
+
+With `[ping]` in the host's `inventory_mod.toml` (on in the example) the ping key (`V`) marks what you look at, as in
+Apex Legends, for every player of your team who runs the mod: a diamond in the world with the distance in metres and, for
+what it is, a name, shown through walls. It marks an enemy (an infected, a witch, a special: red) or an item or weapon
+lying there (gold) when you point at one, and otherwise the spot your view meets (blue). Off the screen the marker
+sticks to the edge nearest the way it lies, with an arrow. It pops in with the game's menu tick and fades out after
+`lifetime` seconds (8); you keep `per_player` pings (1: a new one replaces yours), at most one every `cooldown` seconds
+(0.4), up to `range` units away (6000). The server finds the target (a trace along your view, then the entities near
+the ray) and tells every teammate's mod, so it works as host, guest and on a dedicated server; players without the
+mod see nothing. When you ping an item or an enemy your survivor says it, with the game's own look-at line
+("Pills here", "Ammo here"; `vocalize smartlook auto`, the Z menu's Look). A ping stays where it was made: it does not follow a moving enemy.
+
 ## Stamina
 
 With `[stamina]` in the host's `inventory_mod.toml` (on in the example): running uses stamina (`run` a second), and so
@@ -154,13 +171,15 @@ comes back (`regen` a second; half that while an exhausted survivor keeps runnin
 exhausted until it is back to `recover`: they move at `slow` % of their speed (on the ground; jumps and falls are not
 slowed), wait longer between swings and shoves (`swing_speed` %), and their melee hits do `damage` % (at 50, a common
 infected takes two hits). While it is on, the game's own shove fatigue (each shove in a row waiting longer) is off:
-stamina is the limit. `bots = true` gives the survivor bots stamina too.
+stamina is the limit. `bots = true` gives the survivor bots stamina too. An adrenaline shot gives endless stamina for
+as long as it works: the bar fills, an exhausted survivor gets their breath back, and nothing uses it.
 
 Each player chooses how it shows, in the Settings tab ("Stamina") or under `[stamina]` in `inventory_mod_settings.toml`:
 `bar` (a thin bar under the crosshair while it is not full; orange when low, red and pulsing when exhausted) and
 `vignette` (the screen's edges darken and lose their colour from half down; exhausted, they close in and pulse with
 each gasp), and, as for the infection, `cover_game_hud` and `cover_mod_hud` (whether the vignette also covers the game's
-HUD, and the mod's boxes, wheel and window: "Vignette covers the game's HUD" / "... the mod's HUD"). The Debug tab has
+HUD with the mod's boxes and wheel, and the mod's inventory window: "Vignette covers the game's HUD" / "... the mod's
+window"). The Debug tab has
 a preview of both.
 
 ## Melee
@@ -264,6 +283,7 @@ Settings tab is back (it also rebinds a key to any key at all).
 | `G` | beside the game's panel: drop what is in your hands (stored items are dropped from the window). With `replace_native=1`: drop the selected entry, an inventory item or a weapon / item you carry in the game's own slots |
 | `;` | store the item in your hands |
 | `H` | pick up the item in front of you |
+| `V` | ping: mark the spot, item or enemy you look at for your team (`[ping]`) |
 | `U` | unload the gun in your hands (or the one on the ground you look at) into your reserve. U is the game's team chat key by default: while you play, the mod's key wins; rebind one of them if you need both |
 | `Ctrl+End` | unload the DLL |
 
@@ -318,7 +338,7 @@ src/core/      log, config, MinHook wrapper
 src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel, window), icons.cpp (the game's
                own weapon and item icons, read from its VTF sheets), postfx.cpp (the infection and stamina shaders),
                audio.cpp (the infection's sound), vgui.cpp (the game's VGUI surface and scheme fonts:
-               the wheel is drawn with them)
+               the whole HUD but the window is drawn with them)
 src/game/      backend.hpp (the seam), game.cpp (the real backend: the request queue and init),
                one module per topic (entities, weapons, pickup, rounds, players, infection,
                stamina, melee, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets
@@ -339,8 +359,12 @@ rebuilds it and loads it again without restarting the game.
 
 ## How it works
 
-- The overlay hooks `Present` / `Reset` through the vtable of a throwaway device, draws ImGui between a captured and
-  re-applied state block, and turns sRGB writes off (the game leaves them on, which washes out the colours).
+- The HUD is painted by the game: vgui2.dll's `IPanel::PaintTraverse` is hooked, and once the game's last panel
+  (`FocusOverlayPanel`) has painted, the mod draws its boxes, counters, rings and wheel with the game's `ISurface`, in
+  the client scheme's fonts and the HUD's own icon sheets, on the main thread, under the game's menus.
+- The overlay hooks `Present` / `Reset` through the vtable of a throwaway device, draws the inventory window with ImGui
+  between a captured and re-applied state block, and turns sRGB writes off (the game leaves them on, which washes out
+  the colours). It also draws the rest of the HUD, the same shapes, should the game's VGUI not be there.
 - While the window is open the game gets none of the mouse or keyboard messages, `SetCursorPos` is ignored for the game
   and `GetCursorPos` returns the window's centre to it, so the view does not turn and the cursor is free.
 - Game calls (`GiveNamedItem`, `UTIL_Remove`, spawning) are not thread safe and rendering is on another thread, so the

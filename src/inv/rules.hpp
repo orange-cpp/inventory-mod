@@ -222,7 +222,7 @@ namespace inv
     //   enabled = true
     //   min_magazines = 1
     //   max_magazines = 3
-    //   kinds = ["assault_rifle", "smg", "shotgun", "auto_shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
+    //   kinds = ["assault_rifle", "smg", "shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
     //   replace_map_piles = true
     //   extra = 4
     struct AmmoPileRules
@@ -230,13 +230,35 @@ namespace inv
         bool enabled = false;
         int min_magazines = 1;
         int max_magazines = 3;
-        std::vector<std::string> kinds{"assaultrifle", "smg",         "shotgun",        "autoshotgun",
+        std::vector<std::string> kinds{"assaultrifle", "smg",         "shotgun",
                                        "huntingrifle", "sniperrifle", "grenadelauncher"}; // (inv::ammo_index names)
         bool replace_map_piles = true; // the map's piles become packs when the round starts
         int extra = 4; // packs put beside the map's item spots when the round starts
     };
     // The last apply_rules' [ammo_piles] (the defaults, disabled, without one).
     const AmmoPileRules& ammo_pile_rules();
+
+    // [ping]: an Apex-style ping.  A player's ping key marks the spot (or the item, or the enemy) they look at for every
+    // player with the mod: an icon in the world with its name and the distance, shown through walls for `lifetime`
+    // seconds.  A player keeps `per_player` pings at once (a new one replaces their oldest), at most one every
+    // `cooldown` seconds, at a spot up to `range` units away.
+    //
+    //   [ping]
+    //   enabled = true
+    //   lifetime = 8
+    //   cooldown = 0.4
+    //   per_player = 1
+    //   range = 6000
+    struct PingRules
+    {
+        bool enabled = false;
+        float lifetime = 8.f;
+        float cooldown = 0.4f;
+        int per_player = 1;
+        float range = 6000.f;
+    };
+    // The last apply_rules' [ping] (the defaults, disabled, without one).
+    const PingRules& ping_rules();
 
     // [map_guns]: a gun nobody has held yet (lying in the map, or from a weapon spawner) has only a part of its
     // magazine when it is first picked up: from min_clip to max_clip % of it.  A gun someone has held keeps its own.

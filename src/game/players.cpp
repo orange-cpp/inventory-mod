@@ -1,6 +1,7 @@
 // Other players: a dedicated server's, a listen server's guests, each with an inventory of their own.
 
 #include "game/players.hpp"
+#include "game/ping.hpp"
 
 #include "core/hook.hpp"
 #include "core/log.hpp"
@@ -270,6 +271,8 @@ namespace game::detail
             return buffer;
         };
         const std::string command = argc > 0 ? arg(0) : std::string();
+        if (command != "vocalize" && command != "inv_sync")
+            INV_LOG("TEMP client command from %p: %s %s %s", player, command.c_str(), arg(1).c_str(), arg(2).c_str()); // TEMP
         if (player == nullptr || command.rfind("inv_", 0) != 0 || (!g_dedicated && player == host_player()))
         {
             g_client_command.original()(player, args);
@@ -313,6 +316,8 @@ namespace game::detail
             }
             else if (command == "inv_dropammo" && inv::ammo_index(text) >= 0)
                 do_drop_ammo(text, a2);
+            else if (command == "inv_ping")
+                do_ping();
             else if (command == "inv_infect")
                 infect(player, "test");
             else if (command == "inv_spawn")

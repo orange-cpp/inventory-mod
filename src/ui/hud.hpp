@@ -1,5 +1,7 @@
 #pragma once
-// The inventory HUD: a hotbar that is always on and an inventory window with the nullcore look.
+// The inventory HUD: the boxes, the ammo counter, the stamina bar, the melee ring and the radial wheel, drawn with the
+// game's VGUI surface (paint_vgui; ImGui when that is missing), and the inventory window (I), ImGui with the nullcore
+// look.
 
 #include <windows.h>
 
@@ -8,15 +10,18 @@ namespace hud
 
     // Once, before the first frame (loads the config).
     void init();
-    // Every frame, between ImGui::NewFrame() and ImGui::Render().
+    // Every frame, between ImGui::NewFrame() and ImGui::Render(): the window, the screen effects' values, and the rest
+    // of the HUD only while the game's VGUI is not painting it.
     void draw();
-    // Every frame the game paints its panels (main thread, ui/vgui.cpp): what the HUD draws with the game's VGUI
-    // surface (the radial wheel).
+    // Every frame the game paints its panels (main thread, ui/vgui.cpp): everything but the inventory window, with the
+    // game's VGUI surface.
     void paint_vgui();
     // The inventory window or the radial wheel is open, so the overlay takes the mouse from the game.
     bool wants_input();
     // ... and the keyboard too (the window; the wheel leaves it to the game, so the player can keep walking).
     bool wants_keyboard();
+    // The inventory window is open (it is drawn at Present: what must go over it is drawn there too).
+    bool window_open();
     // A window message the game is about to get, for the hotkeys.  True: handled, do not pass it on.
     bool on_wnd_message(UINT msg, WPARAM wparam, LPARAM lparam);
     // Ctrl+End was pressed (or request_unload was called).

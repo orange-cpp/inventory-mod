@@ -35,7 +35,6 @@ KINDS = {  # assets/textures file -> round type (inv::ammo_index names)
     "rifle_rounds_ammo_pack.png": "assaultrifle",
     "smg_rounds_ammo_pack.png": "smg",
     "shotgun_rounds_ammo_pack.png": "shotgun",
-    "auto_shotgun_rounds_ammo_pack.png": "autoshotgun",
     "haunting_riffle_rounds_ammo_pack.png": "huntingrifle",
     "sniper_rounds_ammo_pack.png": "sniperrifle",
     "grenade_rounds_ammo_pack.png": "grenadelauncher",

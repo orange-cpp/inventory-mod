@@ -24,6 +24,7 @@
 #include "game/mem.hpp"
 #include "game/native_slots.hpp"
 #include "game/pickup.hpp"
+#include "game/ping.hpp"
 #include "game/players.hpp"
 #include "game/rounds.hpp"
 #include "game/stamina.hpp"
@@ -104,6 +105,10 @@ namespace game
             {
                 post({Command::DropAmmo, 0, count, kind});
             }
+            void ping() override
+            {
+                post({Command::Ping, 0, 0});
+            }
             void infect_self() override
             {
                 post({Command::Infect, 0, 0, {}});
@@ -176,6 +181,7 @@ namespace game
                     DropWeapon,
                     DropAmmo, // text: the ammo kind, count: how many (0: all)
                     Infect, // development: infects the player
+                    Ping, // marks what the player looks at ([ping])
                     Move // slot: from, count: to (the HUD moved it locally already)
                 } kind;
                 int slot;
@@ -224,6 +230,9 @@ namespace game
                     if (void* player = local_player())
                         infect(player, "test");
                     break;
+                case Command::Ping:
+                    do_ping();
+                    break;
                 case Command::Move:
                     break; // the local inventory was moved by the HUD itself
                 }
@@ -264,6 +273,9 @@ namespace game
                     break;
                 case Command::Infect:
                     std::snprintf(text, sizeof(text), "inv_infect");
+                    break;
+                case Command::Ping:
+                    std::snprintf(text, sizeof(text), "inv_ping");
                     break;
                 case Command::Move:
                     std::snprintf(text, sizeof(text), "inv_move %d %d", command.slot, command.count);
@@ -325,10 +337,14 @@ namespace game
             install_stamina();
             install_melee(); // after the stamina: gpGlobals
             install_client_commands();
+        install_ping(); // pings (see ping.cpp)
             install_transition_restore(); // a chapter transition keeps the reserve of the stored guns (see lifecycle)
         }
         if (!g_dedicated)
+        {
             install_client_remote(); // a game client: playing on someone else's server through the inv_* commands
+            install_ping_client(); // the world-to-screen matrix the pings are drawn with
+        }
 
         set_backend(&g_real);
         return true;

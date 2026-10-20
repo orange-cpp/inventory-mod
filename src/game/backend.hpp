@@ -131,6 +131,10 @@ namespace game
             (void)kind;
             (void)count;
         }
+        // Marks the spot, item or enemy the player looks at for the players with the mod ([ping] in the rules).
+        virtual void ping()
+        {
+        }
         virtual void infect_self() // development: infects the player ([infection] in the rules must be on)
         {
         }

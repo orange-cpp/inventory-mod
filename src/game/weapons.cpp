@@ -87,6 +87,8 @@ namespace game::detail
     int ammo_type_of(void* weapon)
     {
         const int type = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(weapon) + k_off_ammo_type, -1);
+        if (type == k_ammo_type_autoshotgun)
+            return k_ammo_type_shotgun; // (one nobody has carried yet: merge_shotgun_shells)
         return type >= 0 && type < 32 ? type : -1;
     }
 
@@ -786,6 +788,50 @@ namespace game::detail
     int* reserve_of(void* player, int type)
     {
         return reinterpret_cast<int*>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo + 4u * static_cast<unsigned>(type));
+    }
+
+    // ---- one kind of shotgun shell ----------------------------------------------------------------------------------
+    //
+    // The game gives the auto shotguns (weapon_autoshotgun, weapon_shotgun_spas) a reserve of their own,
+    // AMMO_TYPE_AUTOSHOTGUN (8, ammo_autoshotgun_max 90), apart from the pump shotguns' AMMO_TYPE_SHOTGUN (7,
+    // ammo_shotgun_max 72): CBaseCombatWeapon::Precache sets m_iPrimaryAmmoType from the weapon script.  The mod has
+    // one shell for both (inv::ammo_kind: "shotgun").  Every tick, each survivor's guns of type 8 are set to 7
+    // (m_iPrimaryAmmoType +0x140C is a SendProp, 0x1004AFEC: the client predicts reloads and draws the reserve with
+    // the server's value), and whatever the game put into the player's m_iAmmo[8] (a gun picked up, an ammo pile
+    // used before the change) joins m_iAmmo[7], up to its most.  The game's own code reads the field (Reload,
+    // GiveAmmo, the ammo piles' refill), so from then on the auto shotguns load and refill from the shells.
+    void merge_shotgun_shells()
+    {
+        const int max = inv::ammo_max("shotgun");
+        for (int index = 1; index <= 64; ++index)
+        {
+            void* player = entity_at_index(index);
+            char name[16];
+            if (player == nullptr || !classname_of(player, name, sizeof(name)) || std::strcmp(name, "player") != 0 ||
+                team_of(player) != 2 || !alive(player))
+                continue;
+            for (int i = 0; i < k_max_weapons; ++i)
+            {
+                void* weapon = entity_from_handle(handle_at(player, k_off_my_weapons + 4u * static_cast<unsigned>(i)));
+                const auto w = reinterpret_cast<std::uintptr_t>(weapon);
+                if (weapon != nullptr && mem::read_or<int>(w + k_off_ammo_type, -1) == k_ammo_type_autoshotgun &&
+                    mem::guarded([&] { *reinterpret_cast<int*>(w + k_off_ammo_type) = k_ammo_type_shotgun; }))
+                    state_changed(weapon);
+            }
+            const int extra = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(reserve_of(player, k_ammo_type_autoshotgun)), 0);
+            if (extra <= 0)
+                continue;
+            mem::guarded([&] {
+                int& shotgun = *reserve_of(player, k_ammo_type_shotgun);
+                const int before = shotgun;
+                shotgun = max >= 0 ? std::min(before + extra, std::max(before, max)) : before + extra;
+                *reserve_of(player, k_ammo_type_autoshotgun) = 0;
+                if (shotgun - before < extra)
+                    INV_LOG("ammo: %d of %d auto shotgun shells joined the shells (the most is %d)", shotgun - before,
+                            extra, max);
+            });
+            state_changed(player);
+        }
     }
 
     // The player carries a gun that shoots ammo type `type`.

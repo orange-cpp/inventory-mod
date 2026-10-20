@@ -60,8 +60,7 @@ molotov = 3
 [ammo]
 assault_rifle = 360     # M16, AK-47, SCAR, SG552
 smg = 650               # SMG, silenced SMG, MP5
-shotgun = 72            # pump and chrome shotgun
-auto_shotgun = 90       # auto and combat shotgun
+shotgun = 72            # every shotgun: pump, chrome, auto and combat
 hunting_rifle = 150
 sniper_rifle = 180      # military sniper, AWP, Scout
 grenade_launcher = 30
@@ -75,7 +74,6 @@ chainsaw = 20
 assault_rifle = 0.01
 smg = 0.006
 shotgun = 0.04
-auto_shotgun = 0.04
 hunting_rifle = 0.02
 sniper_rifle = 0.02
 grenade_launcher = 0.15
@@ -171,7 +169,7 @@ wall_bounce = true     # a swing into a wall stops short: your view kicks, the w
 enabled = true
 min_magazines = 1
 max_magazines = 3
-kinds = ["assault_rifle", "smg", "shotgun", "auto_shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
+kinds = ["assault_rifle", "smg", "shotgun", "hunting_rifle", "sniper_rifle", "grenade_launcher"]
 replace_map_piles = true   # when a round starts, each of the map's piles becomes a pack of its rolled type
 extra = 4                  # and this many more packs go beside the map's item spots (pills, throwables, guns)
 
@@ -184,3 +182,13 @@ max_clip = 60
 spawners_once = true   # a weapon spawner (guns, melee weapons) gives one, then it is gone
 min_reserve = 0        # what such a gun adds to your reserve: min_reserve..max_reserve magazines
 max_reserve = 1        # (the game would fill it)
+
+# Pings (like Apex Legends): the ping key marks the spot, item or enemy you look at for every player with the mod, as an
+# icon in the world with its name and the distance, shown through walls. You keep per_player pings at once (a new one
+# replaces your oldest).
+[ping]
+enabled = true
+lifetime = 8       # seconds a ping stays
+cooldown = 0.4     # seconds between one player's pings
+per_player = 1
+range = 6000       # the farthest spot a ping can mark, in game units

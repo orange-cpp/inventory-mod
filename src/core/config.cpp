@@ -88,6 +88,7 @@ namespace core
             c.key_store = keys["store"].value_or(c.key_store);
             c.key_pickup = keys["pickup"].value_or(c.key_pickup);
             c.key_unload = keys["unload"].value_or(c.key_unload);
+        c.key_ping = keys["ping"].value_or(c.key_ping);
 
             const toml::node_view hud = root["hud"];
             c.show_hotbar = hud["show"].value_or(c.show_hotbar);
@@ -280,6 +281,7 @@ namespace core
         key("store", c.key_store);
         key("pickup", c.key_pickup);
         key("unload", c.key_unload);
+        key("ping", c.key_ping);
         fprintf(f, "\n[hud]\n");
         fprintf(f, "show = %s                    # the boxes under the game's panel (or the hotbar)\n",
                 c.show_hotbar ? "true" : "false");
@@ -295,9 +297,9 @@ namespace core
                 c.auto_store ? "true" : "false");
         fprintf(f, "\n[infection]   # how the infection looks and sounds to you (the host's inventory_mod.toml turns it on)\n");
         fprintf(f, "effect = %s     # the screen effect\n", c.infection_effect ? "true" : "false");
-        fprintf(f, "cover_game_hud = %s   # the effect over the game's HUD too (false: under it)\n",
+        fprintf(f, "cover_game_hud = %s   # the effect over the game's HUD and the mod's boxes too (false: under them)\n",
                 c.infection_cover_game_hud ? "true" : "false");
-        fprintf(f, "cover_mod_hud = %s    # and over the mod's boxes, wheel and window (only with cover_game_hud)\n",
+        fprintf(f, "cover_mod_hud = %s    # and over the mod's inventory window (only with cover_game_hud)\n",
                 c.infection_cover_mod_hud ? "true" : "false");
         fprintf(f, "sound = %s      # the sound muffled and warped, a heartbeat, ringing\n", c.infection_sound ? "true" : "false");
         fprintf(f, "screamer = %s   # a face and a scream when the clock runs out\n", c.infection_screamer ? "true" : "false");
@@ -308,9 +310,9 @@ namespace core
         fprintf(f, "\n[stamina]   # how your stamina shows (the host's inventory_mod.toml turns it on)\n");
         fprintf(f, "bar = %s        # a bar under the crosshair while it is not full\n", c.stamina_bar ? "true" : "false");
         fprintf(f, "vignette = %s   # the screen's edges darken as it runs low\n", c.stamina_vignette ? "true" : "false");
-        fprintf(f, "cover_game_hud = %s   # the vignette over the game's HUD too (false: under it)\n",
+        fprintf(f, "cover_game_hud = %s   # the vignette over the game's HUD and the mod's boxes too (false: under them)\n",
                 c.stamina_cover_game_hud ? "true" : "false");
-        fprintf(f, "cover_mod_hud = %s    # and over the mod's boxes, wheel and window (only with cover_game_hud)\n",
+        fprintf(f, "cover_mod_hud = %s    # and over the mod's inventory window (only with cover_game_hud)\n",
                 c.stamina_cover_mod_hud ? "true" : "false");
         fprintf(f, "\n[melee]   # how a melee swing's wind-up shows (the host's inventory_mod.toml turns it on)\n");
         fprintf(f, "ring = %s       # a ring at the crosshair fills while the attack is held\n", c.melee_ring ? "true" : "false");

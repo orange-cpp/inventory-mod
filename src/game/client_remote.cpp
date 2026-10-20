@@ -11,6 +11,7 @@
 #include "game/infection.hpp"
 #include "game/melee.hpp"
 #include "game/native_slots.hpp"
+#include "game/ping.hpp"
 #include "game/players.hpp"
 #include "game/stamina.hpp"
 
@@ -239,6 +240,11 @@ namespace game::detail
         if (text != nullptr && std::strcmp(head, k_melee_marker) == 0)
         {
             mem::guarded([&] { apply_melee_line(text); });
+            return true;
+        }
+        if (text != nullptr && std::strcmp(head, k_ping_marker) == 0)
+        {
+            mem::guarded([&] { apply_ping_line(text); });
             return true;
         }
         if (text != nullptr && std::strcmp(head, k_melee_hit_marker) == 0)

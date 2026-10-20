@@ -3,6 +3,7 @@
 #include "core/config.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "game/ping.hpp"
 #include "inv/melee.hpp"
 #include "ui/audio.hpp"
 #include "ui/icons.hpp"
@@ -48,7 +49,8 @@ namespace hud
                 Drop,
                 Store,
                 Pickup,
-                Unload
+                Unload,
+                Ping
             } kind;
             int slot;
             int count;
@@ -102,7 +104,8 @@ namespace hud
                     {"Drop item:", &c.key_drop},
                     {"Store held item:", &c.key_store},
                     {"Pick up nearby:", &c.key_pickup},
-                    {"Unload gun:", &c.key_unload}};
+                    {"Unload gun:", &c.key_unload},
+                    {"Ping:", &c.key_ping}};
         }
 
         // The hotbar entry for a key of the keyboard's top row.  Replacing the game's panel: 1..9 -> entries 0..8 and
@@ -127,7 +130,7 @@ namespace hud
             const core::Config& c = core::config();
             return vk != 0 && (digit_slot(vk) >= 0 || vk == c.key_toggle || vk == c.key_prev || vk == c.key_next || vk == c.key_use ||
                                vk == c.key_drop || vk == c.key_store || vk == c.key_pickup ||
-                               vk == c.key_unload);
+                               vk == c.key_unload || vk == c.key_ping);
         }
 
         void run(const Intent& intent)
@@ -149,6 +152,9 @@ namespace hud
                 break;
             case Intent::Unload:
                 backend.unload_weapon();
+                break;
+            case Intent::Ping:
+                backend.ping();
                 break;
             }
         }
@@ -239,22 +245,291 @@ namespace hud
 
         // ---- drawing ------------------------------------------------------------------------------------------------
 
-        // One slot, in the toolkit's primitives: used by the hotbar and by the inventory window's grid.
-        // The game's own icon for a classname, fitted (aspect kept) and centred in the box; false when it has none.
-        bool draw_icon(ImDrawList* dl, int x0, int y0, int x1, int y1, const char* classname, ImU32 tint = IM_COL32_WHITE)
+        // Everything the mod shows in game but the inventory window (the boxes, the ammo counter and the status line,
+        // the stamina bar, the melee ring, the radial wheel and its pointer, the screen effects' fallbacks) is drawn the
+        // way the game draws its own HUD: with its VGUI surface, in its frame, in the client scheme's fonts
+        // (ui/vgui.cpp calls paint_vgui on the main thread, once the game's last panel has painted).  When that is not
+        // there (vgui::install failed, or a fault while painting) the overlay draws the same shapes with ImGui, under
+        // the inventory window.  Both go through a Painter, so each layout is written once.
+        enum class HudFont
         {
-            const icons::Icon* icon = icons::find(classname);
-            if (icon == nullptr)
-                return false;
-            float w = static_cast<float>(x1 - x0), h = static_cast<float>(y1 - y0);
-            if (w / h > icon->aspect)
-                w = h * icon->aspect;
+            Title, // the wheel's name in the middle
+            Text, // the boxes' tags and counts, the item's name, the weight
+            Ammo, // the ammo counter, the wheel's rounds: the game's ammo counter's face
+            Hint // the boxes' keys, the wheel's buttons
+        };
+
+        ImU32 faded(ImU32 colour, float alpha)
+        {
+            const float a = static_cast<float>(colour >> IM_COL32_A_SHIFT) * std::clamp(alpha, 0.f, 1.f);
+            return (colour & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a + 0.5f) << IM_COL32_A_SHIFT);
+        }
+
+        ImU32 mixed(ImU32 a, ImU32 b, float t)
+        {
+            const ImVec4 x = ImGui::ColorConvertU32ToFloat4(a), y = ImGui::ColorConvertU32ToFloat4(b);
+            return ImGui::ColorConvertFloat4ToU32(ImVec4(x.x + (y.x - x.x) * t, x.y + (y.y - x.y) * t, x.z + (y.z - x.z) * t,
+                                                         x.w + (y.w - x.w) * t));
+        }
+
+        // (the toolkit's palette is ImVec4's; ColorConvertFloat4ToU32 is plain arithmetic, fine on any thread)
+        ImU32 rgba(const ImVec4& c)
+        {
+            return ImGui::ColorConvertFloat4ToU32(c);
+        }
+
+        // The box (x0, y0, x1, y1) narrowed to `aspect` (width / height), centred.
+        void fit(float aspect, float& x0, float& y0, float& x1, float& y1)
+        {
+            float w = x1 - x0, h = y1 - y0;
+            if (h <= 0.f || aspect <= 0.f)
+                return;
+            if (w / h > aspect)
+                w = h * aspect;
             else
-                h = w / icon->aspect;
+                h = w / aspect;
             const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
-            dl->AddImage(reinterpret_cast<ImTextureID>(icon->texture), ImVec2(cx - w * 0.5f, cy - h * 0.5f),
-                         ImVec2(cx + w * 0.5f, cy + h * 0.5f), ImVec2(icon->u0, icon->v0), ImVec2(icon->u1, icon->v1), tint);
-            return true;
+            x0 = cx - w * 0.5f;
+            x1 = cx + w * 0.5f;
+            y0 = cy - h * 0.5f;
+            y1 = cy + h * 0.5f;
+        }
+
+        class Painter
+        {
+        public:
+            virtual ~Painter() = default;
+            virtual void rect(float x0, float y0, float x1, float y1, ImU32 colour) = 0; // filled
+            virtual void polygon(const ImVec2* points, int n, ImU32 colour) = 0; // convex, filled
+            virtual float line(HudFont font) = 0;
+            virtual float width(HudFont font, const std::string& text) = 0;
+            // Top left.  `shadow`: a dark copy a pixel down and to the right under it.
+            virtual void text(HudFont font, float x, float y, ImU32 colour, const std::string& text, bool shadow = true) = 0;
+            // The game's icon for `key`, fitted (aspect kept) and centred in the box; false when it has none.
+            virtual bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) = 0;
+
+            // A frame `thickness` wide just inside the rectangle.
+            void outline(float x0, float y0, float x1, float y1, ImU32 colour, float thickness = 1.f)
+            {
+                const float t = std::max(1.f, std::round(thickness));
+                rect(x0, y0, x1, y0 + t, colour);
+                rect(x0, y1 - t, x1, y1, colour);
+                rect(x0, y0 + t, x0 + t, y1 - t, colour);
+                rect(x1 - t, y0 + t, x1, y1 - t, colour);
+            }
+        };
+
+        class ImGuiPainter final : public Painter
+        {
+        public:
+            // `text_scale`: the toolkit's fonts are drawn for 12 px cells; over the game the text grows with the screen.
+            ImGuiPainter(ImDrawList* dl, float text_scale)
+                : dl_(dl), fonts_(nc::GetFonts()), size_(fonts_.Size * text_scale)
+            {
+            }
+            void rect(float x0, float y0, float x1, float y1, ImU32 colour) override
+            {
+                if (x1 > x0 && y1 > y0 && (colour >> IM_COL32_A_SHIFT) != 0)
+                    dl_->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), colour);
+            }
+            void polygon(const ImVec2* points, int n, ImU32 colour) override
+            {
+                dl_->AddConvexPolyFilled(points, n, colour);
+            }
+            float line(HudFont font) override
+            {
+                return size_of(font);
+            }
+            float width(HudFont font, const std::string& text) override
+            {
+                return font_of(font)->CalcTextSizeA(size_of(font), FLT_MAX, 0.f, text.c_str()).x;
+            }
+            void text(HudFont font, float x, float y, ImU32 colour, const std::string& text, bool shadow) override
+            {
+                x = std::floor(x);
+                y = std::floor(y);
+                if (shadow)
+                    dl_->AddText(font_of(font), size_of(font), ImVec2(x + 1.f, y + 1.f),
+                                 faded(IM_COL32(0, 0, 0, 200), alpha_of(colour)), text.c_str());
+                dl_->AddText(font_of(font), size_of(font), ImVec2(x, y), colour, text.c_str());
+            }
+            bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) override
+            {
+                const icons::Icon* icon = icons::find(key.c_str());
+                if (icon == nullptr)
+                    return false;
+                fit(icon->aspect, x0, y0, x1, y1);
+                dl_->AddImage(reinterpret_cast<ImTextureID>(icon->texture), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(icon->u0, icon->v0),
+                              ImVec2(icon->u1, icon->v1), tint);
+                return true;
+            }
+
+        private:
+            static float alpha_of(ImU32 colour)
+            {
+                return static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f;
+            }
+            ImFont* font_of(HudFont font) const
+            {
+                return font == HudFont::Title || font == HudFont::Ammo ? fonts_.Header : fonts_.Normal;
+            }
+            float size_of(HudFont font) const
+            {
+                switch (font)
+                {
+                case HudFont::Title:
+                    return size_ * 1.3f;
+                case HudFont::Hint:
+                    return size_ * 0.85f;
+                default:
+                    return size_;
+                }
+            }
+            ImDrawList* dl_;
+            const nc::Fonts& fonts_;
+            float size_;
+        };
+
+        class VguiPainter final : public Painter
+        {
+        public:
+            void rect(float x0, float y0, float x1, float y1, ImU32 colour) override
+            {
+                const int ix0 = pixel(x0), iy0 = pixel(y0), ix1 = pixel(x1), iy1 = pixel(y1);
+                if (ix1 > ix0 && iy1 > iy0 && (colour >> IM_COL32_A_SHIFT) != 0)
+                    ui::vgui::rect(ix0, iy0, ix1, iy1, colour);
+            }
+            void polygon(const ImVec2* points, int n, ImU32 colour) override
+            {
+                ui::vgui::Vertex v[64];
+                n = std::min(n, 64);
+                for (int i = 0; i < n; ++i)
+                    v[i] = ui::vgui::Vertex{points[i].x, points[i].y};
+                ui::vgui::polygon(v, n, colour);
+            }
+            float line(HudFont font) override
+            {
+                return static_cast<float>(ui::vgui::font_tall(font_of(font)));
+            }
+            float width(HudFont font, const std::string& text) override
+            {
+                return static_cast<float>(ui::vgui::text_width(font_of(font), text));
+            }
+            void text(HudFont font, float x, float y, ImU32 colour, const std::string& text, bool shadow) override
+            {
+                const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
+                // the ammo font adds its light (as the game's counter): a shadow would only grey what is under it
+                if (shadow && font != HudFont::Ammo)
+                    ui::vgui::text(font_of(font), ix + 1, iy + 1,
+                                   faded(IM_COL32(0, 0, 0, 220), static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f), text);
+                ui::vgui::text(font_of(font), ix, iy, colour, text);
+            }
+            bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) override
+            {
+                icons::Sprite sprite;
+                if (!icons::find_sprite(key.c_str(), sprite))
+                    return false;
+                fit(sprite.aspect, x0, y0, x1, y1);
+                ui::vgui::image(sprite.material, pixel(x0), pixel(y0), pixel(x1), pixel(y1), sprite.u0, sprite.v0, sprite.u1,
+                                sprite.v1, tint);
+                return true;
+            }
+
+        private:
+            static int pixel(float v)
+            {
+                return static_cast<int>(std::floor(v + 0.5f));
+            }
+            static ui::vgui::Font font_of(HudFont font)
+            {
+                switch (font)
+                {
+                case HudFont::Title:
+                    return ui::vgui::Font::Title;
+                case HudFont::Ammo:
+                    return ui::vgui::Font::Ammo;
+                case HudFont::Hint:
+                    return ui::vgui::Font::Hint;
+                default:
+                    return ui::vgui::Font::Text;
+                }
+            }
+        };
+
+        constexpr float k_pi = 3.14159265f;
+
+        // A ring segment from angle a0 to a1 (radians, 0 = right, clockwise on screen), filled: a quad every few
+        // degrees (under a third of a pixel off the circle at the wheel's size).
+        void ring_segment(Painter& p, ImVec2 c, float r0, float r1, float a0, float a1, ImU32 color)
+        {
+            if (a1 <= a0 || r1 <= r0 || (color >> IM_COL32_A_SHIFT) == 0)
+                return;
+            const int steps = std::max(2, static_cast<int>(std::ceil((a1 - a0) * 12.f)));
+            for (int i = 0; i < steps; ++i)
+            {
+                const float t0 = a0 + (a1 - a0) * static_cast<float>(i) / steps;
+                const float t1 = a0 + (a1 - a0) * static_cast<float>(i + 1) / steps;
+                const ImVec2 q[4] = {ImVec2(c.x + std::cos(t0) * r0, c.y + std::sin(t0) * r0),
+                                     ImVec2(c.x + std::cos(t0) * r1, c.y + std::sin(t0) * r1),
+                                     ImVec2(c.x + std::cos(t1) * r1, c.y + std::sin(t1) * r1),
+                                     ImVec2(c.x + std::cos(t1) * r0, c.y + std::sin(t1) * r0)};
+                p.polygon(q, 4, color);
+            }
+        }
+
+        void disc(Painter& p, ImVec2 c, float r, ImU32 color)
+        {
+            constexpr int k_points = 48;
+            ImVec2 points[k_points];
+            for (int i = 0; i < k_points; ++i)
+            {
+                const float a = 6.2831853f * static_cast<float>(i) / k_points;
+                points[i] = ImVec2(c.x + std::cos(a) * r, c.y + std::sin(a) * r);
+            }
+            p.polygon(points, k_points, color);
+        }
+
+        // A bar with round ends (one convex polygon, wound clockwise like disc).
+        void capsule(Painter& p, float x0, float y0, float x1, float y1, ImU32 color)
+        {
+            const float r = std::min(y1 - y0, x1 - x0) * 0.5f;
+            if (r <= 0.f)
+                return;
+            constexpr int k_cap = 8;
+            ImVec2 points[2 * (k_cap + 1)];
+            const float cy = (y0 + y1) * 0.5f;
+            int n = 0;
+            for (int i = 0; i <= k_cap; ++i) // the right end, top to bottom
+            {
+                const float a = -k_pi * 0.5f + k_pi * static_cast<float>(i) / k_cap;
+                points[n++] = ImVec2(x1 - r + std::cos(a) * r, cy + std::sin(a) * r);
+            }
+            for (int i = 0; i <= k_cap; ++i) // the left end, bottom to top
+            {
+                const float a = k_pi * 0.5f + k_pi * static_cast<float>(i) / k_cap;
+                points[n++] = ImVec2(x0 + r + std::cos(a) * r, cy + std::sin(a) * r);
+            }
+            p.polygon(points, n, color);
+        }
+
+        // The screen's edges darkened `depth` deep, `colour` (its alpha) at the edge fading to nothing: nested bands of
+        // rectangles (VGUI's rectangles have one colour), each as see-through as makes the stack add up to that alpha.
+        void vignette(Painter& p, ImVec2 display, float depth, ImU32 colour)
+        {
+            constexpr int k_bands = 12;
+            const float edge = static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f;
+            if (depth < 1.f || edge <= 0.f)
+                return;
+            const float each = 1.f - std::pow(1.f - std::min(edge, 0.995f), 1.f / k_bands);
+            const ImU32 band = faded(colour | IM_COL32_A_MASK, each);
+            for (int i = 1; i <= k_bands; ++i)
+            {
+                const float d = std::round(depth * static_cast<float>(i) / k_bands);
+                p.rect(0.f, 0.f, display.x, d, band);
+                p.rect(0.f, display.y - d, display.x, display.y, band);
+                p.rect(0.f, 0.f, d, display.y, band);
+                p.rect(display.x - d, 0.f, display.x, display.y, band);
+            }
         }
 
         // The player's reserve of the ammo gun `classname` takes (shared by every gun of that type), -1: none (a melee
@@ -310,70 +585,58 @@ namespace hud
 
         // [melee] durability: what is left of a melee weapon, a thin bar along the bottom of its box (green, yellow,
         // red as it wears); nothing while it is new.
-        void draw_wear(ImDrawList* dl, int x0, int y1, int x1, int wear)
+        void draw_wear(Painter& p, float x0, float y1, float x1, int wear)
         {
             if (wear <= 0)
                 return;
             const float left = 1.f - std::clamp(static_cast<float>(wear) / static_cast<float>(inv::k_wear_broken), 0.f, 1.f);
-            const ImVec4 color = left > 0.5f ? ImVec4(0.45f, 0.85f, 0.35f, 1.f) : left > 0.2f ? ImVec4(0.95f, 0.8f, 0.25f, 1.f)
-                                                                                         : ImVec4(0.9f, 0.25f, 0.2f, 1.f);
-            const int h = 3;
-            nc::FillRect(dl, x0 + 3, y1 - h - 2, x1 - 3, y1 - 2, ImVec4(0.f, 0.f, 0.f, 0.6f));
-            nc::FillRect(dl, x0 + 3, y1 - h - 2, x0 + 3 + static_cast<int>(static_cast<float>(x1 - x0 - 6) * left), y1 - 2, color);
+            const ImU32 color = left > 0.5f ? IM_COL32(115, 217, 89, 255) : left > 0.2f ? IM_COL32(242, 204, 64, 255)
+                                                                                : IM_COL32(230, 64, 51, 255);
+            const float h = 3.f;
+            p.rect(x0 + 3.f, y1 - h - 2.f, x1 - 3.f, y1 - 2.f, IM_COL32(0, 0, 0, 153));
+            p.rect(x0 + 3.f, y1 - h - 2.f, x0 + 3.f + std::floor((x1 - x0 - 6.f) * left), y1 - 2.f, color);
         }
 
-        void draw_slot(ImDrawList* dl, int x, int y, int size, const inv::Stack& stack, bool selected, bool hovered,
-                       int number)
+        // One slot, in the toolkit's colours: used by the hotbar and by the inventory window's grid.
+        void draw_slot(Painter& p, float x, float y, float size, const inv::Stack& stack, bool selected, bool hovered, int number)
         {
             const nc::Palette& pal = nc::GetPalette();
-            const nc::Fonts& fonts = nc::GetFonts();
-            const int line = static_cast<int>(fonts.Size);
-
-            nc::FillRect(dl, x, y, x + size, y + size, hovered ? pal.BgFocused : pal.BgAlt);
+            p.rect(x, y, x + size, y + size, rgba(hovered ? pal.BgFocused : pal.BgAlt));
             if (!stack.empty())
             {
                 const ImVec4 c = ImGui::ColorConvertU32ToFloat4(stack.def->color);
-                const int pad = size / 6;
-                nc::FillRect(dl, x + pad, y + pad, x + size - pad, y + size - pad,
-                             ImVec4(c.x * 0.4f, c.y * 0.4f, c.z * 0.4f, 1.f));
-                nc::OutlineRect(dl, x + pad, y + pad, x + size - pad, y + size - pad, c);
-                if (!draw_icon(dl, x + 2, y + 2, x + size - 2, y + size - 2,
-                               stack.weapon.melee.empty() ? stack.def->classname : stack.weapon.melee.c_str()))
+                const float pad = std::floor(size / 6.f);
+                p.rect(x + pad, y + pad, x + size - pad, y + size - pad, rgba(ImVec4(c.x * 0.4f, c.y * 0.4f, c.z * 0.4f, 1.f)));
+                p.outline(x + pad, y + pad, x + size - pad, y + size - pad, rgba(c));
+                if (!p.icon(stack.weapon.melee.empty() ? stack.def->classname : stack.weapon.melee, x + 2.f, y + 2.f, x + size - 2.f,
+                            y + size - 2.f, IM_COL32_WHITE))
                 {
-                    const int tw = nc::CalcTextWidth(fonts.Header, stack.def->tag);
-                    nc::AddText(dl, fonts.Header, x + (size - tw) / 2, y + (size - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
-                                stack.def->tag);
+                    const float tw = p.width(HudFont::Text, stack.def->tag);
+                    p.text(HudFont::Text, x + (size - tw) * 0.5f, y + (size - p.line(HudFont::Text)) * 0.5f, IM_COL32_WHITE,
+                           stack.def->tag);
                 }
                 if (!stack.weapon.melee.empty())
-                    draw_wear(dl, x, y + size, x + size, stack.weapon.wear);
+                    draw_wear(p, x, y + size, x + size, stack.weapon.wear);
                 // the item in the player's hands lives in this box: a bar along the bottom, and it counts in the number
                 if (stack.held)
-                    nc::FillRect(dl, x + 3, y + size - 4, x + size - 3, y + size - 2, ImVec4(0.45f, 0.85f, 0.35f, 1.f));
+                    p.rect(x + 3.f, y + size - 4.f, x + size - 3.f, y + size - 2.f, IM_COL32(115, 217, 89, 255));
                 const int shown = stack.count + (stack.held ? 1 : 0);
                 if (shown > 1)
                 {
-                    char text[16];
-                    std::snprintf(text, sizeof(text), "%d", shown);
-                    nc::AddText(dl, fonts.Normal, x + size - nc::CalcTextWidth(fonts.Normal, text) - 3, y + size - line,
-                                pal.Text, text);
+                    const std::string text = std::to_string(shown);
+                    p.text(HudFont::Text, x + size - p.width(HudFont::Text, text) - 3.f, y + size - p.line(HudFont::Text),
+                           rgba(pal.Text), text, false);
                 }
             }
             if (number > 0)
-            {
-                char text[8];
-                std::snprintf(text, sizeof(text), "%d", number);
-                nc::AddText(dl, fonts.Normal, x + 3, y + 1, pal.TextAlt, text);
-            }
-            nc::OutlineRect(dl, x, y, x + size, y + size, selected ? pal.BorderSelected : pal.Border);
+                p.text(HudFont::Hint, x + 3.f, y + 1.f, rgba(pal.TextAlt), std::to_string(number), false);
+            p.outline(x, y, x + size, y + size, rgba(selected ? pal.BorderSelected : pal.Border));
         }
 
-        void draw_hotbar(const game::Session& session)
+        void draw_hotbar(const game::Session& session, Painter& p, ImVec2 display)
         {
             const inv::Inventory& inventory = session.inventory;
             const core::Config& cfg = core::config();
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
-            ImDrawList* dl = ImGui::GetForegroundDrawList();
-            const nc::Fonts& fonts = nc::GetFonts();
             const nc::Palette& pal = nc::GetPalette();
 
             // laid out for 900 lines, larger on taller screens (times the hud_scale setting)
@@ -394,36 +657,35 @@ namespace hud
             for (int i = 0; i < m; ++i)
             {
                 const game::NativeWeapon& weapon = session.native[static_cast<std::size_t>(i)];
-                const int x = x0 + i * (wide + gap);
+                const float x = static_cast<float>(x0 + i * (wide + gap)), y = static_cast<float>(y0);
+                const float w = static_cast<float>(wide), s = static_cast<float>(size);
                 const bool selected_here = native_valid && i == g.native_sel;
                 // a gun or a melee weapon (the gun slots hold nothing of the catalogue): a neutral colour
-                nc::FillRect(dl, x, y0, x + wide, y0 + size, pal.BgAlt);
+                p.rect(x, y, x + w, y + s, rgba(pal.BgAlt));
                 if (!weapon.classname.empty())
                 {
-                    const int pad = size / 6;
-                    nc::FillRect(dl, x + pad, y0 + pad, x + wide - pad, y0 + size - pad, ImVec4(0.22f, 0.24f, 0.28f, 1.f));
-                    nc::OutlineRect(dl, x + pad, y0 + pad, x + wide - pad, y0 + size - pad, ImVec4(0.6f, 0.64f, 0.7f, 1.f));
-                    if (!draw_icon(dl, x + 2, y0 + 2, x + wide - 2, y0 + size - 2, (weapon.melee.empty() ? weapon.classname : weapon.melee).c_str()))
+                    const float pad = std::floor(s / 6.f);
+                    p.rect(x + pad, y + pad, x + w - pad, y + s - pad, IM_COL32(56, 61, 71, 255));
+                    p.outline(x + pad, y + pad, x + w - pad, y + s - pad, IM_COL32(153, 163, 179, 255));
+                    if (!p.icon(weapon.melee.empty() ? weapon.classname : weapon.melee, x + 2.f, y + 2.f, x + w - 2.f, y + s - 2.f,
+                                IM_COL32_WHITE))
                     {
-                        const int tw = nc::CalcTextWidth(fonts.Header, weapon.tag);
-                        nc::AddText(dl, fonts.Header, x + (wide - tw) / 2, y0 + (size - static_cast<int>(fonts.Size)) / 2,
-                                    ImVec4(1.f, 1.f, 1.f, 1.f), weapon.tag);
+                        const float tw = p.width(HudFont::Text, weapon.tag);
+                        p.text(HudFont::Text, x + (w - tw) * 0.5f, y + (s - p.line(HudFont::Text)) * 0.5f, IM_COL32_WHITE, weapon.tag);
                     }
                     if (!weapon.melee.empty())
-                        draw_wear(dl, x, y0 + size, x + wide, weapon.wear);
+                        draw_wear(p, x, y + s, x + w, weapon.wear);
                 }
-                char number[8];
-                std::snprintf(number, sizeof(number), "%d", i + 1);
-                nc::AddText(dl, fonts.Normal, x + 3, y0 + 1, pal.TextAlt, number);
-                nc::OutlineRect(dl, x, y0, x + wide, y0 + size, selected_here ? pal.BorderSelected : pal.Border);
+                p.text(HudFont::Hint, x + 3.f, y + 1.f, rgba(pal.TextAlt), std::to_string(i + 1), false);
+                p.outline(x, y, x + w, y + s, rgba(selected_here ? pal.BorderSelected : pal.Border));
             }
             const int items_x = x0 + m * (wide + gap);
             for (int i = 0; i < n; ++i)
-                draw_slot(dl, items_x + i * (size + gap), y0, size, inventory.slot(i),
-                          !native_valid && i == inventory.selected(), false, m + i + 1);
+                draw_slot(p, static_cast<float>(items_x + i * (size + gap)), static_cast<float>(y0), static_cast<float>(size),
+                          inventory.slot(i), !native_valid && i == inventory.selected(), false, m + i + 1);
 
             // the weapon in the hands: rounds in the clip / in reserve, right of the bar (the game's own counter is part
-            // of the weapon panel the mod hides)
+            // of the weapon panel the mod hides), in the face of the game's counter
             // (an item in the hands also reports a "clip": not shown)
             const bool item_in_hands = std::any_of(session.native.begin(), session.native.end(), [](const game::NativeWeapon& w) {
                 const inv::ItemDef* def = inv::find_item(w.classname);
@@ -436,21 +698,19 @@ namespace hud
                     std::snprintf(ammo, sizeof(ammo), "%d / %d", session.ammo_clip, session.ammo_reserve);
                 else
                     std::snprintf(ammo, sizeof(ammo), "%d", session.ammo_clip >= 0 ? session.ammo_clip : session.ammo_reserve);
-                const int line = static_cast<int>(fonts.Size);
-                const int ax = x0 + total + 3 * gap;
-                const int ay = y0 + (size - line) / 2;
-                nc::AddText(dl, fonts.Header, ax + 1, ay + 1, ImVec4(0.f, 0.f, 0.f, 0.8f), ammo);
-                nc::AddText(dl, fonts.Header, ax, ay,
-                            session.ammo_clip == 0 ? ImVec4(0.95f, 0.35f, 0.3f, 1.f) : ImVec4(1.f, 1.f, 1.f, 1.f), ammo);
+                const float ax = static_cast<float>(x0 + total + 3 * gap);
+                const float ay = static_cast<float>(y0) + (static_cast<float>(size) - p.line(HudFont::Ammo)) * 0.5f;
+                p.text(HudFont::Ammo, ax, ay, session.ammo_clip == 0 ? IM_COL32(242, 89, 77, 255) : IM_COL32_WHITE, ammo);
             }
 
-            int y = y0 - static_cast<int>(fonts.Size) - 3;
+            float y = static_cast<float>(y0) - p.line(HudFont::Text) - 3.f;
             // a status line from the game side, for a few seconds
             if (!session.message.empty() && GetTickCount64() < session.message_until)
             {
-                const int tw = nc::CalcTextWidth(fonts.Header, session.message.c_str());
-                nc::AddText(dl, fonts.Header, x0 + (total - tw) / 2, y, pal.TextSelected, session.message.c_str());
-                y -= static_cast<int>(fonts.Size) + 2;
+                const float tw = p.width(HudFont::Text, session.message);
+                p.text(HudFont::Text, static_cast<float>(x0) + (static_cast<float>(total) - tw) * 0.5f, y, rgba(pal.TextSelected),
+                       session.message);
+                y -= p.line(HudFont::Text) + 2.f;
             }
             // the selected item's name above the bar
             const inv::Stack& selected = inventory.slot(inventory.selected());
@@ -458,8 +718,8 @@ namespace hud
                                             : (selected.empty() ? nullptr : selected.def->name);
             if (name != nullptr)
             {
-                const int tw = nc::CalcTextWidth(fonts.Normal, name);
-                nc::AddText(dl, fonts.Normal, x0 + (total - tw) / 2, y, pal.TextFocused, name);
+                const float tw = p.width(HudFont::Text, name);
+                p.text(HudFont::Text, static_cast<float>(x0) + (static_cast<float>(total) - tw) * 0.5f, y, rgba(pal.TextFocused), name);
             }
         }
 
@@ -551,13 +811,10 @@ namespace hud
                 game::backend().use(target.index);
         }
 
-        void draw_column(const game::Session& session)
+        void draw_column(const game::Session& session, Painter& p, ImVec2 display)
         {
             const inv::Inventory& inventory = session.inventory;
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
-            ImDrawList* dl = ImGui::GetForegroundDrawList();
-            const nc::Fonts& fonts = nc::GetFonts();
-            const int line = static_cast<int>(fonts.Size);
+            const float line = p.line(HudFont::Text);
 
             // The panel's place comes from scripts/hudlayout.res (HudWeaponSelection: 480-line units, right-aligned)
             // and was measured in the game: its item boxes are 23.3 units square, 26.7 apart, their right edge 8.3
@@ -566,7 +823,7 @@ namespace hud
             // panel's throwable box would be.  (Not drawn as such: a carried throwable is shown in its own box.)
             const float unit = display.y / 480.f;
             const float size_f = 23.3f * unit, pitch_f = 26.7f * unit;
-            const int size = static_cast<int>(size_f);
+            const float size = std::floor(size_f);
             const float right = display.x - 8.3f * unit;
             const float thickness = std::max(1.f, unit * 0.5f);
 
@@ -578,46 +835,39 @@ namespace hud
             {
                 const int i = inventory.first_weapon_slot() + k;
                 const inv::Stack& stack = inventory.slot(i);
-                const ImVec2 p0(right - weapon_w, weapons_top + k * weapon_pitch), p1(right, p0.y + weapon_h);
+                const float x0 = std::floor(right - weapon_w), y0 = std::floor(weapons_top + k * weapon_pitch);
+                const float x1 = std::floor(right), y1 = std::floor(weapons_top + k * weapon_pitch + weapon_h);
                 if (stack.empty())
                 {
-                    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 60));
-                    dl->AddRect(p0, p1, IM_COL32(255, 255, 255, 50), 0.f, 0, thickness);
+                    p.rect(x0, y0, x1, y1, IM_COL32(0, 0, 0, 60));
+                    p.outline(x0, y0, x1, y1, IM_COL32(255, 255, 255, 50), thickness);
                     continue;
                 }
-                dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120));
-                dl->AddRect(p0, p1, IM_COL32(255, 255, 255, 120), 0.f, 0, thickness);
-                const int x0 = static_cast<int>(p0.x), y0 = static_cast<int>(p0.y);
-                const int x1 = static_cast<int>(p1.x), y1 = static_cast<int>(p1.y);
-                const int pad = static_cast<int>(unit * 2.f);
+                p.rect(x0, y0, x1, y1, IM_COL32(0, 0, 0, 120));
+                p.outline(x0, y0, x1, y1, IM_COL32(255, 255, 255, 120), thickness);
+                const float pad = std::floor(unit * 2.f);
                 if (!stack.weapon.melee.empty())
                 {
                     // a melee weapon: its kind's icon (scripts/melee/<kind>.txt), else its name
-                    if (!draw_icon(dl, x0 + pad, y0 + pad, x1 - pad, y1 - pad, stack.weapon.melee.c_str()))
-                        nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
-                                    melee_title(stack.weapon.melee).c_str());
-                    draw_wear(dl, x0, y1, x1, stack.weapon.wear);
+                    if (!p.icon(stack.weapon.melee, x0 + pad, y0 + pad, x1 - pad, y1 - pad, IM_COL32_WHITE))
+                        p.text(HudFont::Text, x0 + pad * 2.f, y0 + (y1 - y0 - line) * 0.5f, IM_COL32_WHITE, melee_title(stack.weapon.melee));
+                    draw_wear(p, x0, y1, x1, stack.weapon.wear);
                     continue;
                 }
                 // a gun: like the panel's gun box, its rounds on the left (magazine over reserve), its icon on the right
-                const int text_w = static_cast<int>(weapon_w * 0.32f);
-                if (!draw_icon(dl, x0 + text_w, y0 + pad, x1 - pad, y1 - pad, stack.def->classname))
+                const float text_w = std::floor(weapon_w * 0.32f);
+                if (!p.icon(stack.def->classname, x0 + text_w, y0 + pad, x1 - pad, y1 - pad, IM_COL32_WHITE))
                 {
-                    const int tw = nc::CalcTextWidth(fonts.Header, stack.def->name);
-                    nc::AddText(dl, fonts.Header, x1 - tw - pad, y0 + (y1 - y0 - line) / 2, ImVec4(1.f, 1.f, 1.f, 1.f),
-                                stack.def->name);
+                    const float tw = p.width(HudFont::Text, stack.def->name);
+                    p.text(HudFont::Text, x1 - tw - pad, y0 + (y1 - y0 - line) * 0.5f, IM_COL32_WHITE, stack.def->name);
                 }
                 if (stack.weapon.clip >= 0)
                 {
-                    char clip[16], reserve[16];
-                    std::snprintf(clip, sizeof(clip), "%d", stack.weapon.clip);
-                    nc::AddText(dl, fonts.Header, x0 + pad * 2, y0 + pad, ImVec4(1.f, 1.f, 1.f, 1.f), clip);
+                    p.text(HudFont::Ammo, x0 + pad * 2.f, y0 + pad, IM_COL32_WHITE, std::to_string(stack.weapon.clip));
                     // under it, like the game's gun box: the reserve it would use (the player's, shared by its type)
                     if (const int shared = shared_reserve(session, stack.def->classname); shared >= 0)
-                    {
-                        std::snprintf(reserve, sizeof(reserve), "%d", shared);
-                        nc::AddText(dl, fonts.Normal, x0 + pad * 2, y1 - line - pad, ImVec4(0.66f, 0.66f, 0.66f, 1.f), reserve);
-                    }
+                        p.text(HudFont::Hint, x0 + pad * 2.f, y1 - p.line(HudFont::Hint) - pad, IM_COL32(168, 168, 168, 255),
+                               std::to_string(shared));
                 }
             }
 
@@ -630,52 +880,42 @@ namespace hud
             for (int i = 0; i < n; ++i)
             {
                 const Cell cell = grid_cell(i);
-                const int x1 = static_cast<int>(right - (2 - cell.column) * pitch_f), x0 = x1 - size;
-                const int y1 = static_cast<int>(first_bottom + cell.row * pitch_f), y0 = y1 - size;
+                const float x1 = std::floor(right - (2 - cell.column) * pitch_f), x0 = x1 - size;
+                const float y1 = std::floor(first_bottom + cell.row * pitch_f), y0 = y1 - size;
                 const inv::Stack& stack = inventory.slot(i);
                 const bool selected = i == inventory.selected();
                 if (stack.empty())
                 {
                     // an empty box: only its place, faintly
-                    dl->AddRectFilled(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
-                                      ImVec2(static_cast<float>(x1), static_cast<float>(y1)), IM_COL32(0, 0, 0, 60));
-                    dl->AddRect(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
-                                ImVec2(static_cast<float>(x1), static_cast<float>(y1)),
-                                selected ? IM_COL32(255, 255, 255, 170) : IM_COL32(255, 255, 255, 50), 0.f, 0, thickness);
+                    p.rect(x0, y0, x1, y1, IM_COL32(0, 0, 0, 60));
+                    p.outline(x0, y0, x1, y1, selected ? IM_COL32(255, 255, 255, 170) : IM_COL32(255, 255, 255, 50), thickness);
                 }
                 else
                 {
                     // green, like the game's panel, for the one in the hands; the box counts the one carried too
                     const bool hands = in_hands(session, stack);
                     const ImU32 ink = hands ? green : IM_COL32_WHITE;
-                    dl->AddRectFilled(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
-                                      ImVec2(static_cast<float>(x1), static_cast<float>(y1)), IM_COL32(0, 0, 0, 120));
+                    p.rect(x0, y0, x1, y1, IM_COL32(0, 0, 0, 120));
                     const ImU32 outline = hands ? green : (selected ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120));
-                    dl->AddRect(ImVec2(static_cast<float>(x0), static_cast<float>(y0)),
-                                ImVec2(static_cast<float>(x1), static_cast<float>(y1)), outline, 0.f, 0,
-                                hands || selected ? thickness * 2.f : thickness);
-                    const int pad = size / 10;
-                    if (!draw_icon(dl, x0 + pad, y0 + pad, x1 - pad, y1 - pad, stack.def->classname, ink))
+                    p.outline(x0, y0, x1, y1, outline, hands || selected ? thickness * 2.f : thickness);
+                    const float pad = std::floor(size / 10.f);
+                    if (!p.icon(stack.def->classname, x0 + pad, y0 + pad, x1 - pad, y1 - pad, ink))
                     {
-                        const int tw = nc::CalcTextWidth(fonts.Header, stack.def->tag);
-                        nc::AddText(dl, fonts.Header, x0 + (size - tw) / 2, y0 + (size - line) / 2,
-                                    ImGui::ColorConvertU32ToFloat4(ink), stack.def->tag);
+                        const float tw = p.width(HudFont::Text, stack.def->tag);
+                        p.text(HudFont::Text, x0 + (size - tw) * 0.5f, y0 + (size - line) * 0.5f, ink, stack.def->tag);
                     }
                     const int shown = stack.count + (stack.held ? 1 : 0);
                     if (shown > 1)
                     {
-                        char text[16];
-                        std::snprintf(text, sizeof(text), "%d", shown);
-                        const int tx = x1 - nc::CalcTextWidth(fonts.Header, text) - 3, ty = y1 - line - 1;
-                        nc::AddText(dl, fonts.Header, tx + 1, ty + 1, ImVec4(0.f, 0.f, 0.f, 0.9f), text);
-                        nc::AddText(dl, fonts.Header, tx, ty, ImGui::ColorConvertU32ToFloat4(ink), text);
+                        const std::string text = std::to_string(shown);
+                        p.text(HudFont::Text, x1 - p.width(HudFont::Text, text) - 3.f, y1 - line - 1.f, ink, text);
                     }
                 }
                 // the key that takes it in hand: 3..9, 0
                 if (i < 8)
                 {
                     const char key[2] = {static_cast<char>(i == 7 ? '0' : '3' + i), 0};
-                    nc::AddText(dl, fonts.Normal, x0 + 3, y0 + 1, ImVec4(1.f, 1.f, 1.f, 0.55f), key);
+                    p.text(HudFont::Hint, x0 + 3.f, y0 + 1.f, IM_COL32(255, 255, 255, 140), key, false);
                 }
             }
 
@@ -686,22 +926,42 @@ namespace hud
             {
                 const float weight = session.remote_weight >= 0.f ? session.remote_weight : inventory.weight();
                 const int rows = grid_cell(n - 1).row + 1;
-                const float x0 = right - 3.f * pitch_f + (pitch_f - size_f), x1 = right;
-                const float y0 = first_bottom + (rows - 1) * pitch_f + (pitch_f - size_f), y1 = y0 + static_cast<float>(line) + 4.f;
+                const float x0 = std::floor(right - 3.f * pitch_f + (pitch_f - size_f)), x1 = std::floor(right);
+                const float y0 = std::floor(first_bottom + (rows - 1) * pitch_f + (pitch_f - size_f));
+                const float y1 = y0 + std::ceil(p.line(HudFont::Hint)) + 4.f;
                 const float fraction = std::clamp(weight / max_weight, 0.f, 1.f);
                 const bool full = weight >= max_weight - 1e-3f;
-                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(0, 0, 0, 120));
-                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + (x1 - x0) * fraction, y1),
-                                  full ? IM_COL32(200, 50, 40, 170) : IM_COL32(255, 255, 255, 60));
-                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), full ? IM_COL32(230, 70, 60, 230) : IM_COL32(255, 255, 255, 120), 0.f, 0,
-                            thickness);
+                p.rect(x0, y0, x1, y1, IM_COL32(0, 0, 0, 120));
+                p.rect(x0, y0, x0 + std::floor((x1 - x0) * fraction), y1, full ? IM_COL32(200, 50, 40, 170) : IM_COL32(255, 255, 255, 60));
+                p.outline(x0, y0, x1, y1, full ? IM_COL32(230, 70, 60, 230) : IM_COL32(255, 255, 255, 120), thickness);
                 char text[32];
                 std::snprintf(text, sizeof(text), "%.1f / %.1f", weight, max_weight);
-                const int tw = nc::CalcTextWidth(fonts.Normal, text);
-                nc::AddText(dl, fonts.Normal, static_cast<int>((x0 + x1) * 0.5f) - tw / 2, static_cast<int>(y0) + 2,
-                            ImVec4(1.f, 1.f, 1.f, 0.9f), text);
+                p.text(HudFont::Hint, (x0 + x1) * 0.5f - p.width(HudFont::Hint, text) * 0.5f, y0 + 2.f, IM_COL32(255, 255, 255, 230), text);
             }
             // no item name or status line here: the boxes say it (the messages still go to inventory_mod.log)
+        }
+
+        // ---- the screen effects' fallback ------------------------------------------------------------------------------
+        //
+        // The infection and the stamina are first of all postfx.cpp's shaders, which read the game's frame and so stay
+        // with Direct3D (the call queue under the game's HUD, Present over it).  Without the shader the HUD tints and
+        // darkens the screen itself: worked out each frame in draw() (where the shader's values are set too, and the
+        // heartbeat is counted) and painted by paint_hud, under the session lock both.
+        struct ScreenTint
+        {
+            ImU32 tint = 0; // over the whole screen
+            float depth = 0.f; // the vignette, how deep (pixels) ...
+            ImU32 edge = 0; // ... and its colour at the edge
+            ImU32 flash = 0; // over the whole screen, over the rest
+        };
+        ScreenTint g_infection_tint;
+        ScreenTint g_stamina_tint;
+
+        void paint_tint(Painter& p, ImVec2 display, const ScreenTint& t)
+        {
+            p.rect(0.f, 0.f, display.x, display.y, t.tint);
+            vignette(p, display, t.depth, t.edge);
+            p.rect(0.f, 0.f, display.x, display.y, t.flash);
         }
 
         // ---- the infection's effect -----------------------------------------------------------------------------------
@@ -715,7 +975,7 @@ namespace hud
         double g_beats = 0.0; // heartbeats counted while infected (the picture's and the sound's)
         ULONGLONG g_beat_tick = 0;
 
-        void draw_infection(const game::Session& session)
+        void update_infection(const game::Session& session, ImVec2 display)
         {
             const ULONGLONG now = GetTickCount64();
             float remaining = 0.f, severity = 0.f;
@@ -732,8 +992,6 @@ namespace hud
                 const float total = static_cast<float>(session.infection_total_ms) / 1000.f;
                 severity = std::clamp(1.f - remaining / total, 0.f, 1.f);
             }
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
-            ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
             // the heartbeat: 50 to 150 a minute, a sharp beat and a softer one after it (counted, so a faster heart
             // does not jump the phase)
@@ -759,21 +1017,13 @@ namespace hud
                 return;
             }
 
-            // the tint
-            const int tint = static_cast<int>(std::clamp(18.f + 70.f * severity + 25.f * severity * pulse, 0.f, 140.f));
-            dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(90, 125, 25, tint));
-
-            // the vignette: four edge gradients, deeper and darker as it gets worse
-            const float depth = (0.10f + 0.30f * severity + 0.05f * severity * pulse) * std::min(display.x, display.y);
-            const int edge = static_cast<int>(std::clamp(90.f + 150.f * severity + 30.f * pulse, 0.f, 245.f));
-            const ImU32 dark = IM_COL32(10, 30, 5, edge), clear = IM_COL32(10, 30, 5, 0);
-            dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(display.x, depth), dark, dark, clear, clear);
-            dl->AddRectFilledMultiColor(ImVec2(0.f, display.y - depth), display, clear, clear, dark, dark);
-            dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(depth, display.y), dark, clear, clear, dark);
-            dl->AddRectFilledMultiColor(ImVec2(display.x - depth, 0.f), display, clear, dark, dark, clear);
-            // the last seconds: red flashes on the beat
+            // the tint; the vignette, deeper and darker as it gets worse; the last seconds: red flashes on the beat
+            ScreenTint& t = g_infection_tint;
+            t.tint = IM_COL32(90, 125, 25, static_cast<int>(std::clamp(18.f + 70.f * severity + 25.f * severity * pulse, 0.f, 140.f)));
+            t.depth = (0.10f + 0.30f * severity + 0.05f * severity * pulse) * std::min(display.x, display.y);
+            t.edge = IM_COL32(10, 30, 5, static_cast<int>(std::clamp(90.f + 150.f * severity + 30.f * pulse, 0.f, 245.f)));
             if (remaining < 10.f)
-                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 20, 10, static_cast<int>(60.f * pulse * last)));
+                t.flash = IM_COL32(150, 20, 10, static_cast<int>(60.f * pulse * last));
         }
 
         // ---- stamina ------------------------------------------------------------------------------------------------
@@ -781,17 +1031,21 @@ namespace hud
         // Session::stamina (the server's [stamina]): a thin bar under the crosshair while it is not full (it fades a
         // moment after it is full again; orange when low, red and pulsing while exhausted), and the vignette of
         // postfx.cpp (the edges darken from half down; while exhausted they close in and pulse with each gasp).
-        // Without the shader the HUD darkens the edges itself.  The settings' [stamina] turns either off.
+        // Without the shader the HUD darkens the edges itself.  The settings' [stamina] turns either off.  The values
+        // ease in draw(), each frame; paint_hud draws the bar from them.
         bool g_stamina_preview = false; // the Debug tab's preview
         float g_stamina_preview_value = 0.3f;
         bool g_stamina_preview_exhausted = false;
         float g_stamina_shown = 1.f; // eased toward the server's value (it comes ten times a second)
         float g_stamina_alpha = 0.f; // the bar's
         float g_stamina_exhausted = 0.f; // eased 0 .. 1
+        bool g_stamina_exhausted_now = false;
+        float g_stamina_breath = 0.f;
+        bool g_stamina_live = false; // updated this frame: the bar may show
         ULONGLONG g_stamina_tick = 0;
         ULONGLONG g_stamina_full_since = 0;
 
-        void draw_stamina(const game::Session& session)
+        void update_stamina(const game::Session& session, ImVec2 display)
         {
             const ULONGLONG now = GetTickCount64();
             const float dt = g_stamina_tick != 0 && now - g_stamina_tick < 250 ? static_cast<float>(now - g_stamina_tick) / 1000.f : 0.f;
@@ -809,6 +1063,8 @@ namespace hud
                 g_stamina_alpha = g_stamina_exhausted = 0.f;
                 return;
             }
+            g_stamina_live = true;
+            g_stamina_exhausted_now = exhausted;
             g_stamina_shown += (value - g_stamina_shown) * std::min(1.f, dt * 12.f);
             g_stamina_exhausted = exhausted ? std::min(1.f, g_stamina_exhausted + dt / 0.4f) : std::max(0.f, g_stamina_exhausted - dt / 0.8f);
             if (value < 0.999f)
@@ -819,10 +1075,10 @@ namespace hud
             g_stamina_alpha = show ? std::min(1.f, g_stamina_alpha + dt * 6.f) : std::max(0.f, g_stamina_alpha - dt * 2.f);
 
             const core::Config& cfg = core::config();
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
             // the gasps for air: about 50 a minute
             const float t = static_cast<float>(now % 1000000ULL) / 1000.f;
             const float breath = 0.5f - 0.5f * std::cos(t * 6.2831853f * 0.85f);
+            g_stamina_breath = breath;
             const float tired = std::clamp((0.5f - g_stamina_shown) / 0.5f, 0.f, 1.f);
             if (cfg.stamina_vignette && (tired > 0.f || g_stamina_exhausted > 0.f))
             {
@@ -835,34 +1091,30 @@ namespace hud
                 }
                 else
                 {
-                    ImDrawList* dl = ImGui::GetBackgroundDrawList();
-                    const float depth = (0.12f + 0.16f * tired + 0.06f * g_stamina_exhausted * breath) * std::min(display.x, display.y);
-                    const int edge = static_cast<int>(std::clamp(120.f * tired + 70.f * g_stamina_exhausted * (0.6f + 0.4f * breath), 0.f, 220.f));
-                    const ImU32 dark = IM_COL32(0, 0, 0, edge), clear = IM_COL32(0, 0, 0, 0);
-                    dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(display.x, depth), dark, dark, clear, clear);
-                    dl->AddRectFilledMultiColor(ImVec2(0.f, display.y - depth), display, clear, clear, dark, dark);
-                    dl->AddRectFilledMultiColor(ImVec2(0.f, 0.f), ImVec2(depth, display.y), dark, clear, clear, dark);
-                    dl->AddRectFilledMultiColor(ImVec2(display.x - depth, 0.f), display, clear, dark, dark, clear);
+                    g_stamina_tint.depth = (0.12f + 0.16f * tired + 0.06f * g_stamina_exhausted * breath) * std::min(display.x, display.y);
+                    g_stamina_tint.edge =
+                        IM_COL32(0, 0, 0, static_cast<int>(std::clamp(120.f * tired + 70.f * g_stamina_exhausted * (0.6f + 0.4f * breath), 0.f, 220.f)));
                 }
             }
-            if (cfg.stamina_bar && g_stamina_alpha > 0.01f)
-            {
-                ImDrawList* dl = ImGui::GetBackgroundDrawList();
-                const float scale = cfg.hud_scale * std::max(1.f, display.y / 900.f);
-                const float w = std::round(150.f * scale), h = std::max(3.f, std::round(5.f * scale));
-                const float x0 = std::round((display.x - w) * 0.5f), y0 = std::round(display.y * 0.5f + 70.f * scale);
-                const float a = g_stamina_alpha;
-                dl->AddRectFilled(ImVec2(x0 - 1.f, y0 - 1.f), ImVec2(x0 + w + 1.f, y0 + h + 1.f),
-                                  IM_COL32(0, 0, 0, static_cast<int>(120.f * a)), h * 0.5f);
-                ImU32 color = IM_COL32(235, 235, 225, static_cast<int>(210.f * a));
-                if (exhausted)
-                    color = IM_COL32(225, 45, 30, static_cast<int>(255.f * a * (0.55f + 0.45f * breath)));
-                else if (g_stamina_shown < 0.3f)
-                    color = IM_COL32(240, 150, 40, static_cast<int>(230.f * a));
-                const float fill = std::clamp(g_stamina_shown, 0.f, 1.f) * w;
-                if (fill >= 1.f)
-                    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + fill, y0 + h), color, h * 0.5f);
-            }
+        }
+
+        void draw_stamina_bar(Painter& p, ImVec2 display)
+        {
+            if (!g_stamina_live || !core::config().stamina_bar || g_stamina_alpha <= 0.01f)
+                return;
+            const float scale = core::config().hud_scale * std::max(1.f, display.y / 900.f);
+            const float w = std::round(150.f * scale), h = std::max(3.f, std::round(5.f * scale));
+            const float x0 = std::round((display.x - w) * 0.5f), y0 = std::round(display.y * 0.5f + 70.f * scale);
+            const float a = g_stamina_alpha;
+            capsule(p, x0 - 1.f, y0 - 1.f, x0 + w + 1.f, y0 + h + 1.f, IM_COL32(0, 0, 0, static_cast<int>(120.f * a)));
+            ImU32 color = IM_COL32(235, 235, 225, static_cast<int>(210.f * a));
+            if (g_stamina_exhausted_now)
+                color = IM_COL32(225, 45, 30, static_cast<int>(255.f * a * (0.55f + 0.45f * g_stamina_breath)));
+            else if (g_stamina_shown < 0.3f)
+                color = IM_COL32(240, 150, 40, static_cast<int>(230.f * a));
+            const float fill = std::clamp(g_stamina_shown, 0.f, 1.f) * w;
+            if (fill >= 1.f)
+                capsule(p, x0, y0, x0 + fill, y0 + h, color);
         }
 
         // ---- the melee wind-up --------------------------------------------------------------------------------------
@@ -871,17 +1123,19 @@ namespace hud
         // is held, over the server's heavy_hold; full, the swing let go is a heavy one (the ring turns orange and
         // pulses), and letting go flashes it outward.  A tap shows nothing (it appears after a moment of holding).
         // While exhausted it stays grey: the swing will be light.  The settings' [melee] ring turns it off.
-        void draw_melee(const game::Session& session)
+        void draw_melee(const game::Session& session, Painter& p, ImVec2 display)
         {
             if (!core::config().melee_ring || session.melee_hold <= 0.f)
                 return;
             const ULONGLONG now = GetTickCount64();
-            ImDrawList* dl = ImGui::GetBackgroundDrawList();
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
             const float scale = core::config().hud_scale * std::max(1.f, display.y / 900.f);
             const ImVec2 center(std::round(display.x * 0.5f), std::round(display.y * 0.5f));
             const float radius = 26.f * scale, thick = std::max(2.f, 3.f * scale);
             constexpr float k_top = -1.5707963f, k_turn = 6.2831853f;
+            // a stroke `width` wide along the circle of `r`, from a0 over `span`
+            const auto arc = [&](float r, float a0, float span, float width, ImU32 color) {
+                ring_segment(p, center, r - width * 0.5f, r + width * 0.5f, a0, a0 + span, color);
+            };
             if (session.melee_winding_since != 0 && now >= session.melee_winding_since)
             {
                 const float held = static_cast<float>(now - session.melee_winding_since) / 1000.f;
@@ -891,18 +1145,14 @@ namespace hud
                 {
                     const bool full = charge >= 1.f && session.melee_can_heavy;
                     const float pulse = full ? 0.5f + 0.5f * std::sin(static_cast<float>(now % 100000ULL) / 1000.f * 12.f) : 0.f;
-                    dl->PathArcTo(center, radius, 0.f, k_turn, 48);
-                    dl->PathStroke(IM_COL32(0, 0, 0, static_cast<int>(110.f * alpha)), ImDrawFlags_Closed, thick + 2.f);
+                    arc(radius, 0.f, k_turn, thick + 2.f, IM_COL32(0, 0, 0, static_cast<int>(110.f * alpha)));
                     ImU32 color = IM_COL32(235, 235, 225, static_cast<int>(220.f * alpha));
                     if (!session.melee_can_heavy)
                         color = IM_COL32(150, 150, 150, static_cast<int>(150.f * alpha));
                     else if (full)
                         color = IM_COL32(240, 150, 40, static_cast<int>((200.f + 55.f * pulse) * alpha));
                     if (charge > 0.f)
-                    {
-                        dl->PathArcTo(center, radius, k_top, k_top + k_turn * charge, std::max(4, static_cast<int>(48.f * charge)));
-                        dl->PathStroke(color, ImDrawFlags_None, full ? thick + 1.f * pulse : thick);
-                    }
+                        arc(radius, k_top, k_turn * charge, full ? thick + 1.f * pulse : thick, color);
                 }
             }
             // the melee weapon in the hands, once half worn: what is left of it under the ring, red when nearly broken
@@ -912,16 +1162,14 @@ namespace hud
                     const float left = 1.f - std::clamp(static_cast<float>(w.wear) / static_cast<float>(inv::k_wear_broken), 0.f, 1.f);
                     const float wide = 40.f * scale, high = std::max(2.f, 3.f * scale);
                     const ImVec2 p0(center.x - wide * 0.5f, center.y + radius + 8.f * scale);
-                    dl->AddRectFilled(p0, ImVec2(p0.x + wide, p0.y + high), IM_COL32(0, 0, 0, 120));
-                    dl->AddRectFilled(p0, ImVec2(p0.x + wide * left, p0.y + high),
-                                      left > 0.2f ? IM_COL32(240, 200, 60, 220) : IM_COL32(230, 60, 50, 230));
+                    p.rect(p0.x, p0.y, p0.x + wide, p0.y + high, IM_COL32(0, 0, 0, 120));
+                    p.rect(p0.x, p0.y, p0.x + wide * left, p0.y + high, left > 0.2f ? IM_COL32(240, 200, 60, 220) : IM_COL32(230, 60, 50, 230));
                 }
             // a heavy swing let go: the ring flashes outward
             if (session.melee_heavy_at != 0 && now >= session.melee_heavy_at && now - session.melee_heavy_at < 300)
             {
                 const float t = static_cast<float>(now - session.melee_heavy_at) / 300.f;
-                dl->PathArcTo(center, radius * (1.f + 0.6f * t), 0.f, k_turn, 48);
-                dl->PathStroke(IM_COL32(240, 150, 40, static_cast<int>(230.f * (1.f - t))), ImDrawFlags_Closed, thick * (1.f - 0.5f * t));
+                arc(radius * (1.f + 0.6f * t), 0.f, k_turn, thick * (1.f - 0.5f * t), IM_COL32(240, 150, 40, static_cast<int>(230.f * (1.f - t))));
             }
         }
 
@@ -965,51 +1213,45 @@ namespace hud
                 return;
             }
             const ImVec2 display = ImGui::GetIO().DisplaySize;
-            ImDrawList* dl = ImGui::GetForegroundDrawList();
             const float fade = t > k_screamer_seconds - 0.45f ? (k_screamer_seconds - t) / 0.45f : 1.f;
             const float flash = t < 0.08f ? 220.f / 255.f * (1.f - t / 0.08f) : 0.f; // the first instant: a white flash
             float aspect = 1.f;
             void* texture = postfx::screamer_texture(&aspect);
-            // with the screen effect: drawn into the frame under the infection shader, at its worst
-            const bool through_shader = core::config().infection_effect && postfx::ready();
-            if (!through_shader)
-                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(0, 0, 0, static_cast<int>(255.f * fade)));
+            const float pulse = std::sin(t * 40.f);
+            // it lunges in, then keeps creeping closer; the shake dies down
+            const float zoom = 1.04f + 0.30f * (1.f - std::exp(-t * 9.f)) + 0.06f * t;
+            const float cover = std::max(display.x / aspect, display.y) * zoom;
+            const ImVec2 size(cover * aspect, cover);
+            const std::uint32_t r = static_cast<std::uint32_t>(now * 2654435761u);
+            const float shake = 34.f * std::max(0.f, 1.f - t / 1.2f) * (display.y / 1080.f);
+            const ImVec2 jitter(shake * (static_cast<float>(r & 255u) / 127.5f - 1.f),
+                                shake * (static_cast<float>((r >> 8) & 255u) / 127.5f - 1.f));
+            const ImVec2 at((display.x - size.x) * 0.5f + jitter.x, (display.y - size.y) * 0.5f + jitter.y);
+            // flickers: a few dark frames, brighter on the hit
+            const bool dark_frame = ((r >> 16) & 7u) == 0 && t > 0.2f;
+            const int light = dark_frame ? 110 : 255;
+            // a red sting that pulses (without a picture, a stronger red over the black)
+            const float red = texture != nullptr ? 70.f / 255.f * (0.25f + 0.2f * pulse) * fade : 200.f / 255.f * fade * (0.6f + 0.4f * pulse);
 
-            if (texture != nullptr)
+            // Drawn by postfx.cpp whenever it has the device: into the game's own frame (after the mod's VGUI HUD) where
+            // a stream's capture sees it, else at Present; with the screen effect, under the infection shader at its
+            // worst.  ImGui only without the device.
+            if (postfx::available())
             {
-                // it lunges in, then keeps creeping closer; the shake dies down
-                const float zoom = 1.04f + 0.30f * (1.f - std::exp(-t * 9.f)) + 0.06f * t;
-                const float cover = std::max(display.x / aspect, display.y) * zoom;
-                const ImVec2 size(cover * aspect, cover);
-                const std::uint32_t r = static_cast<std::uint32_t>(now * 2654435761u);
-                const float shake = 34.f * std::max(0.f, 1.f - t / 1.2f) * (display.y / 1080.f);
-                const ImVec2 jitter(shake * (static_cast<float>(r & 255u) / 127.5f - 1.f),
-                                    shake * (static_cast<float>((r >> 8) & 255u) / 127.5f - 1.f));
-                const ImVec2 at((display.x - size.x) * 0.5f + jitter.x, (display.y - size.y) * 0.5f + jitter.y);
-                // flickers: a few dark frames, brighter on the hit
-                const bool dark_frame = ((r >> 16) & 7u) == 0 && t > 0.2f;
-                const int light = dark_frame ? 110 : 255;
-                // a red sting that pulses
-                const float sting = 0.25f + 0.2f * std::sin(t * 40.f);
-                if (through_shader)
-                {
-                    const float rect[4] = {at.x, at.y, at.x + size.x, at.y + size.y};
-                    const unsigned tint = (static_cast<unsigned>(255.f * fade) << 24) |
-                                          (static_cast<unsigned>(light) * 0x010101u);
-                    postfx::set_screamer(texture, rect, tint, fade, 70.f / 255.f * sting * fade, flash);
-                    // the effect at its worst, throbbing with the shake
-                    postfx::set_infection(0.92f, 0.5f + 0.5f * std::sin(t * 40.f), 0.7f);
-                }
-                else
-                {
-                    dl->AddImage(reinterpret_cast<ImTextureID>(texture), at, ImVec2(at.x + size.x, at.y + size.y),
-                                 ImVec2(0.f, 0.f), ImVec2(1.f, 1.f), IM_COL32(light, light, light, static_cast<int>(255.f * fade)));
-                    dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 0, 0, static_cast<int>(70.f * sting * fade)));
-                }
+                const float rect[4] = {at.x, at.y, at.x + size.x, at.y + size.y};
+                const unsigned tint = (static_cast<unsigned>(255.f * fade) << 24) | (static_cast<unsigned>(light) * 0x010101u);
+                postfx::set_screamer(texture, rect, tint, fade, red, flash);
+                if (core::config().infection_effect && postfx::ready())
+                    postfx::set_infection(0.92f, 0.5f + 0.5f * pulse, 0.7f); // the effect at its worst, throbbing with the shake
+                return;
             }
-            else
-                dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(170, 0, 0, static_cast<int>(200.f * fade * (0.6f + 0.4f * std::sin(t * 40.f)))));
-            if (flash > 0.f && !(through_shader && texture != nullptr))
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(0, 0, 0, static_cast<int>(255.f * fade)));
+            if (texture != nullptr)
+                dl->AddImage(reinterpret_cast<ImTextureID>(texture), at, ImVec2(at.x + size.x, at.y + size.y), ImVec2(0.f, 0.f),
+                             ImVec2(1.f, 1.f), IM_COL32(light, light, light, static_cast<int>(255.f * fade)));
+            dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(150, 0, 0, static_cast<int>(255.f * red)));
+            if (flash > 0.f)
                 dl->AddRectFilled(ImVec2(0.f, 0.f), display, IM_COL32(255, 255, 255, static_cast<int>(255.f * flash)));
         }
 
@@ -1024,9 +1266,8 @@ namespace hud
         // the light ones stay easy to point at).  The outer ring is the weight: what is carried (green when light, red
         // at the limit), grey for what is left.
         //
-        // It is drawn the way the game draws its HUD: with its VGUI surface, in its frame, in the client scheme's fonts
-        // (ui/vgui.cpp calls paint_vgui on the main thread).  When that is not there the overlay draws it with ImGui,
-        // the same shapes.  The pointed-at segment follows the cursor in the window procedure itself (wheel_mouse_moved,
+        // Like the rest of the HUD it is drawn through a Painter (VGUI, else ImGui: see "drawing" above), and while VGUI
+        // draws it, it draws the pointer too (draw_pointer).  The pointed-at segment follows the cursor in the window procedure itself (wheel_mouse_moved,
         // from the layout the last drawing left), not a frame later; the wheel opens with a quick grow, and the segment
         // under the cursor slides out, lights up and ticks (the game's menu focus sound).
 
@@ -1167,7 +1408,6 @@ namespace hud
 
         int wheel_hover(const WheelLayout& layout, float x, float y)
         {
-            constexpr float k_pi = 3.14159265f;
             const float dx = x - layout.cx, dy = y - layout.cy;
             if (!layout.valid || layout.ends.empty() || dx * dx + dy * dy <= layout.dead * layout.dead)
                 return -1;
@@ -1199,209 +1439,6 @@ namespace hud
             }
         }
 
-        // What the wheel is drawn with: the game's VGUI surface, or ImGui's draw list over the frame.
-        enum class WheelFont
-        {
-            Title, // the name in the middle
-            Text, // its rounds or count, the weight
-            Ammo, // under each icon: the game's ammo counter's face
-            Hint // the buttons
-        };
-
-        class WheelPainter
-        {
-        public:
-            virtual ~WheelPainter() = default;
-            virtual void polygon(const ImVec2* points, int n, ImU32 colour) = 0; // convex, filled
-            virtual float line(WheelFont font) = 0;
-            virtual float width(WheelFont font, const std::string& text) = 0;
-            virtual void text(WheelFont font, float x, float y, ImU32 colour, const std::string& text) = 0; // top left
-            // The game's icon for `key`, fitted (aspect kept) and centred in the box; false when it has none.
-            virtual bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) = 0;
-        };
-
-        ImU32 faded(ImU32 colour, float alpha)
-        {
-            const float a = static_cast<float>(colour >> IM_COL32_A_SHIFT) * std::clamp(alpha, 0.f, 1.f);
-            return (colour & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a + 0.5f) << IM_COL32_A_SHIFT);
-        }
-
-        ImU32 mixed(ImU32 a, ImU32 b, float t)
-        {
-            const ImVec4 x = ImGui::ColorConvertU32ToFloat4(a), y = ImGui::ColorConvertU32ToFloat4(b);
-            return ImGui::ColorConvertFloat4ToU32(ImVec4(x.x + (y.x - x.x) * t, x.y + (y.y - x.y) * t, x.z + (y.z - x.z) * t,
-                                                         x.w + (y.w - x.w) * t));
-        }
-
-        // The box (x0, y0, x1, y1) narrowed to `aspect` (width / height), centred.
-        void fit(float aspect, float& x0, float& y0, float& x1, float& y1)
-        {
-            float w = x1 - x0, h = y1 - y0;
-            if (h <= 0.f || aspect <= 0.f)
-                return;
-            if (w / h > aspect)
-                w = h * aspect;
-            else
-                h = w / aspect;
-            const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
-            x0 = cx - w * 0.5f;
-            x1 = cx + w * 0.5f;
-            y0 = cy - h * 0.5f;
-            y1 = cy + h * 0.5f;
-        }
-
-        class ImGuiWheelPainter final : public WheelPainter
-        {
-        public:
-            explicit ImGuiWheelPainter(float screen_h)
-                : dl_(ImGui::GetForegroundDrawList()), fonts_(nc::GetFonts()),
-                  // the toolkit's fonts are drawn for 12 px cells: the wheel's text grows with the screen
-                  size_(fonts_.Size * std::max(1.f, screen_h / 720.f))
-            {
-            }
-            void polygon(const ImVec2* points, int n, ImU32 colour) override
-            {
-                dl_->AddConvexPolyFilled(points, n, colour);
-            }
-            float line(WheelFont font) override
-            {
-                return size_of(font);
-            }
-            float width(WheelFont font, const std::string& text) override
-            {
-                return font_of(font)->CalcTextSizeA(size_of(font), FLT_MAX, 0.f, text.c_str()).x;
-            }
-            void text(WheelFont font, float x, float y, ImU32 colour, const std::string& text) override
-            {
-                x = std::floor(x);
-                y = std::floor(y);
-                dl_->AddText(font_of(font), size_of(font), ImVec2(x + 1.f, y + 1.f), faded(IM_COL32(0, 0, 0, 200), alpha_of(colour)),
-                             text.c_str());
-                dl_->AddText(font_of(font), size_of(font), ImVec2(x, y), colour, text.c_str());
-            }
-            bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) override
-            {
-                const icons::Icon* icon = icons::find(key.c_str());
-                if (icon == nullptr)
-                    return false;
-                fit(icon->aspect, x0, y0, x1, y1);
-                dl_->AddImage(reinterpret_cast<ImTextureID>(icon->texture), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(icon->u0, icon->v0),
-                              ImVec2(icon->u1, icon->v1), tint);
-                return true;
-            }
-
-        private:
-            static float alpha_of(ImU32 colour)
-            {
-                return static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f;
-            }
-            ImFont* font_of(WheelFont font) const
-            {
-                return font == WheelFont::Title ? fonts_.Header : fonts_.Normal;
-            }
-            float size_of(WheelFont font) const
-            {
-                switch (font)
-                {
-                case WheelFont::Title:
-                    return size_ * 1.3f;
-                case WheelFont::Hint:
-                    return size_ * 0.85f;
-                default:
-                    return size_;
-                }
-            }
-            ImDrawList* dl_;
-            const nc::Fonts& fonts_;
-            float size_;
-        };
-
-        class VguiWheelPainter final : public WheelPainter
-        {
-        public:
-            void polygon(const ImVec2* points, int n, ImU32 colour) override
-            {
-                ui::vgui::Vertex v[64];
-                n = std::min(n, 64);
-                for (int i = 0; i < n; ++i)
-                    v[i] = ui::vgui::Vertex{points[i].x, points[i].y};
-                ui::vgui::polygon(v, n, colour);
-            }
-            float line(WheelFont font) override
-            {
-                return static_cast<float>(ui::vgui::font_tall(font_of(font)));
-            }
-            float width(WheelFont font, const std::string& text) override
-            {
-                return static_cast<float>(ui::vgui::text_width(font_of(font), text));
-            }
-            void text(WheelFont font, float x, float y, ImU32 colour, const std::string& text) override
-            {
-                const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
-                // the ammo font adds its light (as the game's counter): a shadow would only grey the segment
-                if (font != WheelFont::Ammo)
-                    ui::vgui::text(font_of(font), ix + 1, iy + 1,
-                                   faded(IM_COL32(0, 0, 0, 220), static_cast<float>(colour >> IM_COL32_A_SHIFT) / 255.f), text);
-                ui::vgui::text(font_of(font), ix, iy, colour, text);
-            }
-            bool icon(const std::string& key, float x0, float y0, float x1, float y1, ImU32 tint) override
-            {
-                icons::Sprite sprite;
-                if (!icons::find_sprite(key.c_str(), sprite))
-                    return false;
-                fit(sprite.aspect, x0, y0, x1, y1);
-                ui::vgui::image(sprite.material, static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(x1),
-                                static_cast<int>(y1), sprite.u0, sprite.v0, sprite.u1, sprite.v1, tint);
-                return true;
-            }
-
-        private:
-            static ui::vgui::Font font_of(WheelFont font)
-            {
-                switch (font)
-                {
-                case WheelFont::Title:
-                    return ui::vgui::Font::Title;
-                case WheelFont::Ammo:
-                    return ui::vgui::Font::Ammo;
-                case WheelFont::Hint:
-                    return ui::vgui::Font::Hint;
-                default:
-                    return ui::vgui::Font::Text;
-                }
-            }
-        };
-
-        // A ring segment from angle a0 to a1 (radians, 0 = right, clockwise on screen), filled: a quad every few
-        // degrees (under a third of a pixel off the circle at the wheel's size).
-        void ring_segment(WheelPainter& p, ImVec2 c, float r0, float r1, float a0, float a1, ImU32 color)
-        {
-            if (a1 <= a0 || r1 <= r0 || (color >> IM_COL32_A_SHIFT) == 0)
-                return;
-            const int steps = std::max(2, static_cast<int>(std::ceil((a1 - a0) * 12.f)));
-            for (int i = 0; i < steps; ++i)
-            {
-                const float t0 = a0 + (a1 - a0) * static_cast<float>(i) / steps;
-                const float t1 = a0 + (a1 - a0) * static_cast<float>(i + 1) / steps;
-                const ImVec2 q[4] = {ImVec2(c.x + std::cos(t0) * r0, c.y + std::sin(t0) * r0),
-                                     ImVec2(c.x + std::cos(t0) * r1, c.y + std::sin(t0) * r1),
-                                     ImVec2(c.x + std::cos(t1) * r1, c.y + std::sin(t1) * r1),
-                                     ImVec2(c.x + std::cos(t1) * r0, c.y + std::sin(t1) * r0)};
-                p.polygon(q, 4, color);
-            }
-        }
-
-        void disc(WheelPainter& p, ImVec2 c, float r, ImU32 color)
-        {
-            constexpr int k_points = 48;
-            ImVec2 points[k_points];
-            for (int i = 0; i < k_points; ++i)
-            {
-                const float a = 6.2831853f * static_cast<float>(i) / k_points;
-                points[i] = ImVec2(c.x + std::cos(a) * r, c.y + std::sin(a) * r);
-            }
-            p.polygon(points, k_points, color);
-        }
 
         // What moves on the wheel, from frame to frame (whichever thread draws it: one at a time).
         struct WheelMotion
@@ -1414,9 +1451,8 @@ namespace hud
         };
         WheelMotion g_wheel_motion;
 
-        void draw_wheel(const game::Session& session, WheelPainter& p, ImVec2 display)
+        void draw_wheel(const game::Session& session, Painter& p, ImVec2 display)
         {
-            constexpr float k_pi = 3.14159265f;
             const ImU32 green = IM_COL32(142, 214, 57, 255);
             const ULONGLONG now = GetTickCount64();
 
@@ -1520,13 +1556,13 @@ namespace hud
                 }
                 else if (!p.icon(w.icon, at.x - half_w, at.y - half_h, at.x + half_w, at.y + half_h, ink))
                 {
-                    const float tw = p.width(WheelFont::Text, w.label);
-                    p.text(WheelFont::Text, at.x - tw * 0.5f, at.y - p.line(WheelFont::Text) * 0.5f, ink, w.label);
+                    const float tw = p.width(HudFont::Text, w.label);
+                    p.text(HudFont::Text, at.x - tw * 0.5f, at.y - p.line(HudFont::Text) * 0.5f, ink, w.label);
                 }
                 if (!w.detail.empty())
                 {
-                    const float tw = p.width(WheelFont::Ammo, w.detail);
-                    p.text(WheelFont::Ammo, at.x - tw * 0.5f, at.y + half_h + 2.f * unit,
+                    const float tw = p.width(HudFont::Ammo, w.detail);
+                    p.text(HudFont::Ammo, at.x - tw * 0.5f, at.y + half_h + 2.f * unit,
                            faded(mixed(IM_COL32(200, 200, 200, 220), IM_COL32(255, 255, 255, 255), lit), alpha), w.detail);
                 }
             }
@@ -1587,7 +1623,7 @@ namespace hud
             // the lines in the middle, centred as a block; a name too wide for the middle is set smaller
             struct Line
             {
-                WheelFont font;
+                HudFont font;
                 std::string text;
                 ImU32 colour;
             };
@@ -1595,30 +1631,30 @@ namespace hud
             if (hover >= 0)
             {
                 const WheelEntry& w = entries[static_cast<std::size_t>(hover)];
-                lines.push_back({p.width(WheelFont::Title, w.label) > r_in * 1.8f ? WheelFont::Text : WheelFont::Title, w.label,
+                lines.push_back({p.width(HudFont::Title, w.label) > r_in * 1.8f ? HudFont::Text : HudFont::Title, w.label,
                                  IM_COL32_WHITE});
                 if (!w.detail.empty())
-                    lines.push_back({WheelFont::Ammo, w.detail, IM_COL32(230, 230, 230, 255)});
+                    lines.push_back({HudFont::Ammo, w.detail, IM_COL32(230, 230, 230, 255)});
             }
             else
-                lines.push_back({WheelFont::Title, n == 0 ? std::string("Nothing carried") : std::string("Inventory"), IM_COL32_WHITE});
+                lines.push_back({HudFont::Title, n == 0 ? std::string("Nothing carried") : std::string("Inventory"), IM_COL32_WHITE});
             if (max_weight > 0.f)
             {
                 char text[32];
                 std::snprintf(text, sizeof(text), "%.1f / %.1f", weight, max_weight);
-                lines.push_back({WheelFont::Text, text,
+                lines.push_back({HudFont::Text, text,
                                  weight >= max_weight - 1e-3f ? IM_COL32(240, 90, 75, 255) : IM_COL32(190, 190, 190, 255)});
             }
             if (hover >= 0 && !entries[static_cast<std::size_t>(hover)].ammo.empty())
             {
                 const std::string& kind = entries[static_cast<std::size_t>(hover)].ammo;
                 const int magazine = std::min(inv::ammo_magazine(kind), session.ammo_pool[inv::ammo_index(kind)]);
-                lines.push_back({WheelFont::Hint, "right click: drop " + std::to_string(magazine) + "   hold: all", IM_COL32(150, 150, 150, 255)});
+                lines.push_back({HudFont::Hint, "right click: drop " + std::to_string(magazine) + "   hold: all", IM_COL32(150, 150, 150, 255)});
             }
             else if (hover >= 0)
-                lines.push_back({WheelFont::Hint, "release: take   right click: drop", IM_COL32(150, 150, 150, 255)});
+                lines.push_back({HudFont::Hint, "release: take   right click: drop", IM_COL32(150, 150, 150, 255)});
             else if (n > 0)
-                lines.push_back({WheelFont::Hint, "point at an item", IM_COL32(150, 150, 150, 255)});
+                lines.push_back({HudFont::Hint, "point at an item", IM_COL32(150, 150, 150, 255)});
             const float spacing = 3.f * unit;
             float total = 0.f;
             for (const Line& l : lines)
@@ -1628,6 +1664,147 @@ namespace hud
             {
                 p.text(l.font, c.x - p.width(l.font, l.text) * 0.5f, y, faded(l.colour, alpha), l.text);
                 y += p.line(l.font) + spacing;
+            }
+        }
+
+        // The wheel's pointer where the window procedure last saw the cursor, when VGUI draws the wheel (with ImGui
+        // drawing it, ImGui's own cursor is on): an arrow like the system's, white with a dark edge, in convex pieces.
+        void draw_pointer(Painter& p, ImVec2 display)
+        {
+            const int cx = g_cursor_x.load(), cy = g_cursor_y.load();
+            if (cx < 0)
+                return;
+            const float s = std::max(1.f, display.y / 900.f), x = static_cast<float>(cx), y = static_cast<float>(cy);
+            const auto at = [&](float ax, float ay, float dx, float dy) { return ImVec2(x + ax * s + dx, y + ay * s + dy); };
+            const auto arrow = [&](float dx, float dy, ImU32 colour) {
+                const ImVec2 left[3] = {at(0.f, 0.f, dx, dy), at(0.f, 16.f, dx, dy), at(4.f, 12.f, dx, dy)};
+                const ImVec2 right[3] = {at(0.f, 0.f, dx, dy), at(4.f, 12.f, dx, dy), at(11.f, 11.f, dx, dy)};
+                const ImVec2 tail[4] = {at(4.f, 11.f, dx, dy), at(6.5f, 11.f, dx, dy), at(9.5f, 17.f, dx, dy), at(7.f, 18.f, dx, dy)};
+                p.polygon(left, 3, colour);
+                p.polygon(right, 3, colour);
+                p.polygon(tail, 4, colour);
+            };
+            for (const ImVec2 d : {ImVec2(-1.f, 0.f), ImVec2(1.f, 0.f), ImVec2(0.f, -1.f), ImVec2(0.f, 1.f)})
+                arrow(d.x, d.y, IM_COL32(0, 0, 0, 230));
+            arrow(0.f, 0.f, IM_COL32_WHITE);
+        }
+
+        // ---- pings --------------------------------------------------------------------------------------------------
+        //
+        // The server told this client where its team pinged (game/ping.cpp); each ping is a diamond at that point of the
+        // world, with its name and the distance in metres, through walls.  Off the screen (or behind the camera) it
+        // sticks to the edge nearest the way it lies, with an arrow.  It pops in, and fades out over its last moments.
+        void draw_pings(Painter& p, ImVec2 display)
+        {
+            static unsigned seen = 0;
+            const unsigned serial = game::ping_serial();
+            if (serial != seen)
+            {
+                if (serial > seen)
+                    ui::vgui::play_sound("ui/menu_focus.wav");
+                seen = serial;
+            }
+            const std::vector<game::PingMark> marks = game::ping_marks();
+            if (marks.empty())
+                return;
+            float camera[3] = {};
+            const bool have_camera = game::ping_camera(camera[0], camera[1], camera[2]);
+            const float scale = core::config().hud_scale * std::max(1.f, display.y / 900.f);
+            const float margin = 40.f * scale;
+            const ULONGLONG now = GetTickCount64();
+            const ImVec2 middle(display.x * 0.5f, display.y * 0.5f);
+            for (const game::PingMark& mark : marks)
+            {
+                float ndc_x = 0.f, ndc_y = 0.f;
+                bool in_front = false;
+                if (!game::ping_project(mark.x, mark.y, mark.z, ndc_x, ndc_y, in_front))
+                    return;
+                const float age = static_cast<float>(now - mark.born) / 1000.f;
+                const float left = static_cast<float>(mark.life_ms) / 1000.f - age;
+                const float alpha = std::clamp(left / 0.8f, 0.f, 1.f) * std::clamp(age / 0.06f, 0.2f, 1.f);
+                if (alpha <= 0.f)
+                    continue;
+                const float pop = 1.f + 0.7f * std::max(0.f, 1.f - age / 0.25f);
+                float x = (1.f + ndc_x) * 0.5f * display.x, y = (1.f - ndc_y) * 0.5f * display.y;
+                bool on_edge = !in_front || x < margin || x > display.x - margin || y < margin || y > display.y - margin;
+                ImVec2 direction(0.f, 0.f);
+                if (on_edge)
+                {
+                    float dx = x - middle.x, dy = y - middle.y;
+                    if (std::fabs(dx) < 1.f && std::fabs(dy) < 1.f)
+                        dy = 1.f; // straight behind: the bottom
+                    const float length = std::sqrt(dx * dx + dy * dy);
+                    direction = ImVec2(dx / length, dy / length);
+                    const float reach_x = std::fabs(dx) > 0.001f ? (middle.x - margin) / std::fabs(dx) : 1e9f;
+                    const float reach_y = std::fabs(dy) > 0.001f ? (middle.y - margin) / std::fabs(dy) : 1e9f;
+                    const float t = std::min(reach_x, reach_y);
+                    x = middle.x + dx * t;
+                    y = middle.y + dy * t;
+                }
+                ImU32 colour = IM_COL32(85, 205, 240, 255);
+                if (mark.kind == game::PingKind::Enemy)
+                    colour = IM_COL32(235, 70, 60, 255);
+                else if (mark.kind == game::PingKind::Item)
+                    colour = IM_COL32(250, 200, 70, 255);
+                const float r = (on_edge ? 9.f : 11.f) * scale * pop;
+                const auto diamond = [&](float radius, ImU32 c) {
+                    const ImVec2 points[4] = {ImVec2(x, y - radius), ImVec2(x + radius, y), ImVec2(x, y + radius), ImVec2(x - radius, y)};
+                    p.polygon(points, 4, c);
+                };
+                diamond(r + 2.f * scale, faded(IM_COL32(0, 0, 0, 200), alpha));
+                diamond(r, faded(colour, alpha));
+                diamond(r * 0.42f, faded(IM_COL32(0, 0, 0, 220), alpha));
+                if (on_edge)
+                {
+                    const ImVec2 tip(x + direction.x * (r + 11.f * scale), y + direction.y * (r + 11.f * scale));
+                    const ImVec2 base(x + direction.x * (r + 3.f * scale), y + direction.y * (r + 3.f * scale));
+                    const ImVec2 side(-direction.y * 5.f * scale, direction.x * 5.f * scale);
+                    const ImVec2 arrow[3] = {tip, ImVec2(base.x + side.x, base.y + side.y), ImVec2(base.x - side.x, base.y - side.y)};
+                    p.polygon(arrow, 3, faded(colour, alpha));
+                }
+                std::string distance;
+                if (have_camera)
+                {
+                    const float dx = mark.x - camera[0], dy = mark.y - camera[1], dz = mark.z - camera[2];
+                    char text[24];
+                    std::snprintf(text, sizeof(text), "%d m", static_cast<int>(std::sqrt(dx * dx + dy * dy + dz * dz) * 0.01905f + 0.5f));
+                    distance = text;
+                }
+                float line_y = y + r + 4.f * scale;
+                if (!distance.empty())
+                {
+                    p.text(HudFont::Hint, x - p.width(HudFont::Hint, distance) * 0.5f, line_y, faded(IM_COL32_WHITE, alpha), distance);
+                    line_y += p.line(HudFont::Hint);
+                }
+                if (!mark.label.empty())
+                    p.text(HudFont::Text, x - p.width(HudFont::Text, mark.label) * 0.5f, line_y, faded(colour, alpha), mark.label);
+            }
+        }
+
+        // Everything but the inventory window, under the session lock: through VGUI from paint_vgui, or with ImGui from
+        // draw() when the game's surface is not painting.
+        void paint_hud(const game::Session& session, Painter& p, ImVec2 display, bool pointer)
+        {
+            paint_tint(p, display, g_infection_tint);
+            paint_tint(p, display, g_stamina_tint);
+            if (core::config().show_hotbar && session.playing && core::shows_slots())
+            {
+                if (core::config().replace_native)
+                    draw_hotbar(session, p, display);
+                else
+                    draw_column(session, p, display);
+            }
+            draw_stamina_bar(p, display);
+            if (session.playing)
+            {
+                draw_melee(session, p, display);
+                draw_pings(p, display);
+            }
+            if (g.wheel && session.playing)
+            {
+                draw_wheel(session, p, display);
+                if (pointer)
+                    draw_pointer(p, display);
             }
         }
 
@@ -1682,8 +1859,8 @@ namespace hud
                     ImGui::EndDragDropTarget();
                 }
 
-                draw_slot(ImGui::GetWindowDrawList(), static_cast<int>(pos.x), static_cast<int>(pos.y), size, stack,
-                          i == inventory.selected(), hovered, 0);
+                ImGuiPainter painter(ImGui::GetWindowDrawList(), 1.f); // (the window's own scale: the toolkit's)
+                draw_slot(painter, pos.x, pos.y, static_cast<float>(size), stack, i == inventory.selected(), hovered, 0);
                 if (hovered && !stack.empty())
                 {
                     if (!stack.weapon.melee.empty())
@@ -1869,11 +2046,11 @@ namespace hud
                 {
                     changed |= nc::Checkbox("Effect covers the game's HUD", &cfg.infection_cover_game_hud);
                     nc::SetItemTooltip("Off: the effect is on the game's picture only; the game's HUD (health, teammates,\n"
-                                       "crosshair) and the mod's boxes stay clear over it.");
+                                       "crosshair) and the mod's boxes and wheel (drawn with it) stay clear over it.");
                     if (cfg.infection_cover_game_hud)
                     {
-                        changed |= nc::Checkbox("Effect covers the mod's HUD", &cfg.infection_cover_mod_hud);
-                        nc::SetItemTooltip("The mod's boxes, wheel and this window. Off: they stay clear over the effect.");
+                        changed |= nc::Checkbox("Effect covers the mod's window", &cfg.infection_cover_mod_hud);
+                        nc::SetItemTooltip("This window. Off: it stays clear over the effect.");
                     }
                 }
                 changed |= nc::Checkbox("Sound distortion and heartbeat", &cfg.infection_sound);
@@ -1892,11 +2069,11 @@ namespace hud
                 {
                     changed |= nc::Checkbox("Vignette covers the game's HUD", &cfg.stamina_cover_game_hud);
                     nc::SetItemTooltip("Off: the vignette is on the game's picture only; the game's HUD (health, teammates,\n"
-                                       "crosshair) and the mod's boxes stay clear over it.");
+                                       "crosshair) and the mod's boxes and wheel (drawn with it) stay clear over it.");
                     if (cfg.stamina_cover_game_hud)
                     {
-                        changed |= nc::Checkbox("Vignette covers the mod's HUD", &cfg.stamina_cover_mod_hud);
-                        nc::SetItemTooltip("The mod's boxes, wheel and this window. Off: they stay clear over the vignette.");
+                        changed |= nc::Checkbox("Vignette covers the mod's window", &cfg.stamina_cover_mod_hud);
+                        nc::SetItemTooltip("This window. Off: it stays clear over the vignette.");
                     }
                 }
                 nc::TextDisabled("Whether there is stamina at all is [stamina] in the host's inventory_mod.toml.");
@@ -2009,32 +2186,30 @@ namespace hud
         if (g_open_window.exchange(false))
             g.open = true;
         apply_queued_settings();
-        ImGui::GetIO().MouseDrawCursor = g.open || g.wheel;
+        // the game paints the HUD itself (paint_vgui), and its pointer on the wheel; else the overlay draws them
+        const bool vgui_paints = ui::vgui::painting();
+        ImGui::GetIO().MouseDrawCursor = g.open || (g.wheel && !vgui_paints);
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
 
         std::string to_save;
         {
             game::Session& session = game::local_session();
             std::lock_guard lock(session.mutex);
-            if (core::config().show_hotbar && session.playing && core::shows_slots())
-            {
-                if (core::config().replace_native)
-                    draw_hotbar(session);
-                else
-                    draw_column(session);
-            }
+            g_infection_tint = ScreenTint{};
+            g_stamina_tint = ScreenTint{};
+            g_stamina_live = false;
             if (session.playing || g_stamina_preview)
-                draw_stamina(session);
-            if (session.playing)
-                draw_melee(session);
+                update_stamina(session, display);
             if (session.playing || g_infection_preview)
-                draw_infection(session);
+                update_infection(session, display);
             draw_screamer(session);
             if (g.wheel && !session.playing)
                 g.wheel = false; // died, a menu opened ...
-            if (g.wheel && !ui::vgui::painting()) // (the game paints it itself: paint_vgui)
+            if (!vgui_paints)
             {
-                ImGuiWheelPainter painter(ImGui::GetIO().DisplaySize.y);
-                draw_wheel(session, painter, ImGui::GetIO().DisplaySize);
+                // under the inventory window; the text grows with the screen as the game's proportional fonts do
+                ImGuiPainter painter(ImGui::GetBackgroundDrawList(), std::max(1.f, display.y / 720.f));
+                paint_hud(session, painter, display, false);
             }
             if (g.open)
                 inventory_window(session.inventory, session.ammo_pool);
@@ -2057,19 +2232,17 @@ namespace hud
 
     void paint_vgui()
     {
-        if (!g.wheel)
-            return;
         game::Session& session = game::local_session();
         // (try: should the game ever paint from inside something of the mod's that holds the lock, a frame is skipped)
         std::unique_lock lock(session.mutex, std::try_to_lock);
-        if (!lock.owns_lock() || !session.playing)
+        if (!lock.owns_lock())
             return;
         int w = 0, h = 0;
         ui::vgui::screen_size(w, h);
         if (w <= 0 || h <= 0)
             return;
-        VguiWheelPainter painter;
-        draw_wheel(session, painter, ImVec2(static_cast<float>(w), static_cast<float>(h)));
+        VguiPainter painter;
+        paint_hud(session, painter, ImVec2(static_cast<float>(w), static_cast<float>(h)), true);
     }
 
     bool wants_input()
@@ -2078,6 +2251,11 @@ namespace hud
     }
 
     bool wants_keyboard()
+    {
+        return g.open;
+    }
+
+    bool window_open()
     {
         return g.open;
     }
@@ -2414,6 +2592,11 @@ namespace hud
         if (vk == cfg.key_unload)
         {
             run({Intent::Unload, 0, 0});
+            return true;
+        }
+        if (vk == cfg.key_ping)
+        {
+            run({Intent::Ping, 0, 0});
             return true;
         }
 

@@ -102,6 +102,8 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_infected_push_only = 0x1D94;
     using MyInfectedFn = void*(__thiscall*)(void* entity);
     using OnShovedFn = void(__thiscall*)(void* nextbot, void* pusher);
+    constexpr std::uintptr_t k_off_effects = 0xCC; // m_fEffects (SendProp / datamap: push 0xCC / push "m_fEffects"); EF_NODRAW 0x20
+    constexpr std::uint32_t k_ef_nodraw = 0x20;
     constexpr std::uintptr_t k_off_team = 0x238; // m_iTeamNum
     constexpr std::uintptr_t k_off_entity_name = 0x140; // m_iName (targetname)
     constexpr std::uintptr_t k_off_model_name = 0x24C; // m_ModelName (datamap, FIELD_MODELNAME: a pointer to the text)
@@ -143,6 +145,9 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_buttons = 0x1CB4; // CBasePlayer::m_nButtons (datamap)
     constexpr std::uintptr_t k_off_lagged_movement = 0x20D0; // CBasePlayer::m_flLaggedMovementValue
     constexpr std::uintptr_t k_off_shove_penalty = 0x2CF0; // CTerrorPlayer::m_iShovePenalty (SendProp)
+    // CTerrorPlayer::m_bAdrenalineActive (SendProp; what IsAdrenalineActive reads: mov al, [ecx+0x328C]; ret)
+    constexpr std::uintptr_t k_off_adrenaline_active = 0x328C;
+    constexpr std::uintptr_t k_rva_is_adrenaline_active = 0x2C8DA0;
 
     constexpr std::uintptr_t k_rva_weapon_get_slot = 0x2C98F0; // CTerrorPlayer: the carried weapon of a weapon ID's slot
     constexpr std::uintptr_t k_rva_set_shove_penalty = 0x2CB750; // CTerrorPlayer::SetShovePenalty(int), thiscall
@@ -175,7 +180,10 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_weapon_owner = 0x13E8; // m_hOwner (SendProp: push 0x13E8 / "m_hOwner")
     constexpr std::uintptr_t k_off_next_primary = 0x13F0; // m_flNextPrimaryAttack (game time)
     constexpr std::uintptr_t k_off_next_secondary = 0x13F4; // m_flNextSecondaryAttack
-    constexpr std::uintptr_t k_off_ammo_type = 0x140C; // m_iPrimaryAmmoType
+    constexpr std::uintptr_t k_off_ammo_type = 0x140C; // m_iPrimaryAmmoType (SendProp, 8 bits, at 0x1004AFEC)
+    // The game's ammo types of the pump shotguns (AMMO_TYPE_SHOTGUN) and the auto shotguns (AMMO_TYPE_AUTOSHOTGUN);
+    // the mod makes the auto shotguns take the first (merge_shotgun_shells)
+    constexpr int k_ammo_type_shotgun = 7, k_ammo_type_autoshotgun = 8;
     constexpr std::uintptr_t k_off_clip = 0x1414; // m_iClip1
     constexpr std::uintptr_t k_off_in_reload = 0x144D; // m_bInReload (SendProp at 0x1004C5A6: push 0x144D / push "m_bInReload")
     constexpr std::uintptr_t k_off_fire_on_empty = 0x144E; // m_bFireOnEmpty (datamap, FIELD_BOOLEAN)
@@ -245,6 +253,30 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_trace_normal = 0x18, k_off_trace_fraction = 0x2C, k_off_trace_start_solid = 0x37;
     constexpr unsigned k_mask_solid = 0x0200400Bu;
     using TraceLineFn = void(__cdecl*)(const Vec3* start, const Vec3* end, unsigned mask, const void* filter, void* trace);
+
+    // The survivors' look-at line (what `vocalize smartlook` says; server.dll's ClientCommand, 0x1033B2AA): the speech concept
+    // for what the player looks at, found by CTerrorPlayer::SpeakSmartLook (0x103120E0, thiscall, ret 0xC: (CBaseEntity*
+    // looked_at or null for the player's own use target, char* modifiers, int size); the modifiers buffer starts as
+    // "smartlooktype:manual" and gets ",weaponname:<name>" or ",SpecialType:<name>" appended; it returns the concept's name:
+    // "PlayerSpotWeapon", "PlayerWarnSpecial", ... or "PlayerLook" when it knew nothing; a CBaseEntity that is an
+    // IResponseRulesWeaponSource, a weapon or a weapon spawner, is a weapon).  The command then builds an AI_Concept with
+    // 0x10028B10 (thiscall, ret 4: the name; 8 bytes: word 0xFFFF, dword -1 until filled) and calls CTerrorPlayer's vtable
+    // slot 492 (0x10344750, thiscall, ret 0x1C) Speak(AI_Concept, int priority 2, const char* modifiers, char* out, size_t
+    // out_size, IRecipientFilter* filter), with the last three 0.
+    constexpr std::uintptr_t k_rva_smart_look = 0x3120E0;
+    constexpr std::uintptr_t k_rva_ai_concept_ctor = 0x28B10;
+    constexpr int k_vt_speak = 492;
+    constexpr std::uintptr_t k_rva_speak = 0x344750;
+    struct AiConcept
+    {
+        std::uint16_t id;
+        std::uint16_t pad;
+        std::int32_t value;
+    };
+    using SmartLookFn = const char*(__thiscall*)(void* player, void* looked_at, char* modifiers, int size);
+    using ConceptCtorFn = void*(__thiscall*)(AiConcept* spoken, const char* name);
+    using SpeakFn = bool(__thiscall*)(void* player, AiConcept spoken, int priority, const char* modifiers, char* out,
+                                      std::size_t out_size, void* filter);
 
     // CBaseCombatWeapon::WeaponSound(WeaponSound_t type, float soundtime) (0x1004BDA0, slot 301, not overridden by the
     // melee weapon; thiscall, ret 8): the melee swing's trace plays type 10 (melee_hit_world, of the script's sound
@@ -339,6 +371,15 @@ namespace game::sdk
     using GetLocalPlayerFn = int(__thiscall*)(void* engine); // VEngineClient013 slot 12
     using GameUiVisibleFn = bool(__thiscall*)(void* vgui); // VEngineVGui001 slot 2
 
+    // VEngineClient013 slot 37 WorldToScreenMatrix() (0x1005D620, thiscall: `mov ecx, [0x10427BC0]; mov eax, [ecx]; mov edx,
+    // [eax+0x34]; jmp edx`, a call of the renderer's vtable slot 13), slot 38 WorldToViewMatrix (the same through slot 12).
+    // The renderer (0x10427BC0) keeps a stack of views of 0x194 bytes each; slot 13 returns the top one's world-to-screen
+    // VMatrix (+0x150 in it) or, with one view only, its own +0x9C; slot 12 the world-to-view one (+0xD0 / +0x1C).  A
+    // VMatrix is 4x4 floats, row-major: clip = M * (x, y, z, 1), then x / w and y / w are -1 .. 1 across the picture.  The
+    // pointer is not constant (it follows the stack), so it is asked for each time.  (Slot 36, 0x1005D610, is not it: it
+    // returns the address of a global that is no matrix.)
+    constexpr int k_vt_world_to_screen_matrix = 37;
+    using WorldToScreenMatrixFn = const float*(__thiscall*)(void* engine);
     // ---- vgui2.dll, vguimatsurface.dll: the game's 2D drawing (see src/ui/vgui.cpp) -----------------------------------
     //
     // Each interface's object is a global its CreateInterface hands out; the vtables are the ones its constructor stores.

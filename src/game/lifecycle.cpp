@@ -403,6 +403,32 @@ namespace game::detail
             mem::guarded([&] { restore_transition_reserve(player); });
     }
 
+    // TEMP: what the active weapon and the attack button do, for the pipe bomb that swaps away
+    void temp_watch_active()
+    {
+        void* player = host_player();
+        if (player == nullptr)
+            return;
+        static std::uint32_t last_weapon = 0;
+        static int last_buttons = 0;
+        const std::uint32_t weapon = handle_at(player, k_off_active_weapon);
+        const int buttons = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(player) + k_off_buttons, 0);
+        char name[48] = "?";
+        if (weapon != last_weapon || ((buttons ^ last_buttons) & (k_in_attack | k_in_attack2)) != 0)
+        {
+            void* w = entity_from_handle(weapon);
+            if (w != nullptr)
+                classname_of(w, name, sizeof(name));
+            const auto wa = reinterpret_cast<std::uintptr_t>(w);
+            INV_LOG("TEMP watch: active %s (%s), buttons %X, clip %d, next primary %.2f, time %.2f, carries [%s]",
+                    name, weapon != last_weapon ? "changed" : "same", static_cast<unsigned>(buttons),
+                    w != nullptr ? mem::read_or<int>(wa + k_off_clip, -9) : -9,
+                    w != nullptr ? mem::read_or<float>(wa + k_off_next_primary) : 0.f, game_time(), carried_list(player).c_str());
+        }
+        last_weapon = weapon;
+        last_buttons = buttons;
+    }
+
     void __fastcall hk_game_frame(void* self, void* edx, bool simulating)
     {
         g_game_frame.original()(self, edx, simulating);
@@ -410,9 +436,11 @@ namespace game::detail
             mem::guarded([] {
                 stamina_frame();
                 melee_frame();
+                merge_shotgun_shells();
                 drop_dead_inventories();
                 cap_reserves();
                 place_map_packs_due();
+                temp_watch_active();
             });
         infection_frame();
     }

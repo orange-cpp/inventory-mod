@@ -20,6 +20,7 @@
 #include "game/mem.hpp"
 #include "game/sdk.hpp"
 #include "ui/hud.hpp"
+#include "ui/overlay.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -158,7 +159,7 @@ namespace ui::vgui
         // The texture id of a material: one of the mod's own, made the first time.  Never one the game already bound
         // to it (DrawGetTextureId): that id belongs to a panel, which may destroy it (DestroyTextureID) when it goes,
         // on a map change or a disconnect, and the slot can then be given to another texture (an avatar's RGBA) while
-        // the wheel still draws with it.  Each load of the mod makes a few new ids; the game never frees them, which
+        // the HUD still draws with it.  Each load of the mod makes a few new ids; the game never frees them, which
         // costs a dictionary entry per material per reload.
         int texture(const std::string& material)
         {
@@ -174,6 +175,9 @@ namespace ui::vgui
         {
             resolve_fonts();
             hud::paint_vgui();
+            // then the screamer and the screen effects over all of it, into the same frame (queued after the HUD's own
+            // drawing on the render thread), so that a stream's capture has them
+            ui::overlay::queue_in_frame_pass();
         }
 
         // (a separate function: __try cannot share one with objects that need unwinding)
@@ -202,7 +206,7 @@ namespace ui::vgui
                     return;
                 overlay = vpanel;
                 g_overlay_panel = vpanel;
-                INV_LOG("vgui: FocusOverlayPanel is %08X: the wheel is drawn after it", vpanel);
+                INV_LOG("vgui: FocusOverlayPanel is %08X: the HUD is drawn after it", vpanel);
             }
             if (vpanel != overlay || g_broken)
                 return;
@@ -211,7 +215,7 @@ namespace ui::vgui
             {
                 g_broken = true;
                 g_last_paint = 0;
-                INV_LOG("vgui: fault while painting: the wheel goes back to the overlay");
+                INV_LOG("vgui: fault while painting: the HUD goes back to the overlay");
             }
         }
     } // namespace
@@ -225,7 +229,7 @@ namespace ui::vgui
             matsurface != nullptr ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(matsurface, "CreateInterface")) : nullptr;
         if (vgui_create == nullptr || surface_create == nullptr)
         {
-            INV_LOG("vgui: no vgui2.dll / vguimatsurface.dll: the wheel is drawn by the overlay");
+            INV_LOG("vgui: no vgui2.dll / vguimatsurface.dll: the HUD is drawn by the overlay");
             return false;
         }
         const auto vgui_base = reinterpret_cast<std::uintptr_t>(vgui2);
@@ -259,7 +263,7 @@ namespace ui::vgui
             slot_is(surface, k_vt_surface_textured_polygon, "55 8B EC 51 8B 45 08 56 8B F1 85 C0");
         if (!ok)
         {
-            INV_LOG("vgui: the game's VGUI (panels %p, schemes %p, surface %p) does not look as expected: the wheel is "
+            INV_LOG("vgui: the game's VGUI (panels %p, schemes %p, surface %p) does not look as expected: the HUD is "
                     "drawn by the overlay",
                     panels, schemes, surface);
             return false;

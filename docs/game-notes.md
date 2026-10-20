@@ -254,7 +254,7 @@ into the host's session. `pills_used` puts a running clock back to its full time
 
 The effect (`src/ui/postfx.cpp`) is a vs_3_0 / ps_3_0 pair compiled at run time with `d3dcompiler_47.dll`
 (`D3DCompile` through GetProcAddress, nothing linked). In the Present hook, after the mod's ImGui frame is rendered
-(so the mod's HUD, wheel and window are infected too), the back buffer is copied with `StretchRect` into a render-target texture of the same size and
+(so the game's HUD, the mod's boxes and wheel painted in it, and the mod's window are infected too), the back buffer is copied with `StretchRect` into a render-target texture of the same size and
 format (default pool: released before Reset, made again on the next frame) and drawn back over the whole back buffer
 through the pixel shader (full-screen quad in clip space, half-pixel offset, sRGB reads and writes off: the game's back
 buffer already holds final colours). The overlay's D3DSBT_ALL state block puts the game's state back. Seen in the game:
@@ -313,10 +313,11 @@ played `Gambler_ScreamWhilePounced03` and `Gambler_DeathScream02` / `03`, nothin
 The server's `turn` sends `@inf@ 0 0 1` (the third number: turned now; older clients read only two), or sets the
 host's `Session::infection_turned_at`. The HUD rolls the player's `screamer_chance` (0 .. 1; logged "screamer:
 shown / skipped (rolled .., chance ..)") and then shows the picture for 1.7 s (a managed-pool A8R8G8B8 texture read
-with WIC) and starts the scream. With the screen effect on, postfx draws it into the back buffer itself (fixed function,
+with WIC) and starts the scream. postfx draws it whenever it has the device (it needs no shader: fixed function,
 pre-transformed quads over the frame and the mod's UI: black backdrop, the picture, a red wash, the first instant's
-white flash) before its pass, and the pass runs at severity 0.92
-over it; with the effect off it goes on ImGui's foreground draw list.
+white flash); with the screen effect on, the infection's pass runs at severity 0.92 over it. Since 2026-10-20 it is
+drawn into the game's own frame like the effects over the HUD (see "The effects in the game's frame (streams)");
+ImGui's foreground draw list only without the device.
 
 ## Options > Inventory Mod (a page of the game's menu)
 
@@ -342,7 +343,28 @@ connected), after the addon is mounted. Seen working in game 2026-10-17.
 
 The infection's shader, and the stamina's vignette, can go under the game's HUD (settings `[infection]` /
 `[stamina]` `cover_game_hud = false`): it then runs from the game's own rendering, just before the HUD is drawn,
-instead of at `Present` (see `overlay.cpp`). Both in the same pass, the stamina's first.
+instead of at `Present` (see `overlay.cpp`). Both in the same pass, the stamina's first. The mod's boxes and wheel are
+painted later in the same frame (after the game's VGUI panels), so they stay clear too; `cover_mod_hud` now only
+decides about the inventory window, the one thing still drawn at `Present`.
+
+### The effects in the game's frame (streams)
+
+A stream's game capture (OBS, Discord, Steam) hooks `Present` too and copies the back buffer in its hook. Two inline
+hooks on one function run last-installed first, so when the capture hooked after the mod (OBS hooks again when the
+capture restarts) it took the frame before the mod's `Present` drew: the screamer and the effects drawn there were
+missing from the stream "sometimes", depending on the order. Since 2026-10-20 they are drawn in the game's own frame
+instead, which every capture has: after `hud::paint_vgui` (the mod's HUD, after the game's last panel) the main thread
+queues a second functor (`queue_in_frame_pass`, the same call queue and checks as the pass under the HUD; it needs
+only `GetRenderContext` and the queue, not the `Render2DEffectsPreHUD` slot) whose pass runs `postfx::render_in_frame`
+over the render target of that moment (the back buffer), in a state block of its own, with sRGB writes off.
+
+The values are set at `Present` (`hud::draw`), so the pass draws the previous frame's, one frame late like the pass
+under the HUD: the `OverAll` pass at `Present` keeps them (`InFrame`) with `set_in_frame(under_mod_hud, over_all)`:
+the layer over the game's HUD whenever VGUI paints and the call queue is there, the screamer and the layer over
+everything only while the inventory window (ImGui, at `Present`) is closed, since they must cover it. A layer the
+frame's in-frame pass drew is skipped at that frame's `Present` (`g_ran_mod` / `g_ran_all`), so no frame gets an effect
+twice when a layer moves between the two places. Built; not yet seen in game or on a stream. To check: VGUI's text may
+be batched until the surface's FinishDrawing, which would put the wheel's text over the screamer.
 
 | What | Where / how |
 |---|---|
@@ -366,6 +388,7 @@ mov [..], <offset>`) and checked in the game:
 | swings, shoves | the active weapon's `m_flNextPrimaryAttack` +0x13F0 / `m_flNextSecondaryAttack` +0x13F4 moving on. Seen: a shove (pistol or melee) waits 0.77 s and moves both; a melee swing moves both too; a reload moves the secondary a tenth or two (so a shove must be at least 0.4 s out); gunfire only the primary. A shove raises `CTerrorPlayer::m_iShovePenalty` +0x2CF0, a swing does not; `CBasePlayer::m_nButtons` +0x1CB4 (`IN_ATTACK2` 0x800) often misses a quick press |
 | the game's shove fatigue | `m_iShovePenalty` set back to 0 with `SetShovePenalty(int)` `0x102CB750` (thiscall, `cmp [esi+0x2CF0], edi`), which marks the edict changed. Seen: shoves in a row stay at 0.77 s |
 | slower | `CBasePlayer::m_flLaggedMovementValue` +0x20D0, the game's movement speed scale (the client predicts with it). It slows the player's whole movement clock, falls too, so it is set on the ground only; leaving the ground the horizontal velocity is scaled instead |
+| adrenaline | `CTerrorPlayer::m_bAdrenalineActive` +0x328C (SendProp at `0x102FEAB3`: `push 0x328C / push "m_bAdrenalineActive"`); the VScript `IsAdrenalineActive` is `0x102C8DA0` (`mov al, [ecx+0x328C]; ret`, checked by that pattern before the field is read). While it is set the stamina stays full and nothing uses it. Not yet seen in the game |
 | networked writes | a field written by the mod only reaches the players if the entity says it changed: `edict->m_fStateFlags \|= 0x101` (FL_EDICT_CHANGED \| FL_FULL_EDICT_CHANGED) and the change accessor's serial (+2) 0, as `0x100ED4B0` does through `VEngineServer022` slot 97 `GetChangeAccessor(edict)` (the server's own engine pointer `0x107F7698` is the same interface) |
 | less damage | `CBaseEntity::TakeDamage(const CTakeDamageInfo&)` `0x10055C70` (thiscall, `ret 4`, prologue `55 8B EC 83 EC 6C 57 8B F9 8B 0D`; warns "CBaseEntity::TakeDamage:  with inputInfo.GetDamageForce() == vec3_origin"), hooked (since [melee], by `src/game/melee.cpp`, which asks the stamina for its factor). `CTakeDamageInfo` is 0x60 bytes (its copy constructor `0x10010140`): `m_hInflictor` +0x30, `m_hAttacker` +0x34 (`GetAttacker` `0x1003D4B0`), `m_hWeapon` +0x38, `m_flDamage` +0x3C, `m_bitsDamageType` +0x48. Seen: a melee hit on a common is weapon and inflictor `weapon_melee`, type `0x80200004`, 50 damage (then a 0 one); exhausted it became 25 and the common took two hits |
 
@@ -423,6 +446,19 @@ taken off it (`m_nFlags` +0x14) and off its parent (`m_pParent` +0x1C; on a list
 the value: flags `0x2008`), then `VEngineServer022` slot 37 ServerCommand (engine `0x10130D40`, prologue
 `55 8B EC 56 8B 75 08 85 F6 75`; it queues the line, which must end in `\n` or `;`) runs `ammo_<type>_max <n>`. Seen in
 the game: the parent's `m_nValue` (+0x30) went from 360 to 200 with `assault_rifle = 200`.
+
+## One shell for every shotgun
+
+server.dll's ammo types give the auto shotguns (`weapon_autoshotgun`, `weapon_shotgun_spas`) a reserve of their own,
+`AMMO_TYPE_AUTOSHOTGUN` (8, `ammo_autoshotgun_max` 90), apart from the pump shotguns' `AMMO_TYPE_SHOTGUN` (7,
+`ammo_shotgun_max` 72). A weapon's `m_iPrimaryAmmoType` (+0x140C) is set from its script when it is precached, and is
+a SendProp (`0x1004AFEC`: `push 0x140C / push "m_iPrimaryAmmoType"`, 8 bits; client +0x97C, its RecvProp at
+`0x10015A8C`), so the server's value is what the owner's client predicts with. Every GameFrame
+(`merge_shotgun_shells`), each living survivor's guns of type 8 are set to 7 (the edict marked changed), and any
+`m_iAmmo[8]` the game gave (a fresh gun's rounds, a pile used before the change) joins `m_iAmmo[7]` up to its most;
+`ammo_type_of` already reads 8 as 7 for a gun nobody has carried yet. The game's own code (Reload, GiveAmmo, the
+ammo piles' refill) reads the field, so the auto shotguns then reload and refill from the shells. Not yet seen in the
+game.
 
 ## Rounds (the reserve as a thing of its own)
 
@@ -498,6 +534,19 @@ the release's own coordinates), so letting go takes what is under the cursor at 
 cursor plays `ui/menu_focus.wav` through the surface's `PlaySound` (settings: `wheel_sounds`). The ImGui fallback's
 text is the toolkit's 12 px fonts scaled by height / 720.
 
+Since 2026-10-20 the rest of the HUD is drawn the same way: the hotbar (or the column beside the game's panel) with
+the ammo counter (`HudAmmoSmall`, the game's counter's face), the status line and the selected item's name, the weight
+bar, the stamina bar, the melee wind-up ring and wear bar, and the screen effects' shader-less fallbacks. Only the
+inventory window (I) stays ImGui. `hud.cpp` writes each layout once against a `Painter` (`VguiPainter` from
+`hud::paint_vgui`, `ImGuiPainter` from `hud::draw` when the surface is not painting, on ImGui's background draw list
+under the window). While VGUI draws the wheel, ImGui's cursor is off and the wheel draws its own pointer (three convex
+polygons at the last `WM_MOUSEMOVE`). Both run under the session mutex (the paint with `try_to_lock`); the values
+that ease from frame to frame (stamina) and the shader-less tints are worked out in `draw` and only painted. No new
+slot was needed: outlines are four `DrawFilledRect`s, the stamina bar's round ends one `DrawTexturedPolygon`, the
+vignettes nested bands of filled rectangles (the surface's rectangles have one colour). The infection and stamina
+shaders and the screamer stay in Direct3D (postfx.cpp): they read the game's frame, and the screamer's picture is the
+player's own file, not a material. Built and tested by the model's tests; not yet seen in game.
+
 ## The VGUI surface (client side)
 
 Found 2026-10-17 with `tools/re/pe_tools.py` (the DLLs carry no RTTI names for these classes); not yet seen in game.
@@ -554,6 +603,47 @@ dedicated server (refreshed in the pump, 10 times a second).
 
 Items in the hands report a clip too (adrenaline: 1), so the counter is not drawn when the active weapon is a
 catalogue item.
+
+## Pings (`[ping]`)
+
+The ping key makes the active player's server-side `do_ping` run (`ping.cpp`): the host's through the backend queue, a
+guest's or a dedicated server player's as the console command `inv_ping`. It looks along the player's view
+(`EyePosition` slot 140, `EyeAngles` slot 141), traces the world with `UTIL_TraceLine` and the world-only filter (the
+melee swing's wall test: see "Melee") out to `range`, then looks through the entity list for what the ray passes close
+to before the hit: an enemy (`infected`, `witch`, a living `player` of the other team; the chest, `origin + 36`, within
+`30 + 0.035 * distance`) wins over an item (a catalogue classname or a `weapon_*_spawn` of one; the origin lifted by 0, 14
+and 28, within `36 + 0.05 * distance`), which wins over the spot. Every mod player of the pinger's team gets a line
+through `ClientPrintf`, filtered out in `ProcessPrint` like the others:
+
+    @png@ <owner user id> <1: theirs> <kind 0 spot, 1 item, 2 enemy> <life ms> <pings kept per owner> <x> <y> <z>|<label>
+
+The pinger's survivor says what was pinged. The server (`speak_look`) does what the `vocalize smartlook` command does
+(ClientCommand, `0x1033B2AA`) but for the pinged entity: `SpeakSmartLook` (`0x103120E0`, thiscall, ret 0xC: entity,
+modifiers buffer starting as `smartlooktype:manual`, size) returns the concept name (`PlayerSpotWeapon` with `,weaponname:`
+appended for a weapon or a weapon spawner, `PlayerWarnSpecial` ...; `PlayerLook` when it knows nothing), then an
+`AI_Concept` is built (`0x10028B10`, 8 bytes) and the player's vtable slot 492 (`0x10344750`, ret 0x1C) `Speak(concept,
+2, modifiers, 0, 0, 0)` is called. The line the survivors then say comes from the manual rules of
+`scripts/talker/<character>.txt` (`PlayerSpotWeapon` + `weaponname`, no check of what the player carries: the auto rules
+need `smartlooktype:auto`, `NoHasFirstAidKit`, a 2 s timer ...). When that cannot be done (an item the game does not know,
+a function that does not look right) the line carries a concept name and the pinger's client sends `vocalize <concept>
+#<server time * 10>` (any concept but smartlook is spoken only with that argument within 2 s of the server's clock; only
+`PlayerSpotAmmo`, `PlayerSpotPistol`, `PlayerSpotShotgun`, `PlayerSpotOtherWeapon` and `PlayerLook` have rules that
+work that way) or, for medkits, pills, grenades, SMGs, rifles and snipers, `vocalize smartlook #<n>` (the game's own use
+trace picks the item).
+
+The client keeps the marks and the HUD (`draw_pings`, through the Painter, so it is drawn by VGUI like the rest) projects
+them with the engine's own matrix.
+
+| What | Where / how |
+|---|---|
+| `VEngineClient013` slot 37 `WorldToScreenMatrix()` (`0x1005D620`) | `mov ecx, [0x10427BC0]; mov eax, [ecx]; mov edx, [eax+0x34]; jmp edx`: the renderer's vtable slot 13, which returns the top of a stack of views of `0x194` bytes each (`+0x150`; with one view only the object's `+0x9C`): a 4x4 row-major `VMatrix`, `clip = M * (x, y, z, 1)`, `x / w`, `y / w` from -1 to 1 across the picture, `w > 0` in front. Slot 38 `WorldToViewMatrix` is the same through slot 12 (`+0xD0` / `+0x1C`). The pointer follows the stack, so it is asked for each time. Slot 36 (`0x1005D610`, `mov eax, 0x10688BC8; ret`), where the SDK's order puts it, returns the address of something that is no matrix |
+| the camera | not read from anywhere: rows 0, 1 and 3 (x, y, w) of the matrix are 0 at the eye, a 3x3 system solved by Cramer's rule (`ping_camera`) |
+| distance | the camera to the marker in game units, times `0.01905` for metres |
+
+Seen working (2026-10-20): a spot, an item (a melee weapon spawner) and an infected marked on a listen server, and a spot
+from a game client joined to the dedicated server, where the marker came back through `ClientPrintf`.  The
+`loader_ui.exe` of the separate inventory-mod-loader project injects an installed copy of the mod at the game's start: unload it (`Unload-Mod`)
+before `Inject-Mod`, or the second copy finds every function hooked and turns most of its features off.
 
 ## Icons
 

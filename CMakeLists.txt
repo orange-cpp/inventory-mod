@@ -120,6 +120,8 @@ add_library(inventory_mod SHARED
     src/game/map_guns.hpp
     src/game/melee.cpp
     src/game/melee_client.cpp
+    src/game/ping.cpp
+    src/game/ping.hpp
     src/game/melee.hpp
     src/game/mem.cpp
     src/game/mem.hpp

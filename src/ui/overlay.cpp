@@ -225,6 +225,7 @@ namespace ui::overlay
         PreHudFn g_pre_hud_original = nullptr;
         void* g_materials = nullptr;
         IDirect3DStateBlock9* g_pre_hud_state = nullptr; // render thread
+        IDirect3DStateBlock9* g_in_frame_state = nullptr; // render thread
 
         void release_state_block()
         {
@@ -238,55 +239,76 @@ namespace ui::overlay
                 g_pre_hud_state->Release();
                 g_pre_hud_state = nullptr;
             }
+            if (g_in_frame_state != nullptr)
+            {
+                g_in_frame_state->Release();
+                g_in_frame_state = nullptr;
+            }
         }
 
-        // The render thread (or the main thread, without queued rendering), just before the game draws its HUD.
-        void under_game_hud()
+        // The render thread (or the main thread, without queued rendering): a pass over the current render target, in a
+        // state block of its own.  Before the game's HUD: the effects under it; after the mod's VGUI HUD (`in_frame`):
+        // the screamer and the effects over the HUD (postfx::render_in_frame).
+        void game_frame_pass(IDirect3DStateBlock9*& state, bool in_frame)
         {
             IDirect3DDevice9* device = g_device;
             if (!g_ready || g_broken || device == nullptr || g_shutdown_requested.load())
                 return;
-            if (g_pre_hud_state == nullptr && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_pre_hud_state)))
+            if (state == nullptr && FAILED(device->CreateStateBlock(D3DSBT_ALL, &state)))
                 return;
             IDirect3DSurface9* target = nullptr;
             if (FAILED(device->GetRenderTarget(0, &target)) || target == nullptr)
                 return;
-            g_pre_hud_state->Capture();
+            state->Capture();
             device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE); // (as at Present: the picture is already in gamma)
             device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
                                                                D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
-            postfx::render(device, target, postfx::Layer::UnderGameHud);
-            g_pre_hud_state->Apply();
+            if (in_frame)
+                postfx::render_in_frame(device, target);
+            else
+                postfx::render(device, target, postfx::Layer::UnderGameHud);
+            state->Apply();
             target->Release();
         }
 
         void under_game_hud_guarded()
         {
-            if (!game::mem::guarded([] { under_game_hud(); }))
+            if (!game::mem::guarded([] { game_frame_pass(g_pre_hud_state, false); }))
             {
                 g_broken = true;
                 INV_LOG("fault in the pass under the game's HUD: overlay disabled");
             }
         }
 
-        // the functor the render thread runs
+        void in_frame_guarded()
+        {
+            if (!game::mem::guarded([] { game_frame_pass(g_in_frame_state, true); }))
+            {
+                g_broken = true;
+                INV_LOG("fault in the pass after the HUD's VGUI painting: overlay disabled");
+            }
+        }
+
+        // the functors the render thread runs
         int __fastcall functor_add_ref(void*, void*) { return 1; }
         int __fastcall functor_release(void*, void*) { return 1; }
         void* __fastcall functor_destroy(void* self, void*, int) { return self; }
         void __fastcall functor_run(void*, void*) { under_game_hud_guarded(); }
+        void __fastcall in_frame_functor_run(void*, void*) { in_frame_guarded(); }
         void* g_functor_vtable[4] = {reinterpret_cast<void*>(functor_add_ref), reinterpret_cast<void*>(functor_release),
                                      reinterpret_cast<void*>(functor_destroy), reinterpret_cast<void*>(functor_run)};
+        void* g_in_frame_functor_vtable[4] = {reinterpret_cast<void*>(functor_add_ref), reinterpret_cast<void*>(functor_release),
+                                              reinterpret_cast<void*>(functor_destroy), reinterpret_cast<void*>(in_frame_functor_run)};
         struct Functor
         {
             void** vtable;
-        } g_functor{g_functor_vtable};
+        } g_functor{g_functor_vtable}, g_in_frame_functor{g_in_frame_functor_vtable};
 
-        void __fastcall hk_pre_hud(void* self, void* edx, const void* view)
+        // Main thread: `functor` into the render thread's call queue, after what the game has queued so far this frame;
+        // without queued rendering `direct` runs right away.
+        void queue_pass(Functor* functor, void (*direct)())
         {
-            g_pre_hud_original(self, edx, view);
-            if (!postfx::wants_under_game_hud() || g_materials == nullptr || g_shutdown_requested.load())
-                return;
-            game::mem::guarded([] {
+            game::mem::guarded([&] {
                 const auto get_context = reinterpret_cast<GetRenderContextFn>(game::mem::vslot(g_materials, k_vt_get_render_context));
                 void* context = get_context(g_materials);
                 if (context == nullptr)
@@ -297,11 +319,19 @@ namespace ui::overlay
                 const bool plain = game::mem::find_pattern(get_queue, 3, "33 C0 C3") == get_queue;
                 void* queue = queued ? reinterpret_cast<ContextFn>(get_queue)(context) : nullptr;
                 if (queue != nullptr)
-                    reinterpret_cast<QueueFunctorFn>(game::mem::vslot(queue, 0))(queue, &g_functor);
+                    reinterpret_cast<QueueFunctorFn>(game::mem::vslot(queue, 0))(queue, functor);
                 else if (plain)
-                    under_game_hud_guarded();
+                    direct();
                 reinterpret_cast<ContextFn>(game::mem::vslot(context, k_vt_context_release))(context);
             });
+        }
+
+        void __fastcall hk_pre_hud(void* self, void* edx, const void* view)
+        {
+            g_pre_hud_original(self, edx, view);
+            if (!postfx::wants_under_game_hud() || g_materials == nullptr || g_shutdown_requested.load())
+                return;
+            queue_pass(&g_functor, under_game_hud_guarded);
         }
 
         // Main thread or render thread, once: the slot and the material system, checked.
@@ -320,17 +350,23 @@ namespace ui::overlay
             const std::uintptr_t get_context = materials != nullptr ? game::mem::vslot(materials, k_vt_get_render_context) : 0;
             const std::uintptr_t queue_vtable = materials_dll != nullptr ? reinterpret_cast<std::uintptr_t>(materials_dll) + 0x9A9F8 : 0;
             const std::uintptr_t queue_functor = queue_vtable != 0 ? game::mem::read_or<std::uintptr_t>(queue_vtable) : 0;
-            if (pre_hud == 0 || pre_hud != client + k_rva_pre_hud || game::mem::find_pattern(pre_hud, 5, "55 8B EC 5D E9") != pre_hud ||
-                get_context == 0 || game::mem::find_pattern(get_context, 5, "56 57 8B F9 B9") != get_context || queue_functor == 0 ||
+            if (get_context == 0 || game::mem::find_pattern(get_context, 5, "56 57 8B F9 B9") != get_context || queue_functor == 0 ||
                 game::mem::find_pattern(queue_functor, 11, "55 8B EC 56 8B 75 08 8B 06 8B 10") != queue_functor)
             {
-                INV_LOG("overlay: the game's rendering does not look as expected: the infection always covers the game's HUD");
+                INV_LOG("overlay: the material system's call queue does not look as expected: the screamer and the effects "
+                        "are drawn at Present only, and the effects always cover the game's HUD");
+                return;
+            }
+            // (the call queue alone is enough for the pass after the HUD's VGUI painting: queue_in_frame_pass)
+            g_materials = materials;
+            if (pre_hud == 0 || pre_hud != client + k_rva_pre_hud || game::mem::find_pattern(pre_hud, 5, "55 8B EC 5D E9") != pre_hud)
+            {
+                INV_LOG("overlay: Render2DEffectsPreHUD does not look as expected: the infection always covers the game's HUD");
                 return;
             }
             DWORD old = 0;
             if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old))
                 return;
-            g_materials = materials;
             g_pre_hud_original = reinterpret_cast<PreHudFn>(pre_hud);
             g_pre_hud_slot = slot;
             *slot = reinterpret_cast<void*>(hk_pre_hud);
@@ -823,7 +859,7 @@ namespace ui::overlay
             postfx::init(device);
             install_pre_hud();
             install_menu_hooks();
-            ui::vgui::install(); // the wheel in the game's own frame and fonts (else ImGui draws it)
+            ui::vgui::install(); // the HUD (all but the window) in the game's own frame and fonts (else ImGui draws it)
             audio::install();
             INV_LOG("overlay ready (window %p, device %p)", static_cast<void*>(g_hwnd), static_cast<void*>(device));
             return true;
@@ -891,7 +927,13 @@ namespace ui::overlay
             g_capture = capture;
             ImGui::EndFrame();
             ImGui::Render();
-            postfx::render(device, back_buffer, postfx::Layer::UnderModHud); // (an infection that leaves the mod's HUD clear)
+            // The next frame draws this frame's screamer and effects in the game's own frame, after the mod's VGUI HUD,
+            // where a stream's capture sees them (it may take the frame at Present before this hook runs): the layer
+            // over the game's HUD always, the one over everything while the inventory window (drawn here) is closed.
+            // Without VGUI painting or the call queue, here as before.
+            const bool in_frame = g_materials != nullptr && ui::vgui::painting();
+            postfx::set_in_frame(in_frame, in_frame && !hud::window_open());
+            postfx::render(device, back_buffer, postfx::Layer::UnderModHud); // (an infection that leaves the mod's window clear)
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
             postfx::render(device, back_buffer, postfx::Layer::OverAll); // the screamer, the stamina, the infection over all
 
@@ -1014,6 +1056,13 @@ namespace ui::overlay
         g_get_cursor_pos.remove();
         Sleep(200); // let a call that is inside a detour leave
         icons::shutdown();
+    }
+
+    void queue_in_frame_pass()
+    {
+        if (!postfx::wants_in_frame() || g_materials == nullptr || g_broken || g_shutdown_requested.load())
+            return;
+        queue_pass(&g_in_frame_functor, in_frame_guarded);
     }
 
 } // namespace ui::overlay

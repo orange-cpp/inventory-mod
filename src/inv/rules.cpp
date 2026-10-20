@@ -356,7 +356,7 @@ namespace inv
                                 kinds.push_back(kind);
                             else
                                 rules.errors.push_back(at_line(item, "ammo_piles.kinds: unknown ammo type \"" + name +
-                                                                         "\" (assault_rifle, smg, shotgun, auto_shotgun, hunting_rifle, "
+                                                                         "\" (assault_rifle, smg, shotgun, hunting_rifle, "
                                                                          "sniper_rifle, grenade_launcher, m60, chainsaw)"));
                         }
                     else
@@ -373,6 +373,50 @@ namespace inv
                 piles.max_magazines = piles.min_magazines;
             }
             g_ammo_piles = piles;
+        }
+
+        PingRules g_ping;
+
+        // [ping] (see rules.hpp)
+        void read_ping(const toml::table& table, Rules& rules)
+        {
+            PingRules ping;
+            ping.enabled = true; // a table at all switches it on, unless it says otherwise
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled")
+                {
+                    if (const auto on = node.value_exact<bool>())
+                        ping.enabled = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "ping.enabled must be true or false"));
+                }
+                else if (key == "per_player")
+                {
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 1 || *n > 8)
+                        rules.errors.push_back(at_line(node, "ping.per_player must be a whole number from 1 to 8"));
+                    else
+                        ping.per_player = static_cast<int>(*n);
+                }
+                else if (key == "lifetime" || key == "cooldown" || key == "range")
+                {
+                    const double low = key == "lifetime" ? 1.0 : key == "cooldown" ? 0.0 : 100.0;
+                    const double high = key == "lifetime" ? 60.0 : key == "cooldown" ? 10.0 : 20000.0;
+                    const auto value = node.is_boolean() ? std::nullopt : number(node);
+                    if (!value || *value < low || *value > high)
+                    {
+                        char range[96];
+                        std::snprintf(range, sizeof(range), " must be a number from %g to %g", low, high);
+                        rules.errors.push_back(at_line(node, "ping." + std::string(key.str()) + range));
+                    }
+                    else
+                        (key == "lifetime" ? ping.lifetime : key == "cooldown" ? ping.cooldown : ping.range) = static_cast<float>(*value);
+                }
+                else
+                    rules.errors.push_back(at_line(node, "unknown setting ping." + std::string(key.str())));
+            }
+            g_ping = ping;
         }
 
         MapGunRules g_map_guns;
@@ -432,6 +476,11 @@ namespace inv
     const AmmoPileRules& ammo_pile_rules()
     {
         return g_ammo_piles;
+    }
+
+    const PingRules& ping_rules()
+    {
+        return g_ping;
     }
 
     const InfectionRules& infection_rules()
@@ -540,7 +589,7 @@ namespace inv
                     ++rules.ammo_changed;
                 else
                     rules.errors.push_back(at_line(node, "ammo: unknown ammo type " + std::string(key.str()) +
-                                                             " (assault_rifle, smg, shotgun, auto_shotgun, hunting_rifle, "
+                                                             " (assault_rifle, smg, shotgun, hunting_rifle, "
                                                              "sniper_rifle, grenade_launcher, m60, chainsaw)"));
             }
         }
@@ -558,7 +607,7 @@ namespace inv
                     rules.errors.push_back(at_line(node, "round_weight: " + std::string(key.str()) + " must be a number from 0 to 10"));
                 else if (!set_round_weight(kind, static_cast<float>(*weight)))
                     rules.errors.push_back(at_line(node, "round_weight: unknown ammo type " + std::string(key.str()) +
-                                                             " (assault_rifle, smg, shotgun, auto_shotgun, hunting_rifle, "
+                                                             " (assault_rifle, smg, shotgun, hunting_rifle, "
                                                              "sniper_rifle, grenade_launcher, m60, chainsaw)"));
             }
         }
@@ -579,6 +628,10 @@ namespace inv
         if (const toml::table* piles = root["ammo_piles"].as_table())
             read_ammo_piles(*piles, rules);
 
+        g_ping = PingRules{};
+        if (const toml::table* ping = root["ping"].as_table())
+            read_ping(*ping, rules);
+
         g_map_guns = MapGunRules{};
         if (const toml::table* guns = root["map_guns"].as_table())
             read_map_guns(*guns, rules);
@@ -586,7 +639,7 @@ namespace inv
         for (const auto& [key, node] : root)
             if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection" &&
                 key != "stamina" && key != "melee" && key != "round_weight" && key != "ammo_piles" &&
-                key != "map_guns")
+                key != "map_guns" && key != "ping")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
         return rules;
     }

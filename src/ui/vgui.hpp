@@ -1,6 +1,7 @@
 #pragma once
-// The game's own 2D drawing: vgui::ISurface (vguimatsurface.dll) and the client scheme's fonts, so a part of the HUD
-// (the radial wheel) is drawn the way the game draws its own: in its frame, under its menus, with its fonts (Trade
+// The game's own 2D drawing: vgui::ISurface (vguimatsurface.dll) and the client scheme's fonts, so the mod's HUD (all
+// of it but the inventory window: the boxes, the ammo counter, the stamina bar, the melee ring, the radial wheel) is
+// drawn the way the game draws its own: in its frame, under its menus, with its fonts (Trade
 // Gothic Bold, or Stubble bold at high resolutions, scaled as the game scales them).  vgui2.dll's IPanel::PaintTraverse
 // is hooked; after the engine's FocusOverlayPanel (the last of the game's panels, z 150) has painted, hud::paint_vgui
 // draws.  See "The VGUI surface" in docs/game-notes.md.
@@ -26,11 +27,11 @@ namespace ui::vgui
         float x, y;
     };
 
-    // Finds and checks the interfaces, then hooks PaintTraverse.  False: the HUD keeps drawing everything with ImGui.
+    // Finds and checks the interfaces, then hooks PaintTraverse.  False: the overlay draws the HUD with ImGui.
     bool install();
     void uninstall();
-    // Any thread: the hook has painted in the last moment (the game is drawing its panels: the HUD leaves the wheel to
-    // hud::paint_vgui meanwhile).
+    // Any thread: the hook has painted in the last moment (the game is drawing its panels: the overlay leaves the HUD
+    // to hud::paint_vgui meanwhile, and draws only the inventory window).
     bool painting();
 
     // Main thread, inside hud::paint_vgui only.  Colours are ImU32's layout (IM_COL32: 0xAABBGGRR).

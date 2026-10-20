@@ -16,6 +16,7 @@ namespace core
         int key_drop = 'G'; // drop the selected item
         int key_store = 0xBA; // VK_OEM_1 ';'  store the item in your hands
         int key_pickup = 'H'; // take the item you are looking at into the inventory
+        int key_ping = 'V'; // marks the spot, item or enemy you look at for the other players with the mod (rules: [ping])
         int key_unload = 'U'; // empty the gun in your hands (or the one on the ground you look at) into your reserve
         // Off (the default): the game's own weapon panel stays, with its keys 1 and 2 for the gun and melee; the
         // inventory is a grid under it (the throwable, kit and pills in their boxes), keys 3..9 and 0 take boxes 1..8.

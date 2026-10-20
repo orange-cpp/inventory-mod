@@ -516,14 +516,14 @@ molotov = 1
         }
 
         // [ammo_piles]
-        CHECK(!inv::ammo_pile_rules().enabled && inv::ammo_pile_rules().kinds.size() == 7);
+        CHECK(!inv::ammo_pile_rules().enabled && inv::ammo_pile_rules().kinds.size() == 6);
         CHECK(inv::apply_rules("[ammo_piles]\n").errors.empty() && inv::ammo_pile_rules().enabled &&
               inv::ammo_pile_rules().min_magazines == 1 && inv::ammo_pile_rules().max_magazines == 3);
         const inv::Rules piles =
-            inv::apply_rules("[ammo_piles]\nmin_magazines = 2\nmax_magazines = 4\nkinds = [\"smg\", \"auto_shotgun\", \"laser\"]\n");
-        CHECK(piles.errors.size() == 1); // no "laser"
+            inv::apply_rules("[ammo_piles]\nmin_magazines = 2\nmax_magazines = 4\nkinds = [\"smg\", \"shotgun\", \"auto_shotgun\", \"laser\"]\n");
+        CHECK(piles.errors.size() == 2); // no "auto_shotgun" (every shotgun takes "shotgun"), no "laser"
         CHECK(inv::ammo_pile_rules().min_magazines == 2 && inv::ammo_pile_rules().max_magazines == 4);
-        CHECK((inv::ammo_pile_rules().kinds == std::vector<std::string>{"smg", "autoshotgun"}));
+        CHECK((inv::ammo_pile_rules().kinds == std::vector<std::string>{"smg", "shotgun"}));
         CHECK(inv::apply_rules("[ammo_piles]\nmin_magazines = 3\nmax_magazines = 2\n").errors.size() == 1 &&
               inv::ammo_pile_rules().max_magazines == 3);
         CHECK(!inv::apply_rules("[ammo_piles]\nmax_magazines = 0\n").errors.empty());
@@ -537,6 +537,21 @@ molotov = 1
         CHECK(!inv::apply_rules("[ammo_piles]\nreplace_map_piles = 1\n").errors.empty());
         inv::apply_rules("");
         CHECK(!inv::ammo_pile_rules().enabled);
+
+        // [ping]
+        inv::apply_rules("");
+        CHECK(!inv::ping_rules().enabled);
+        CHECK(inv::apply_rules("[ping]\n").errors.empty() && inv::ping_rules().enabled && inv::ping_rules().per_player == 1 &&
+              inv::ping_rules().lifetime == 8.f);
+        CHECK(inv::apply_rules("[ping]\nlifetime = 12\ncooldown = 0\nper_player = 3\nrange = 3000\n").errors.empty() &&
+              inv::ping_rules().lifetime == 12.f && inv::ping_rules().cooldown == 0.f && inv::ping_rules().per_player == 3 &&
+              inv::ping_rules().range == 3000.f);
+        CHECK(!inv::apply_rules("[ping]\nlifetime = 0\n").errors.empty());
+        CHECK(!inv::apply_rules("[ping]\nper_player = 9\n").errors.empty());
+        CHECK(!inv::apply_rules("[ping]\nrange = 50\n").errors.empty());
+        CHECK(!inv::apply_rules("[ping]\ncolour = 1\n").errors.empty());
+        CHECK(inv::apply_rules("[ping]\nenabled = false\n").errors.empty() && !inv::ping_rules().enabled);
+        inv::apply_rules("");
 
         // [map_guns]
         CHECK(!inv::map_gun_rules().enabled);
@@ -567,6 +582,11 @@ molotov = 1
         CHECK(ammo.ammo_changed == 2 && ammo.errors.size() == 1);
         CHECK(inv::ammo_max("assaultrifle") == 500 && inv::ammo_max_set("assaultrifle") && inv::ammo_max("smg") == 300);
         CHECK(inv::ammo_max("shotgun") == 72);
+        // one shell for every shotgun: the auto shotguns' own type is gone
+        CHECK(std::string(inv::ammo_kind("weapon_autoshotgun")) == "shotgun" &&
+              std::string(inv::ammo_kind("weapon_shotgun_spas")) == "shotgun" && inv::ammo_index("autoshotgun") == -1 &&
+              inv::ammo_kind_at(8) == nullptr && inv::ammo_kinds().size() == 8);
+        CHECK(inv::apply_rules("[ammo]\nauto_shotgun = 90\n").errors.size() == 1);
         inv::set_ammo_max("assaultrifle", -1);
         inv::set_ammo_max("smg", -1);
 

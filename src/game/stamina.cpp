@@ -28,7 +28,8 @@ namespace game::detail
     // (the game's own movement speed scale) eases down to `slow` while on the ground, the wait after each swing or
     // shove is stretched to `swing_speed`, and the damage their melee weapon does is `damage` % (the TakeDamage
     // hook is melee.cpp's: stamina_damage_scale).  The game's own shove fatigue (m_iShovePenalty) is kept at 0
-    // meanwhile.  [melee]'s heavy swing costs more (stamina_spend, from its PrimaryAttack hook).
+    // meanwhile.  [melee]'s heavy swing costs more (stamina_spend, from its PrimaryAttack hook).  While an
+    // adrenaline shot works (CTerrorPlayer::m_bAdrenalineActive) the stamina is endless: full, and nothing uses it.
     //
     // Checked in the game (2026-10-16): a shove waits 0.77 s (pistol or melee) and moves both attack times on, a
     // melee swing too (with the shove penalty not raised); a reload moves the secondary time a tenth or two;
@@ -41,10 +42,13 @@ namespace game::detail
     //   CBaseCombatWeapon m_flNextPrimaryAttack +0x13F0, m_flNextSecondaryAttack +0x13F4 (game time).
     //   gpGlobals: server.dll PlayerInfoManager002 slot 1 GetGlobalVars (0x101897E0: mov eax, [0x107F7690]);
     //       CGlobalVars curtime +0xC (what most of server.dll reads of it, compared with m_flNextPrimaryAttack).
+    //   CTerrorPlayer m_bAdrenalineActive +0x328C (SendProp; IsAdrenalineActive 0x102C8DA0, the script function's,
+    //       is mov al, [ecx+0x328C]; ret).
 
     constexpr float k_run_speed = 130.f; // faster than this on the ground is running (a walk is 85, a run 220, a limp 150)
 
     SetShovePenaltyFn g_set_shove_penalty = nullptr;
+    bool g_adrenaline_known = false; // IsAdrenalineActive reads m_bAdrenalineActive where the mod expects
 
     struct Stamina
     {
@@ -62,6 +66,7 @@ namespace game::detail
         bool sent_exhausted = false;
         ULONGLONG sent_at = 0;
         bool seen = false;
+        bool adrenaline = false; // an adrenaline shot works: nothing uses stamina
     };
     std::map<int, Stamina> g_stamina; // by userid
     float g_stamina_time = 0.f;
@@ -129,7 +134,7 @@ namespace game::detail
 
     void stamina_use(int user_id, Stamina& st, float cost, float now, const char* what)
     {
-        if (cost <= 0.f)
+        if (cost <= 0.f || st.adrenaline)
             return;
         st.value = std::max(0.f, st.value - cost);
         st.used_at = now;
@@ -147,6 +152,14 @@ namespace game::detail
         Vec3 velocity{};
         mem::read(p + k_off_velocity, velocity);
         const bool running = on_ground && std::sqrt(velocity.x * velocity.x + velocity.y * velocity.y) > k_run_speed;
+        st.adrenaline = g_adrenaline_known && mem::read_or<bool>(p + k_off_adrenaline_active);
+        if (st.adrenaline)
+        {
+            st.value = 100.f;
+            if (st.exhausted)
+                INV_LOG("stamina: userid %d took adrenaline", user_id);
+            st.exhausted = false;
+        }
         const bool was_exhausted = st.exhausted;
 
         if (running && !st.exhausted && rules.run > 0.f)
@@ -352,6 +365,10 @@ namespace game::detail
         {
             g_change_accessor = reinterpret_cast<ChangeAccessorFn>(change_accessor);
             g_set_shove_penalty = reinterpret_cast<SetShovePenaltyFn>(set_shove_penalty);
+            const std::uintptr_t is_adrenaline_active = g.server.base + k_rva_is_adrenaline_active;
+            g_adrenaline_known = mem::find_pattern(is_adrenaline_active, 7, "8A 81 8C 32 00 00 C3") == is_adrenaline_active;
+            if (!g_adrenaline_known)
+                INV_LOG("game: IsAdrenalineActive does not look as expected: adrenaline does not refill stamina");
             INV_LOG("game: stamina ready (gpGlobals %p, game time %.1f; on when inventory_mod.toml has [stamina])", g_globals,
                     game_time());
         }

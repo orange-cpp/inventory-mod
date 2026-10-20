@@ -2,7 +2,9 @@
 // The infection's and the stamina's screen effects: a pixel shader run over the game's frame (a copy of the render
 // target).  Each can go on one of three layers (the settings' [infection] and [stamina] cover_game_hud / cover_mod_hud):
 // under the game's HUD (run from the game's own rendering just before it draws its HUD, see overlay.cpp), over the
-// game's HUD but under the mod's (at Present, before the mod's HUD), or over everything (at Present, last).  The shaders are compiled at run time with Windows' d3dcompiler_47.dll; without it (or when a
+// game's HUD but under the mod's window, or over everything.  The last two, and the screamer, are drawn in the game's
+// own frame when they can (render_in_frame: after the mod's VGUI HUD, before Present), so that a stream's capture,
+// which may take the frame at Present before the mod's hook runs, has them too; at Present otherwise.  The shaders are compiled at run time with Windows' d3dcompiler_47.dll; without it (or when a
 // shader does not compile) ready() stays false and the HUD draws a plain tint and vignette instead.
 
 struct IDirect3DDevice9;
@@ -17,8 +19,8 @@ namespace postfx
     enum class Layer
     {
         UnderGameHud, // the game's 3D picture only (the HUDs over it)
-        UnderModHud, // the game's picture and HUD, not the mod's
-        OverAll, // everything, the mod's HUD and window too
+        UnderModHud, // the game's picture and HUD (the mod's boxes and wheel are part of it), not the mod's window
+        OverAll, // everything, the mod's window too
     };
     // Render thread, while the HUD draws: the effect for this frame.  severity 0 (just infected) .. 1 (turning), beat
     // the heartbeat 0 .. 1, last 0 .. 1 over the clock's last seconds; on `layer` (UnderGameHud: from the next frame
@@ -39,6 +41,16 @@ namespace postfx
     // HUD).  OverAll is the frame's last pass (after the mod's HUD): the screamer, then the stamina and the infection
     // set for it; it also ends the frame (what was set is forgotten, what goes under the next frame's HUD is kept).
     void render(IDirect3DDevice9* device, IDirect3DSurface9* target, Layer layer);
+    // Render thread, at Present before the OverAll pass: whether the next frame draws this frame's UnderModHud layer
+    // and its OverAll layer with the screamer in the game's own frame (render_in_frame) instead of at Present.
+    void set_in_frame(bool under_mod_hud, bool over_all);
+    // Any thread (the game's main thread asks, after the HUD's VGUI painting): whether render_in_frame has work.
+    bool wants_in_frame();
+    // Render thread (or the main thread without queued rendering), after the mod's VGUI HUD: what the last frame's
+    // Present left for the game's frame, over `target`.  That frame's Present then leaves those layers alone.
+    void render_in_frame(IDirect3DDevice9* device, IDirect3DSurface9* target);
+    // The device is known: the screamer can be drawn (it needs no shader).
+    bool available();
     // Render thread: the screamer's picture (settings: screamer_image) as an IDirect3DTexture9 (an ImTextureID), read
     // with WIC on first use and again when the setting changes; nullptr when there is none.  `aspect`: width / height.
     void* screamer_texture(float* aspect);

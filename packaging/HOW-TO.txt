@@ -51,6 +51,8 @@ Keys (rebind them in the window's Settings tab)
                     spot): its rounds go into your reserve, what does not fit is dropped as a pack. The gun stays
                     empty until you reload (R) or fire. (U is also the game's team chat
                     key: the mod's key wins while you play; rebind one of them if you need both.)
+  V                 ping: marks the spot, item or enemy you look at for your team (needs [ping] in the host's
+                    inventory_mod.toml): a diamond with the distance in the world, through walls, for 8 seconds
   G                 drop what is in your hands
   E                 (the game's use) on an item or weapon whose game slot you already fill: it goes into the inventory
   Ctrl+End          unload the mod
@@ -59,6 +61,8 @@ Slots, wheel or both
   Settings tab > Inventory view: "Slots and wheel" (default), "Slots only" (the middle mouse button stays the game's)
   or "Wheel only" (no item boxes under the game's gun and melee at all, the wheel shows everything; the number keys
   and the mouse wheel work the game's way again; hold the middle mouse button for the wheel).
+  The boxes, the ammo counter, the stamina bar, the melee ring and the wheel are drawn by the game itself, in its own
+  fonts and icons, so they sit under the game's menus like its own HUD. Only the inventory window (I) has its own look.
 
 The weight
   Everything you carry counts (stored items, the items in your slots, your gun and melee, your reserve rounds). The
@@ -79,6 +83,12 @@ Rounds
   (and at most a magazine more for your reserve),
   and a weapon spot of the map gives one weapon, then it is gone.
 
+Pings
+  With [ping] in the host's inventory_mod.toml, V marks what you look at for every player of your team who runs the
+  mod: an enemy (red), an item or weapon lying there (gold), or else the spot your view meets (blue), with its distance.
+  Off the screen it sits at the edge of the screen with an arrow. lifetime (seconds), cooldown, per_player (pings
+  you keep at once) and range are in the example's [ping]. Players without the mod see nothing.
+
 Chapters, deaths, new campaigns
   The inventory comes with you to the next chapter, with the reserve rounds of the guns in it. A lost round or a
   restarted chapter gives back what you had when the chapter began. A new campaign starts with it empty. When you die, everything in it falls where you died (your
@@ -95,11 +105,14 @@ The infection (when the host's inventory_mod.toml has [infection])
   Turn any of it off in the window's Settings tab ("Infection"): screen effect, sound, screamer. "Screamer chance"
   makes the screamer random: 0 never, 1 always, 0.5 half the time.
   inventory_mod_screamer.jpg (next to the DLL) is the screamer's picture; put another picture there to change it.
+  The screamer and the screen effects show on streams and recordings too (OBS, Discord, Steam). The inventory
+  window (I) may not, depending on whether the capture or the mod hooked the game first.
 
 Stamina (when the host's inventory_mod.toml has [stamina])
   Running, jumping, melee swings and shoves use stamina; it comes back when you rest a moment. Run out and you are
   exhausted until it is back to about a third: you move slower, swing and shove slower, and your melee hits do less
   damage. The game's own shove tiredness is off meanwhile: stamina is the limit.
+  An adrenaline shot gives endless stamina while it works.
   A thin bar under the crosshair shows it while it is not full, and the screen's edges darken as it runs low. Turn
   either off in the window's Settings tab ("Stamina"); there you can also keep the darkened edges under the game's
   HUD and the mod's boxes.

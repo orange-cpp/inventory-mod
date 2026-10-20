@@ -105,15 +105,14 @@ namespace inv
             {"assaultrifle", 3, 360, "Rifle rounds", 0.01f, 50, 0xF0C828}, // yellow
             {"smg", 5, 650, "SMG rounds", 0.006f, 50, 0x3C8CFF}, // blue
             {"shotgun", 7, 72, "Shotgun shells", 0.04f, 8, 0xE63228}, // red
-            {"autoshotgun", 8, 90, "Auto shotgun shells", 0.04f, 10, 0xB446E6}, // purple
             {"huntingrifle", 9, 150, "Hunting rifle rounds", 0.02f, 15, 0x46D246}, // green
             {"sniperrifle", 10, 180, "Sniper rounds", 0.02f, 20, 0x28D2C8}, // teal
             {"grenadelauncher", 17, 30, "Grenades", 0.15f, 1, 0xFF8C1E}, // orange
             {"m60", 6, 0, "M60 rounds", 0.01f, 150, 0xE6E6E6}, // white
             {"chainsaw", 19, 20, "Chainsaw fuel", 0.05f, 10, 0x8C6440}, // brown
         };
-        constexpr const char* k_ammo_names[] = {"assaultrifle", "smg", "shotgun", "autoshotgun", "huntingrifle",
-                                                "sniperrifle", "grenadelauncher", "m60", "chainsaw"};
+        constexpr const char* k_ammo_names[] = {"assaultrifle", "smg", "shotgun", "huntingrifle", "sniperrifle",
+                                                "grenadelauncher", "m60", "chainsaw"};
 
         AmmoKind* find_ammo(std::string_view kind)
         {
@@ -135,7 +134,7 @@ namespace inv
             {"weapon_rifle", "assaultrifle"}, {"weapon_rifle_ak47", "assaultrifle"}, {"weapon_rifle_desert", "assaultrifle"},
             {"weapon_rifle_sg552", "assaultrifle"}, {"weapon_smg", "smg"}, {"weapon_smg_silenced", "smg"},
             {"weapon_smg_mp5", "smg"}, {"weapon_pumpshotgun", "shotgun"}, {"weapon_shotgun_chrome", "shotgun"},
-            {"weapon_autoshotgun", "autoshotgun"}, {"weapon_shotgun_spas", "autoshotgun"},
+            {"weapon_autoshotgun", "shotgun"}, {"weapon_shotgun_spas", "shotgun"}, // (game::merge_shotgun_shells)
             {"weapon_hunting_rifle", "huntingrifle"}, {"weapon_sniper_military", "sniperrifle"},
             {"weapon_sniper_awp", "sniperrifle"}, {"weapon_sniper_scout", "sniperrifle"},
             {"weapon_grenade_launcher", "grenadelauncher"}, {"weapon_rifle_m60", "m60"}, {"weapon_chainsaw", "chainsaw"},

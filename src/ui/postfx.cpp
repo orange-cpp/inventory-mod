@@ -180,14 +180,20 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         bool g_failed_copy = false; // logged once
         bool g_wanted = false; // set_infection this frame
         Layer g_layer = Layer::OverAll; // ... on this layer
-        struct UnderHud
+        // The effects of one layer: the stamina's vignette, then the infection over it.
+        struct Effects
         {
             bool infection = false;
             float severity = 0.f, beat = 0.f, last = 0.f;
             bool stamina = false;
             float tired = 0.f, exhausted = 0.f, breath = 0.f;
+
+            bool any() const
+            {
+                return infection || stamina;
+            }
         };
-        UnderHud g_under_hud; // the effects for the next frame's pass under the game's HUD (render thread)
+        Effects g_under_hud; // the effects for the next frame's pass under the game's HUD (render thread)
         std::atomic<bool> g_under_hud_wanted{false}; // (the game's main thread asks)
         struct Screamer
         {
@@ -198,6 +204,21 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             float backdrop = 0.f, red = 0.f, flash = 0.f;
         };
         Screamer g_screamer_frame; // set_screamer this frame
+        // What the next frame's pass in the game's frame (render_in_frame) draws, from this frame's values: the
+        // UnderModHud layer's effects, and the screamer with the OverAll layer's; each only when set_in_frame said its
+        // layer goes there.  (render thread, or the main thread without queued rendering: Present runs there then too)
+        struct InFrame
+        {
+            Effects mod;
+            bool mod_here = false;
+            Screamer screamer;
+            Effects all;
+            bool all_here = false;
+        };
+        InFrame g_in_frame;
+        std::atomic<bool> g_in_frame_wanted{false}; // (the game's main thread asks)
+        bool g_next_mod_here = false, g_next_all_here = false; // set_in_frame
+        bool g_ran_mod = false, g_ran_all = false; // this frame's pass in the game's frame drew that layer
         float g_severity = 0.f, g_beat = 0.f, g_last = 0.f;
         bool g_stamina_wanted = false; // set_stamina this frame
         Layer g_stamina_layer = Layer::OverAll; // ... on this layer
@@ -480,6 +501,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         if (!ok)
         {
             shutdown();
+            g_device = device; // (the screamer needs no shader)
             return false;
         }
         g_ready = true;
@@ -521,64 +543,41 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         g_screamer_frame.flash = flash;
     }
 
-    void render(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer, Layer layer)
+    namespace
     {
-        const float time = static_cast<float>(GetTickCount64() % 1000000ULL) / 1000.f;
-        // on every layer the stamina goes first, so the infection (when there is one too) runs over it
-        if (layer == Layer::UnderGameHud)
+        // This frame's effects (set_infection, set_stamina) on `layer`.
+        Effects current(Layer layer)
         {
-            const UnderHud& u = g_under_hud;
-            const bool stamina = u.stamina && g_ps_stamina != nullptr;
-            if (g_ready && back_buffer != nullptr && (stamina || u.infection) && make_copy(device, back_buffer))
-            {
-                if (stamina)
-                {
-                    const float p0[4] = {time, u.tired, u.exhausted, u.breath};
-                    full_screen_pass(device, back_buffer, g_ps_stamina, p0);
-                }
-                if (u.infection)
-                {
-                    const float p0[4] = {time, u.severity, u.beat, u.last};
-                    full_screen_pass(device, back_buffer, g_ps, p0);
-                }
-            }
-            return;
+            return Effects{g_wanted && g_layer == layer, g_severity, g_beat, g_last,
+                           g_stamina_wanted && g_stamina_layer == layer && g_ps_stamina != nullptr, g_tired, g_exhausted, g_breath};
         }
-        if (layer == Layer::UnderModHud)
+
+        // On every layer the stamina goes first, so the infection (when there is one too) runs over it.
+        void run_effects(IDirect3DDevice9* device, IDirect3DSurface9* target, const Effects& e)
         {
-            const bool stamina = g_stamina_wanted && g_stamina_layer == Layer::UnderModHud && g_ps_stamina != nullptr;
-            const bool infection = g_wanted && g_layer == Layer::UnderModHud;
-            if (g_ready && back_buffer != nullptr && (stamina || infection) && make_copy(device, back_buffer))
+            if (!g_ready || target == nullptr || !e.any() || !make_copy(device, target))
+                return;
+            const float time = static_cast<float>(GetTickCount64() % 1000000ULL) / 1000.f;
+            if (e.stamina && g_ps_stamina != nullptr)
             {
-                if (stamina)
-                {
-                    const float p0[4] = {time, g_tired, g_exhausted, g_breath};
-                    full_screen_pass(device, back_buffer, g_ps_stamina, p0);
-                }
-                if (infection)
-                {
-                    const float p0[4] = {time, g_severity, g_beat, g_last};
-                    full_screen_pass(device, back_buffer, g_ps, p0);
-                }
+                const float p0[4] = {time, e.tired, e.exhausted, e.breath};
+                full_screen_pass(device, target, g_ps_stamina, p0);
             }
-            return;
+            if (e.infection)
+            {
+                const float p0[4] = {time, e.severity, e.beat, e.last};
+                full_screen_pass(device, target, g_ps, p0);
+            }
         }
-        // the frame's last pass: what goes under the next frame's HUD is kept, the rest is forgotten
-        g_under_hud = UnderHud{g_wanted && g_layer == Layer::UnderGameHud, g_severity, g_beat, g_last,
-                               g_stamina_wanted && g_stamina_layer == Layer::UnderGameHud, g_tired, g_exhausted, g_breath};
-        g_under_hud_wanted = g_under_hud.infection || (g_under_hud.stamina && g_ps_stamina != nullptr);
-        const bool wanted = g_wanted && g_layer == Layer::OverAll;
-        g_wanted = false;
-        const Screamer screamer = g_screamer_frame;
-        g_screamer_frame.wanted = false;
-        const bool stamina = g_stamina_wanted && g_stamina_layer == Layer::OverAll;
-        g_stamina_wanted = false;
-        if (!g_ready || back_buffer == nullptr || (!wanted && !screamer.wanted && !stamina) || !make_copy(device, back_buffer))
-            return;
-        if (screamer.wanted)
+
+        // The screamer needs no shader (fixed-function quads), only the target's size.
+        void run_screamer(IDirect3DDevice9* device, IDirect3DSurface9* target, const Screamer& screamer)
         {
-            // (the overlay's state block puts the game's state back afterwards)
-            D3DVIEWPORT9 full{0, 0, g_copy_w, g_copy_h, 0.f, 1.f};
+            D3DSURFACE_DESC desc{};
+            if (!screamer.wanted || target == nullptr || FAILED(target->GetDesc(&desc)))
+                return;
+            // (the caller's state block puts the game's state back afterwards)
+            D3DVIEWPORT9 full{0, 0, desc.Width, desc.Height, 0.f, 1.f};
             device->SetViewport(&full);
             device->SetRenderState(D3DRS_ZENABLE, FALSE);
             device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
@@ -586,24 +585,78 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
             device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
             device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
             device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+            device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
             device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
             device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
             device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
             device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
             device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-            draw_screamer(device, screamer, static_cast<float>(g_copy_w), static_cast<float>(g_copy_h));
+            draw_screamer(device, screamer, static_cast<float>(desc.Width), static_cast<float>(desc.Height));
         }
-        if (stamina && g_ps_stamina != nullptr)
+    } // namespace
+
+    void render(IDirect3DDevice9* device, IDirect3DSurface9* back_buffer, Layer layer)
+    {
+        if (layer == Layer::UnderGameHud)
         {
-            const float p0[4] = {time, g_tired, g_exhausted, g_breath};
-            full_screen_pass(device, back_buffer, g_ps_stamina, p0);
+            run_effects(device, back_buffer, g_under_hud);
+            return;
         }
-        if (wanted)
+        // At Present only what this frame's pass in the game's frame did not draw: when it drew a layer (the last
+        // frame's values), this frame's values of that layer wait for the next one's, so a frame never gets an effect
+        // twice, also when a layer moves between the two places.
+        if (layer == Layer::UnderModHud)
         {
-            const float p0[4] = {time, g_severity, g_beat, g_last};
-            full_screen_pass(device, back_buffer, g_ps, p0);
+            if (!g_ran_mod)
+                run_effects(device, back_buffer, current(Layer::UnderModHud));
+            return;
         }
+        const Screamer screamer = g_screamer_frame;
+        const Effects all = current(Layer::OverAll);
+        if (!g_ran_all)
+        {
+            run_screamer(device, back_buffer, screamer);
+            run_effects(device, back_buffer, all);
+        }
+        // the frame's last pass: what the next frame's passes in the game's own rendering draw is kept, the rest is
+        // forgotten
+        g_under_hud = current(Layer::UnderGameHud);
+        g_under_hud_wanted = g_under_hud.any();
+        g_in_frame = InFrame{current(Layer::UnderModHud), g_next_mod_here, screamer, all, g_next_all_here};
+        g_in_frame_wanted = (g_in_frame.mod_here && g_in_frame.mod.any()) ||
+                            (g_in_frame.all_here && (g_in_frame.all.any() || screamer.wanted));
+        g_ran_mod = g_ran_all = false;
+        g_wanted = false;
+        g_stamina_wanted = false;
+        g_screamer_frame.wanted = false;
     }
+
+    void set_in_frame(bool under_mod_hud, bool over_all)
+    {
+        g_next_mod_here = under_mod_hud;
+        g_next_all_here = over_all;
+    }
+
+    bool wants_in_frame() { return g_in_frame_wanted.load(); }
+
+    void render_in_frame(IDirect3DDevice9* device, IDirect3DSurface9* target)
+    {
+        // (once a frame: should it be asked twice, the second does nothing)
+        if (g_in_frame.mod_here)
+        {
+            run_effects(device, target, g_in_frame.mod);
+            g_ran_mod = true;
+        }
+        if (g_in_frame.all_here)
+        {
+            run_screamer(device, target, g_in_frame.screamer);
+            run_effects(device, target, g_in_frame.all);
+            g_ran_all = true;
+        }
+        g_in_frame.mod_here = g_in_frame.all_here = false;
+    }
+
+    bool available() { return g_device != nullptr; }
 
     void* screamer_texture(float* aspect)
     {
@@ -631,8 +684,12 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
         g_device = nullptr;
         g_ready = false;
         g_wanted = false;
-        g_under_hud = UnderHud{};
+        g_under_hud = Effects{};
         g_under_hud_wanted = false;
+        g_in_frame = InFrame{};
+        g_in_frame_wanted = false;
+        g_ran_mod = g_ran_all = false;
+        g_screamer_frame.wanted = false;
         g_stamina_wanted = false;
     }
 
