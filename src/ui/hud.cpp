@@ -831,7 +831,7 @@ namespace hud
             for (const game::NativeWeapon& w : session.native)
             {
                 if (!w.melee.empty())
-                    draw_wear(p, nx0, ny1, nx1, w.wear);
+                    draw_wear(p, nx0, std::floor(weapons_top), nx1, w.wear); // (the box's own bottom, where the item boxes begin)
                 else if (w.classname == "weapon_pistol" || w.classname == "weapon_pistol_magnum")
                     if (const int reserve = shared_reserve(session, w.classname.c_str()); reserve >= 0)
                         p.text(HudFont::Hint, nx0 + pad * 2.f, ny1 - p.line(HudFont::Hint) - pad, IM_COL32(168, 168, 168, 255),

@@ -62,6 +62,17 @@ namespace game::detail
             std::string speech; // the speech concept the pinger's survivor says ("PlayerSpotPills"); empty: nothing
         };
 
+        // What an enemy player is called: the special infected's class (m_zombieClass, see sdk.hpp), "Survivor" for a
+        // survivor an infected player points at.
+        std::string player_label(void* entity)
+        {
+            if (team_of(entity) != k_team_infected)
+                return "Survivor";
+            static const char* const k_classes[] = {nullptr, "Smoker", "Boomer", "Hunter", "Spitter", "Jockey", "Charger", "Witch", "Tank"};
+            const int zombie_class = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(entity) + k_off_zombie_class, 0);
+            return zombie_class >= 1 && zombie_class <= 8 ? k_classes[zombie_class] : "Special infected";
+        }
+
         float dot(const Vec3& a, const Vec3& b)
         {
             return a.x * b.x + a.y * b.y + a.z * b.z;
@@ -167,7 +178,7 @@ namespace game::detail
                         enemy.at = chest;
                         enemy.entity = entity;
                         enemy.speech = common ? "PlayerLook" : witch ? "PlayerWarnWitch" : "PlayerWarnSpecial";
-                        enemy.label = common ? "Infected" : witch ? "Witch" : team_of(entity) == k_team_infected ? "Special infected" : "Enemy";
+                        enemy.label = common ? "Common" : witch ? "Witch" : player_label(entity);
                         break;
                     }
                     if (miss > 36.f + along * 0.05f || miss >= best_item)
@@ -238,6 +249,110 @@ namespace game::detail
             char line[256];
             std::snprintf(line, sizeof(line), "%s %d %d %d %d %d %.1f %.1f %.1f|%s|%s|%d\n", k_ping_marker, owner, mine ? 1 : 0,
                           static_cast<int>(target.kind), life_ms, per_player, target.at.x, target.at.y, target.at.z, target.label.c_str(), target.speech.c_str(), static_cast<int>(game_time() * 10.f));
+            if (!g_dedicated && recipient == host_player())
+            {
+                mem::guarded([&] { apply_ping_line(line); });
+                return;
+            }
+            ServerPlayer* sp = server_player(recipient);
+            void* edict = edict_of(recipient);
+            if (sp != nullptr && sp->has_mod && g_client_printf != nullptr && edict != nullptr)
+                mem::guarded([&] { g_client_printf(g_engine_server, edict, line); });
+        }
+
+        // ---- following an enemy: its glow and its mark's place ---------------------------------------------------------
+        //
+        // A ping on an enemy is a Follow: every 0.1 s the mark of the pinger's team is moved to the enemy (a line of
+        // kind 3), and for the first few seconds the enemy glows through walls (m_Glow, see sdk.hpp; written on the
+        // server and networked to everybody, so the infected see it too).  It ends when the mark expires or the enemy dies.
+
+        constexpr float k_glow_seconds = 5.f;
+        constexpr float k_follow_step = 0.1f;
+
+        struct Follow
+        {
+            int owner = 0;
+            int team = 0;
+            std::uint32_t handle = k_invalid_handle;
+            float glow_until = 0.f;
+            float until = 0.f;
+            float next = 0.f;
+            Vec3 sent{};
+            bool glowing = false;
+            int prior_type = 0, prior_color = 0, prior_range = 0;
+        };
+        std::vector<Follow> g_follows;
+
+        void glow_write(void* entity, int type, int color, int range)
+        {
+            const auto base = reinterpret_cast<std::uintptr_t>(entity);
+            mem::guarded([&] {
+                *reinterpret_cast<int*>(base + k_off_glow_type) = type;
+                *reinterpret_cast<int*>(base + k_off_glow_color) = color;
+                *reinterpret_cast<int*>(base + k_off_glow_range) = range;
+                *reinterpret_cast<int*>(base + k_off_glow_range_min) = 0;
+                *reinterpret_cast<std::uint8_t*>(base + k_off_glow_flashing) = 0;
+            });
+            state_changed(entity);
+        }
+
+        // Puts a follow's glow out, unless another follow of the same entity still has it lit.
+        void glow_off(const Follow& follow)
+        {
+            if (!follow.glowing)
+                return;
+            for (const Follow& other : g_follows)
+                if (&other != &follow && other.glowing && other.handle == follow.handle)
+                    return;
+            if (void* entity = entity_from_handle(follow.handle))
+                glow_write(entity, follow.prior_type, follow.prior_color, follow.prior_range);
+        }
+
+        void start_follow(int owner, int team, void* entity, float now, float lifetime)
+        {
+            for (auto it = g_follows.begin(); it != g_follows.end();)
+            {
+                if (it->owner == owner)
+                {
+                    glow_off(*it);
+                    it = g_follows.erase(it);
+                }
+                else
+                    ++it;
+            }
+            Follow follow;
+            follow.owner = owner;
+            follow.team = team;
+            follow.handle = handle_of(entity);
+            follow.until = now + lifetime;
+            follow.glow_until = now + std::min(k_glow_seconds, lifetime);
+            follow.next = now + k_follow_step;
+            mem::read(reinterpret_cast<std::uintptr_t>(entity) + k_off_origin, follow.sent);
+            follow.sent.z += 36.f; // (the chest, where the mark is)
+            // what the entity showed before: of another follow that lit it already, its prior values
+            const auto base = reinterpret_cast<std::uintptr_t>(entity);
+            follow.prior_type = mem::read_or<int>(base + k_off_glow_type, 0);
+            follow.prior_color = mem::read_or<int>(base + k_off_glow_color, 0);
+            follow.prior_range = mem::read_or<int>(base + k_off_glow_range, 0);
+            for (const Follow& other : g_follows)
+                if (other.glowing && other.handle == follow.handle)
+                {
+                    follow.prior_type = other.prior_type;
+                    follow.prior_color = other.prior_color;
+                    follow.prior_range = other.prior_range;
+                }
+            if (follow.handle == k_invalid_handle)
+                return;
+            glow_write(entity, k_glow_constant, 235 | (70 << 8) | (60 << 16), 0);
+            follow.glowing = true;
+            g_follows.push_back(follow);
+        }
+
+        // One recipient's move line.
+        void tell_move(void* recipient, int owner, const Vec3& at)
+        {
+            char line[128];
+            std::snprintf(line, sizeof(line), "%s %d 0 3 1000 1 %.1f %.1f %.1f\n", k_ping_marker, owner, at.x, at.y, at.z);
             if (!g_dedicated && recipient == host_player())
             {
                 mem::guarded([&] { apply_ping_line(line); });
@@ -343,6 +458,55 @@ namespace game::detail
                 continue;
             tell(other, other == player, owner, target, life_ms, rules.per_player);
         }
+        if (target.kind == PingKind::Enemy && target.entity != nullptr)
+            start_follow(owner, team, target.entity, now, rules.lifetime);
+    }
+
+    void ping_frame()
+    {
+        if (g_follows.empty())
+            return;
+        const float now = game_time();
+        for (auto it = g_follows.begin(); it != g_follows.end();)
+        {
+            Follow& follow = *it;
+            void* entity = entity_from_handle(follow.handle);
+            bool gone = entity == nullptr || follow.until - now > 130.f; // (a game time that went back: a new map)
+            if (!gone)
+            {
+                const auto base = reinterpret_cast<std::uintptr_t>(entity);
+                gone = mem::read_or<int>(base + k_off_health, 0) <= 0 || (is_class(entity, "player") && !alive(entity));
+            }
+            if (follow.glowing && (gone || now >= follow.glow_until))
+            {
+                if (entity != nullptr)
+                    glow_off(follow);
+                follow.glowing = false;
+            }
+            if (gone || now >= follow.until)
+            {
+                it = g_follows.erase(it);
+                continue;
+            }
+            Vec3 origin{};
+            if (now >= follow.next && mem::read(reinterpret_cast<std::uintptr_t>(entity) + k_off_origin, origin))
+            {
+                follow.next = now + k_follow_step;
+                const Vec3 chest{origin.x, origin.y, origin.z + 36.f};
+                const Vec3 moved{chest.x - follow.sent.x, chest.y - follow.sent.y, chest.z - follow.sent.z};
+                if (dot(moved, moved) > 4.f)
+                {
+                    follow.sent = chest;
+                    for (int index = 1; index <= 64; ++index)
+                    {
+                        void* other = entity_at_index(index);
+                        if (other != nullptr && is_class(other, "player") && team_of(other) == follow.team && !is_bot(other))
+                            tell_move(other, follow.owner, chest);
+                    }
+                }
+            }
+            ++it;
+        }
     }
 
     void apply_ping_line(const char* text)
@@ -350,9 +514,23 @@ namespace game::detail
         const char* body = text + sizeof(k_ping_marker) - 1;
         int owner = 0, mine = 0, kind = 0, life_ms = 0, keep = 1;
         float x = 0.f, y = 0.f, z = 0.f;
-        if (std::sscanf(body, "%d %d %d %d %d %f %f %f", &owner, &mine, &kind, &life_ms, &keep, &x, &y, &z) != 8 || kind < 0 || kind > 2 ||
+        if (std::sscanf(body, "%d %d %d %d %d %f %f %f", &owner, &mine, &kind, &life_ms, &keep, &x, &y, &z) != 8 || kind < 0 || kind > 3 ||
             life_ms < 500 || life_ms > 120000)
             return;
+        if (kind == 3)
+        {
+            // the enemy a ping follows moved: that owner's newest mark goes with it
+            std::lock_guard lock(g_marks_mutex);
+            for (auto it = g_marks.rbegin(); it != g_marks.rend(); ++it)
+                if (it->owner == owner && it->kind == PingKind::Enemy)
+                {
+                    it->x = x;
+                    it->y = y;
+                    it->z = z;
+                    break;
+                }
+            return;
+        }
         PingMark mark;
         std::string speech;
         int server_tenths = 0;

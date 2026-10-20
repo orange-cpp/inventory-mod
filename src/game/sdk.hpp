@@ -112,6 +112,16 @@ namespace game::sdk
     constexpr std::uintptr_t k_off_origin = 0x388; // m_vecOrigin (the SendProps: push 0x388 / push 0xC)
     constexpr std::uintptr_t k_off_angles = 0x394; // m_angRotation (SendProp: push 0x394 / "m_angRotation")
     constexpr std::uintptr_t k_off_spawner_angles = 0x394; // the same field, read off a spawner
+    // CBaseEntity::m_Glow (SendPropDataTable at 0x10059364: push 0x1DC / push "m_Glow"), a DT_GlowProperty whose props,
+    // sent by the table at 0x10105BE0, sit at m_iGlowType +4, m_nGlowRange +8, m_nGlowRangeMin +0xC,
+    // m_glowColorOverride +0x10 (R | G << 8 | B << 16) and m_bFlashing +0x14.  m_iGlowType 3 is the constant outline
+    // seen through walls; range 0 is endless.
+    constexpr std::uintptr_t k_off_glow_type = 0x1DC + 0x4, k_off_glow_range = 0x1DC + 0x8, k_off_glow_range_min = 0x1DC + 0xC,
+                             k_off_glow_color = 0x1DC + 0x10, k_off_glow_flashing = 0x1DC + 0x14;
+    constexpr int k_glow_constant = 3;
+    // CTerrorPlayer::m_zombieClass (the SendProp in DT_TerrorPlayer, the table of 0x102FE490: push 0x2BB8 / push
+    // "m_zombieClass" at 0x102FEAF8): 1 Smoker, 2 Boomer, 3 Hunter, 4 Spitter, 5 Jockey, 6 Charger, 8 Tank
+    constexpr std::uintptr_t k_off_zombie_class = 0x2BB8;
 
     // CBaseEntity::TakeDamage(const CTakeDamageInfo&) (0x10055C70, thiscall, ret 4) and CTakeDamageInfo (0x60 bytes)
     constexpr std::uintptr_t k_rva_take_damage = 0x55C70;

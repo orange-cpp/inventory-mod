@@ -191,7 +191,16 @@ namespace game::detail
         const bool same = hold == s.sent_hold && shove == s.sent_shove && features == s.sent_features;
         if (player == host_player())
         {
-            if (same)
+            // The client half forgets the hold whenever it sees itself out of a game (client_view.cpp, a map change, a
+            // load), while this Swinger lives on: a hold that is no longer the session's is told again, or the wind-up
+            // stays off (every M1 an instant light swing with no animation).
+            int held_hold = 0;
+            {
+                Session& local = local_session();
+                std::lock_guard lock(local.mutex);
+                held_hold = static_cast<int>(std::lround(local.melee_hold * 1000.f));
+            }
+            if (same && held_hold == hold)
                 return;
             char line[64]; // the host's client half reads the same line
             std::snprintf(line, sizeof(line), "%s %d %d %d", k_melee_marker, hold, shove, features);
@@ -200,7 +209,8 @@ namespace game::detail
         else
         {
             const ULONGLONG now = GetTickCount64();
-            if (same && (s.sent_mod || now - s.checked_at < 1000))
+            // (told again every few seconds: their client forgets it when it sees itself out of a game)
+            if (same && now - s.checked_at < (s.sent_mod ? 5000 : 1000))
                 return;
             s.checked_at = now;
             ServerPlayer* sp = server_player(player);

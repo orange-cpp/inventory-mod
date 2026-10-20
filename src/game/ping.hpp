@@ -53,6 +53,12 @@ namespace game::detail
     //   @png@ <owner user id> <1: their own> <kind 0..2> <life ms> <pings kept per player> <x> <y> <z>|<label>
     constexpr char k_ping_marker[] = "@png@";
 
+    // A ping on an enemy follows it: while the enemy lives, the server sends this player's mark its new place, a line of
+    // kind 3 (the other fields but the owner and the place are not read):
+    //   @png@ <owner> 0 3 1000 1 <x> <y> <z>
+    // and makes it glow through walls for a few seconds.  Called every game frame.
+    void ping_frame();
+
     // The active player's ping request (the HUD's key; or a client's inv_ping), on the server.
     void do_ping();
     // A server's line (see k_ping_marker), on a client.

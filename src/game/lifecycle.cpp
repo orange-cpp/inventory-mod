@@ -8,6 +8,7 @@
 #include "game/backend.hpp"
 #include "game/infection.hpp"
 #include "game/map_guns.hpp"
+#include "game/ping.hpp"
 #include "game/players.hpp"
 #include "game/rounds.hpp"
 #include "game/melee.hpp"
@@ -410,6 +411,7 @@ namespace game::detail
             mem::guarded([] {
                 stamina_frame();
                 melee_frame();
+                ping_frame();
                 retarget_ammo_types();
                 drop_dead_inventories();
                 cap_reserves();

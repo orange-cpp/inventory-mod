@@ -636,6 +636,20 @@ a function that does not look right) the line carries a concept name and the pin
 work that way) or, for medkits, pills, grenades, SMGs, rifles and snipers, `vocalize smartlook #<n>` (the game's own use
 trace picks the item).
 
+**An enemy ping follows its enemy** (`Follow`, `ping_frame` from the GameFrame hook). The label names the enemy: a player's
+`CTerrorPlayer::m_zombieClass` (+0x2BB8, the SendProp in the DT_TerrorPlayer table at `0x102FE490`: `push 0x2BB8 / push
+"m_zombieClass"` at `0x102FEAF8`; 1 Smoker, 2 Boomer, 3 Hunter, 4 Spitter, 5 Jockey, 6 Charger, 8 Tank), "Common" for an
+`infected`, "Witch". For `life` seconds the server sends the pinger's team a move line (kind 3) every 0.1 s while the enemy
+moved, which the client applies to that owner's newest enemy mark:
+
+    @png@ <owner> 0 3 1000 1 <x> <y> <z>
+
+For the first 5 s the enemy glows through walls: `CBaseEntity::m_Glow` (+0x1DC; SendPropDataTable at `0x10059364`) is a
+DT_GlowProperty (table `0x10105BE0`): `m_iGlowType` +4 (3: constant), `m_nGlowRange` +8 (0: endless), `m_nGlowRangeMin` +0xC,
+`m_glowColorOverride` +0x10 (R | G << 8 | B << 16), `m_bFlashing` +0x14. The mod writes them (red), marks the edict changed
+and restores the previous values when the glow ends or the enemy dies. It is networked to everybody, the infected too.
+Not yet seen working in game.
+
 The client keeps the marks and the HUD (`draw_pings`, through the Painter, so it is drawn by VGUI like the rest) projects
 them with the engine's own matrix.
 
