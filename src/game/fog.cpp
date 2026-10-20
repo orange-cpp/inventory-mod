@@ -97,12 +97,13 @@ namespace game::detail
     }
 
     // The map's own colour: fog_override -1 copies the map's fog (its env_fog_controller's, as the client has it) into
-    // the ConVars, on the next frame; only then are the ConVars switched on, with the map's colour left as it is and
-    // the distances and density the Debug tab's.
+    // the ConVars, on the next frame; only then are the ConVars switched on, with the map's colour left as it is (or
+    // the fog mutator's, when it gives one) and the distances and density the Debug tab's or the mutator's.
     namespace
     {
         ULONGLONG g_apply_at = 0; // when the map's values are in the ConVars (0: nothing waits)
         float g_density = 0.f;
+        std::string g_color; // "r g b", or empty: the map's own
 
         // fog_color's value, "r g b" (the map's, once fog_override -1 has copied it): the value lives in the parent ConVar
         // (m_pParent +0x1C), the string at +0x24 (m_pszString).
@@ -132,10 +133,15 @@ namespace game::detail
             std::snprintf(text, sizeof(text), "fog_override 1;fog_enable 1;fog_maxdensity %.2f;fog_start %d;fog_end %d\n", density, start,
                           end);
             command(text);
+            if (!g_color.empty())
+            {
+                std::snprintf(text, sizeof(text), "fog_color \"%s\"\n", g_color.c_str());
+                command(text);
+            }
             // The sky has ConVars of its own, and fog_override -1 does not always fill them (a sky left with its default
             // black fog was seen: a black sky over the fogged map).  It gets the map's colour and the same fog; the 3D
             // sky's units are 1/16 of the world's.
-            const std::string color = map_color();
+            const std::string color = g_color.empty() ? map_color() : g_color;
             if (!color.empty())
             {
                 std::snprintf(text, sizeof(text),
@@ -146,11 +152,12 @@ namespace game::detail
         }
     } // namespace
 
-    void set_fog(bool on, float density)
+    void set_fog(bool on, float density, std::string_view color)
     {
         if (!g_found)
             return;
         g_density = density;
+        g_color = color;
         if (!on)
         {
             if (g_on)

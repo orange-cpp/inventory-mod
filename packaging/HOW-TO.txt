@@ -89,6 +89,18 @@ Pings
   Off the screen it sits at the edge of the screen with an arrow. lifetime (seconds), cooldown, per_player (pings
   you keep at once) and range are in the example's [ping]. Players without the mod see nothing.
 
+Chapter mutators
+  With [mutators] in the host's inventory_mod.toml, a chapter may start with a mutator, shown on the HUD
+  ("Mutator: Fog"). How often (chance), how many, and which maps always or never get one are in the example's
+  [mutators].
+    Fog: a thick fog over the map. Only players who run the mod see it.
+    Scarcity: ammo piles and guns found in the map hold less.
+    Heavy load: a lower carry limit, and stamina runs out faster.
+    Contagion: the infection is on, and it kills sooner.
+    Brittle: melee weapons break sooner.
+    Horde tide: a horde every few minutes once you leave the saferoom.
+    Hunted: more of one special infected at once.
+
 Chapters, deaths, new campaigns
   The inventory comes with you to the next chapter, with the reserve rounds of the guns in it. A lost round or a
   restarted chapter gives back what you had when the chapter began. A new campaign starts with it empty. When you die, everything in it falls where you died (your

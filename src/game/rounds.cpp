@@ -174,7 +174,6 @@ namespace game::detail
             mem::guarded([&] { *reserve_of(player, type) = have - n; });
             state_changed(player);
             INV_LOG("rounds: dropped %d %s (%d left) onto pile %p, which holds %d now", n, kind.c_str(), have - n, other, rounds + n);
-            notify("Dropped " + std::to_string(n) + " " + title + " (onto the pile there)");
             return;
         }
         // not into another pile (piles inside each other crashed the game's physics, see below): beside it
@@ -203,7 +202,6 @@ namespace game::detail
         state_changed(player);
         INV_LOG("rounds: dropped %d %s (%d left) as pile %p (%s, %s) at %.1f %.1f %.1f", n, kind.c_str(), have - n, pile,
                 model.c_str(), loaded ? "loaded with the map" : "precached now", position.x, position.y, position.z);
-        notify("Dropped " + std::to_string(n) + " " + title);
     }
 
     // The floor under `at` (256 units down at most), or `at` itself when there is none: a throwaway info_target (no
@@ -335,8 +333,8 @@ namespace game::detail
             set_pile_contents(pile, kind, rounds - n, map);
         emit_sound_on(player, k_pickup_sound); // as a gun picked up sounds
         INV_LOG("rounds: %s took %d of the %d %s in pile %p", bot ? "a bot" : "a survivor", n, rounds, kind.c_str(), pile);
-        if (own)
-            notify("Picked up " + std::to_string(n) + " " + title + (n < rounds ? " (the rest is too much)" : ""));
+        if (own && n < rounds) // (a whole pile taken is seen; only what was left behind is told)
+            notify("Only " + std::to_string(n) + " " + title + " fit: the rest stays");
     }
 
 } // namespace game::detail

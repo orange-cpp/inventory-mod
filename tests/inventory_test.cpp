@@ -2,12 +2,14 @@
 
 #include "inv/inventory.hpp"
 #include "inv/melee.hpp"
+#include "inv/mutators.hpp"
 #include "inv/rules.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -553,6 +555,88 @@ molotov = 1
         CHECK(inv::apply_rules("[ping]\nenabled = false\n").errors.empty() && !inv::ping_rules().enabled);
         inv::apply_rules("");
 
+        // [mutators]
+        CHECK(!inv::mutator_rules().enabled);
+        CHECK(inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 7).empty());
+        CHECK(inv::apply_rules("[mutators]\n").errors.empty() && inv::mutator_rules().enabled &&
+              inv::mutator_rules().chance == 100 && inv::mutator_rules().count == 1 && inv::mutator_rules().announce &&
+              inv::mutator_rules().fog.density == 0.6f && inv::mutator_rules().fog.color.empty());
+        CHECK((inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 7) == std::vector<std::string>{"fog"}));
+        CHECK(inv::apply_rules("[mutators]\nchance = 0\n").errors.empty() &&
+              inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 7).empty());
+        CHECK(inv::apply_rules("[mutators]\ncount = 5\npool = [\"fog\", \"fog\"]\n").errors.empty() &&
+              inv::mutator_rules().pool.size() == 1 && inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 3).size() == 1);
+        CHECK(inv::apply_rules("[mutators]\ncount = 0\n").errors.empty() &&
+              inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 3).empty());
+        CHECK(inv::apply_rules("[mutators]\nchance = 0\n[mutators.maps]\nc3m1_plankcountry = [\"fog\"]\nc1m1_hotel = []\n")
+                  .errors.empty() &&
+              (inv::pick_mutators(inv::mutator_rules(), "c3m1_plankcountry", 1) == std::vector<std::string>{"fog"}) &&
+              inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 1).empty());
+        CHECK(inv::apply_rules("[mutators]\n[mutators.maps]\nc1m1_hotel = []\n").errors.empty() &&
+              inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 1).empty() &&
+              inv::pick_mutators(inv::mutator_rules(), "c1m2_streets", 1).size() == 1);
+        CHECK(inv::apply_rules("[mutators.fog]\ndensity = 1\ncolor = \"40 60 40\"\n").errors.empty() &&
+              inv::mutator_rules().enabled && inv::mutator_rules().fog.density == 1.f && inv::mutator_rules().fog.color == "40 60 40");
+        CHECK(inv::apply_rules("[mutators]\nenabled = false\n").errors.empty() && !inv::mutator_rules().enabled &&
+              inv::pick_mutators(inv::mutator_rules(), "c1m1_hotel", 1).empty());
+        CHECK(!inv::apply_rules("[mutators]\npool = [\"rain\"]\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators]\npool = \"fog\"\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators]\nchance = 101\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.maps]\nc1m1_hotel = [\"rain\"]\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.fog]\ndensity = 2\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.fog]\ncolor = \"40 60\"\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.fog]\ncolor = \"40 60 400\"\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators]\nspeed = 1\n").errors.empty());
+        inv::apply_rules("");
+        CHECK(!inv::mutator_rules().enabled);
+
+        // the gameplay mutators over the host's rules
+        CHECK(inv::apply_rules("[mutators]\npool = [\"scarcity\", \"heavy_load\", \"contagion\"]\n[ammo_piles]\nmax_magazines = 4\n"
+                               "[mutators.scarcity]\nammo = 25\nclip = 50\n[infection]\nseconds = 200\n")
+                  .errors.empty());
+        CHECK(inv::ammo_pile_rules().max_magazines == 4 && !inv::map_gun_rules().enabled && !inv::stamina_rules().enabled);
+        CHECK(inv::mutated_max_weight(20.f) == 20.f);
+        inv::set_active_mutators({"scarcity"});
+        CHECK(inv::mutator_active("scarcity") && !inv::mutator_active("heavy_load"));
+        CHECK(inv::ammo_pile_rules().enabled && inv::ammo_pile_rules().min_magazines == 1 && inv::ammo_pile_rules().max_magazines == 1 &&
+              inv::ammo_pile_rules().extra == 0);
+        CHECK(inv::map_gun_rules().enabled && inv::map_gun_rules().min_clip == 5 && inv::map_gun_rules().max_clip == 30 &&
+              inv::map_gun_rules().max_reserve == 0);
+        inv::set_active_mutators({"heavy_load", "contagion"});
+        CHECK(inv::ammo_pile_rules().max_magazines == 4 && !inv::map_gun_rules().enabled);
+        CHECK(inv::stamina_rules().enabled && inv::stamina_rules().run == 12.f && inv::stamina_rules().regen == 20.f);
+        CHECK(inv::mutated_max_weight(20.f) == 12.f && inv::mutated_max_weight(0.f) == 15.f);
+        CHECK(inv::infection_rules().enabled && inv::infection_rules().seconds == 120);
+        // a new rules file keeps the chapter's mutators
+        CHECK(inv::apply_rules("[mutators.contagion]\nclock = 10\n").errors.empty() && inv::infection_rules().seconds == 12);
+        CHECK(inv::apply_rules("[mutators.contagion]\nclock = 5\n").errors.size() == 1);
+        CHECK(inv::apply_rules("[mutators.heavy_load]\nweight = 50\nlimit = 8\n").errors.empty() &&
+              inv::mutated_max_weight(20.f) == 10.f && inv::mutated_max_weight(0.f) == 8.f);
+        CHECK(!inv::apply_rules("[mutators.scarcity]\nammo = 0\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.brittle]\nhits = 3\n").errors.empty());
+        // brittle: [melee]'s durability, and a weapon's own, divided by wear %
+        CHECK(!inv::apply_rules("[mutators]\npool = [\"brittle\"]\n").errors.empty()); // (no [melee])
+        CHECK(inv::apply_rules("[mutators]\npool = [\"brittle\"]\n[melee]\n[melee.weapons.fireaxe]\ndurability = 250\n").errors.empty());
+        inv::set_active_mutators({"brittle"});
+        CHECK(inv::melee_rules().durability == 100.f / 3.f && inv::melee_rules().weapons.at("fireaxe").durability == 83);
+        inv::set_active_mutators({});
+        CHECK(inv::melee_rules().durability == 100.f && inv::melee_rules().weapons.at("fireaxe").durability == 250);
+        // the director's: horde_tide, hunted (the game applies them; the rules only read them)
+        CHECK(inv::apply_rules("[mutators]\npool = [\"horde_tide\", \"hunted\"]\n").errors.empty() &&
+              inv::mutator_rules().horde_tide.first == 60 && inv::mutator_rules().horde_tide.every == 180 &&
+              inv::mutator_rules().hunted.klass == 0 && inv::mutator_rules().hunted.limit == 3);
+        CHECK(inv::apply_rules("[mutators.horde_tide]\nfirst = 0\nevery = 90\n[mutators.hunted]\nclass = \"jockey\"\nlimit = 4\n")
+                  .errors.empty() &&
+              inv::mutator_rules().horde_tide.first == 0 && inv::mutator_rules().horde_tide.every == 90 &&
+              inv::mutator_rules().hunted.klass == 5 && inv::mutator_rules().hunted.limit == 4);
+        CHECK(!inv::apply_rules("[mutators.horde_tide]\nevery = 10\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.hunted]\nclass = \"tank\"\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.hunted]\nlimit = 11\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.hunted]\nkind = 1\n").errors.empty());
+        inv::apply_rules("");
+        CHECK(!inv::melee_rules().enabled && !inv::infection_rules().enabled);
+
+
         // [map_guns]
         CHECK(!inv::map_gun_rules().enabled);
         CHECK(inv::apply_rules("[map_guns]\nmin_clip = 0\nmax_clip = 100\n").errors.empty() && inv::map_gun_rules().enabled &&
@@ -634,6 +718,26 @@ molotov = 1
         inv::set_item_weight("weapon_pain_pills", 1.f);
         inv::set_item_stack("weapon_molotov", molotov_stack);
     }
+
+    // The documented template parses with no errors (last: its weights and ammo maxima stay in the item table).
+    void example_rules()
+    {
+        if (FILE* f = std::fopen(INV_EXAMPLE_RULES, "rb"))
+        {
+            std::string text;
+            char buffer[4096];
+            for (std::size_t n; (n = std::fread(buffer, 1, sizeof(buffer), f)) > 0;)
+                text.append(buffer, n);
+            std::fclose(f);
+            const inv::Rules example = inv::apply_rules(text);
+            for (const std::string& error : example.errors)
+                std::printf("inventory_mod.example.toml: %s\n", error.c_str());
+            CHECK(example.errors.empty() && inv::mutator_rules().enabled);
+            inv::apply_rules("");
+        }
+        else
+            CHECK(!"inventory_mod.example.toml not found");
+    }
 } // namespace
 
 int main()
@@ -650,6 +754,7 @@ int main()
     held_box();
     weapons();
     rules_file();
+    example_rules();
     if (g_failed == 0)
         std::printf("all inventory tests passed\n");
     return g_failed == 0 ? 0 : 1;

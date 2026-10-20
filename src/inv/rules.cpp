@@ -2,8 +2,11 @@
 
 #include "inv/items.hpp"
 #include "inv/melee.hpp"
+#include "inv/mutators.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <initializer_list>
 #include <cstdio>
 #include <toml++/toml.hpp>
 
@@ -419,6 +422,197 @@ namespace inv
             g_ping = ping;
         }
 
+        MutatorRules g_mutators;
+
+        // A list of mutator names (pool, a map's list); false (and an error) when it is not one.
+        bool read_mutator_list(const toml::node& node, const std::string& what, std::vector<std::string>& out, Rules& rules)
+        {
+            const toml::array* list = node.as_array();
+            if (list == nullptr)
+            {
+                rules.errors.push_back(at_line(node, what + " must be a list, like [\"fog\"]"));
+                return false;
+            }
+            std::vector<std::string> ids;
+            for (const toml::node& entry : *list)
+            {
+                const auto id = entry.value_exact<std::string>();
+                if (!id || find_mutator(*id) == nullptr)
+                {
+                    std::string known;
+                    for (const MutatorInfo& m : mutators())
+                        known += (known.empty() ? "" : ", ") + std::string(m.id);
+                    rules.errors.push_back(at_line(entry, what + ": unknown mutator (" + known + ")"));
+                    return false;
+                }
+                if (std::find(ids.begin(), ids.end(), *id) == ids.end())
+                    ids.push_back(*id);
+            }
+            out = std::move(ids);
+            return true;
+        }
+
+        // "r g b", each 0 .. 255
+        bool is_color(const std::string& text)
+        {
+            int r = -1, g = -1, b = -1;
+            char rest = 0;
+            return std::sscanf(text.c_str(), "%d %d %d %c", &r, &g, &b, &rest) == 3 && r >= 0 && r <= 255 && g >= 0 &&
+                   g <= 255 && b >= 0 && b <= 255;
+        }
+
+        // [mutators.fog]
+        void read_fog_mutator(const toml::table& table, FogMutatorRules& fog, Rules& rules)
+        {
+            for (const auto& [key, node] : table)
+            {
+                if (key == "density")
+                {
+                    const auto value = node.is_boolean() ? std::nullopt : number(node);
+                    if (!value || *value < 0.0 || *value > 1.0)
+                        rules.errors.push_back(at_line(node, "mutators.fog.density must be a number from 0 to 1"));
+                    else
+                        fog.density = static_cast<float>(*value);
+                }
+                else if (key == "color")
+                {
+                    const auto text = node.value_exact<std::string>();
+                    if (!text || (!text->empty() && !is_color(*text)))
+                        rules.errors.push_back(at_line(node, "mutators.fog.color must be \"r g b\" (0 to 255 each), or \"\" for the map's own"));
+                    else
+                        fog.color = *text;
+                }
+                else
+                    rules.errors.push_back(at_line(node, "unknown setting mutators.fog." + std::string(key.str())));
+            }
+        }
+
+        // A mutator's whole-number settings ([mutators.scarcity] ...), each within its range.
+        struct MutatorNumber
+        {
+            const char* key;
+            int low, high;
+            int* out;
+        };
+        void read_mutator_numbers(const toml::table& table, const char* id, std::initializer_list<MutatorNumber> numbers,
+                                  Rules& rules)
+        {
+            for (const auto& [key, node] : table)
+            {
+                const MutatorNumber* setting = nullptr;
+                for (const MutatorNumber& n : numbers)
+                    if (key == n.key)
+                        setting = &n;
+                const std::string name = "mutators." + std::string(id) + "." + std::string(key.str());
+                if (setting == nullptr)
+                {
+                    rules.errors.push_back(at_line(node, "unknown setting " + name));
+                    continue;
+                }
+                const auto n = node.value_exact<std::int64_t>();
+                if (!n || *n < setting->low || *n > setting->high)
+                    rules.errors.push_back(at_line(node, name + " must be a whole number from " + std::to_string(setting->low) +
+                                                             " to " + std::to_string(setting->high)));
+                else
+                    *setting->out = static_cast<int>(*n);
+            }
+        }
+
+        // [mutators] (see rules.hpp)
+        void read_mutators(const toml::table& table, Rules& rules)
+        {
+            MutatorRules m;
+            m.enabled = true; // a table at all switches it on, unless it says otherwise
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled" || key == "announce")
+                {
+                    if (const auto on = node.value_exact<bool>())
+                        (key == "enabled" ? m.enabled : m.announce) = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "mutators." + std::string(key.str()) + " must be true or false"));
+                }
+                else if (key == "chance" || key == "count")
+                {
+                    const std::int64_t high = key == "chance" ? 100 : 8;
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 0 || *n > high)
+                        rules.errors.push_back(at_line(node, "mutators." + std::string(key.str()) + " must be a whole number from 0 to " +
+                                                                 std::to_string(high)));
+                    else
+                        (key == "chance" ? m.chance : m.count) = static_cast<int>(*n);
+                }
+                else if (key == "pool")
+                    read_mutator_list(node, "mutators.pool", m.pool, rules);
+                else if (key == "maps")
+                {
+                    if (const toml::table* maps = node.as_table())
+                        for (const auto& [map, list] : *maps)
+                        {
+                            std::vector<std::string> ids;
+                            if (read_mutator_list(list, "mutators.maps." + std::string(map.str()), ids, rules))
+                                m.maps[std::string(map.str())] = std::move(ids);
+                        }
+                    else
+                        rules.errors.push_back(at_line(node, "mutators.maps must be a table: [mutators.maps]"));
+                }
+                else if (const MutatorInfo* info = find_mutator(key.str()); info != nullptr && node.is_table())
+                {
+                    const std::string_view id = info->id;
+                    const toml::table& settings = *node.as_table();
+                    if (id == "fog")
+                        read_fog_mutator(settings, m.fog, rules);
+                    else if (id == "scarcity")
+                        read_mutator_numbers(settings, "scarcity",
+                                             {{"ammo", 1, 100, &m.scarcity.ammo}, {"clip", 0, 100, &m.scarcity.clip},
+                                              {"extra", 0, 50, &m.scarcity.extra}},
+                                             rules);
+                    else if (id == "heavy_load")
+                    {
+                        int limit = static_cast<int>(m.heavy_load.limit);
+                        read_mutator_numbers(settings, "heavy_load",
+                                             {{"weight", 10, 100, &m.heavy_load.weight}, {"limit", 1, 1000, &limit},
+                                              {"stamina", 100, 500, &m.heavy_load.stamina}},
+                                             rules);
+                        m.heavy_load.limit = static_cast<float>(limit);
+                    }
+                    else if (id == "contagion")
+                        read_mutator_numbers(settings, "contagion", {{"clock", 10, 100, &m.contagion.clock}}, rules);
+                    else if (id == "brittle")
+                        read_mutator_numbers(settings, "brittle", {{"wear", 100, 1000, &m.brittle.wear}}, rules);
+                    else if (id == "horde_tide")
+                        read_mutator_numbers(settings, "horde_tide",
+                                             {{"first", 0, 3600, &m.horde_tide.first}, {"every", 30, 3600, &m.horde_tide.every}},
+                                             rules);
+                    else if (id == "hunted")
+                    {
+                        // class is a name; the rest are numbers
+                        toml::table numbers = settings;
+                        if (const toml::node* klass = settings.get("class"))
+                        {
+                            static constexpr const char* k_classes[] = {"random", "smoker", "boomer", "hunter",
+                                                                        "spitter", "jockey", "charger"};
+                            const auto name = klass->value_exact<std::string>();
+                            int found = -1;
+                            for (int i = 0; name && i < 7; ++i)
+                                if (*name == k_classes[i])
+                                    found = i;
+                            if (found < 0)
+                                rules.errors.push_back(at_line(*klass, "mutators.hunted.class must be random, smoker, boomer, "
+                                                                       "hunter, spitter, jockey or charger"));
+                            else
+                                m.hunted.klass = found;
+                            numbers.erase("class");
+                        }
+                        read_mutator_numbers(numbers, "hunted", {{"limit", 0, 10, &m.hunted.limit}}, rules);
+                    }
+                }
+                else
+                    rules.errors.push_back(at_line(node, "unknown setting mutators." + std::string(key.str())));
+            }
+            g_mutators = m;
+        }
+
         MapGunRules g_map_guns;
 
         // [map_guns] (see rules.hpp)
@@ -466,16 +660,114 @@ namespace inv
             }
             g_map_guns = guns;
         }
+        // ---- the chapter's mutators over the host's rules ----------------------------------------------------------
+        //
+        // The g_* above are the host's rules as the file has them; the g_now_* are what the accessors give: the same,
+        // changed by the chapter's mutators.  Made again whenever either changes (apply_rules, set_active_mutators).
+
+        std::vector<std::string> g_active;
+        InfectionRules g_now_infection;
+        StaminaRules g_now_stamina;
+        MeleeRules g_now_melee;
+        AmmoPileRules g_now_ammo_piles;
+        MapGunRules g_now_map_guns;
+
+        int percent_of(int value, int percent)
+        {
+            return static_cast<int>(std::lround(static_cast<double>(value) * percent / 100.0));
+        }
+
+        void refresh_mutated()
+        {
+            g_now_infection = g_infection;
+            g_now_stamina = g_stamina;
+            g_now_melee = g_melee;
+            g_now_ammo_piles = g_ammo_piles;
+            g_now_map_guns = g_map_guns;
+            for (const std::string& id : g_active)
+            {
+                if (id == "scarcity")
+                {
+                    const ScarcityMutatorRules& m = g_mutators.scarcity;
+                    AmmoPileRules& piles = g_now_ammo_piles;
+                    piles.enabled = true;
+                    piles.min_magazines = std::max(1, percent_of(piles.min_magazines, m.ammo));
+                    piles.max_magazines = std::max(piles.min_magazines, percent_of(piles.max_magazines, m.ammo));
+                    piles.extra = m.extra;
+                    MapGunRules& guns = g_now_map_guns;
+                    guns.enabled = true;
+                    guns.min_clip = percent_of(guns.min_clip, m.clip);
+                    guns.max_clip = std::max(guns.min_clip, percent_of(guns.max_clip, m.clip));
+                    guns.min_reserve = static_cast<int>(guns.min_reserve * m.ammo / 100);
+                    guns.max_reserve = std::max(guns.min_reserve, static_cast<int>(guns.max_reserve * m.ammo / 100));
+                }
+                else if (id == "heavy_load")
+                {
+                    const float scale = static_cast<float>(g_mutators.heavy_load.stamina) / 100.f;
+                    StaminaRules& stamina = g_now_stamina;
+                    stamina.enabled = true;
+                    stamina.run *= scale;
+                    stamina.jump *= scale;
+                    stamina.swing *= scale;
+                    stamina.shove *= scale;
+                }
+                else if (id == "contagion")
+                {
+                    InfectionRules& infection = g_now_infection;
+                    infection.enabled = true;
+                    infection.seconds = std::max(10, percent_of(infection.seconds, g_mutators.contagion.clock));
+                }
+                else if (id == "brittle" && g_now_melee.enabled)
+                {
+                    // durability is what a weapon takes before it breaks: the wear of each hit times wear % is the
+                    // durability divided by it
+                    const int wear = std::max(1, g_mutators.brittle.wear);
+                    g_now_melee.durability = g_now_melee.durability * 100.f / static_cast<float>(wear);
+                    for (auto& [name, weapon] : g_now_melee.weapons)
+                        if (weapon.durability)
+                            weapon.durability = std::max(1, static_cast<int>(std::lround(*weapon.durability * 100.0 / wear)));
+                }
+            }
+        }
     } // namespace
+
+    const MutatorRules& mutator_rules()
+    {
+        return g_mutators;
+    }
+
+    void set_active_mutators(const std::vector<std::string>& ids)
+    {
+        g_active = ids;
+        refresh_mutated();
+    }
+
+    const std::vector<std::string>& active_mutators()
+    {
+        return g_active;
+    }
+
+    bool mutator_active(std::string_view id)
+    {
+        return std::find(g_active.begin(), g_active.end(), id) != g_active.end();
+    }
+
+    float mutated_max_weight(float max_weight)
+    {
+        if (!mutator_active("heavy_load"))
+            return max_weight;
+        const HeavyLoadMutatorRules& m = g_mutators.heavy_load;
+        return max_weight > 0.f ? max_weight * static_cast<float>(m.weight) / 100.f : m.limit;
+    }
 
     const MapGunRules& map_gun_rules()
     {
-        return g_map_guns;
+        return g_now_map_guns;
     }
 
     const AmmoPileRules& ammo_pile_rules()
     {
-        return g_ammo_piles;
+        return g_now_ammo_piles;
     }
 
     const PingRules& ping_rules()
@@ -485,17 +777,17 @@ namespace inv
 
     const InfectionRules& infection_rules()
     {
-        return g_infection;
+        return g_now_infection;
     }
 
     const StaminaRules& stamina_rules()
     {
-        return g_stamina;
+        return g_now_stamina;
     }
 
     const MeleeRules& melee_rules()
     {
-        return g_melee;
+        return g_now_melee;
     }
 
     Rules apply_rules(std::string_view text)
@@ -636,11 +928,23 @@ namespace inv
         if (const toml::table* guns = root["map_guns"].as_table())
             read_map_guns(*guns, rules);
 
+        g_mutators = MutatorRules{};
+        if (const toml::table* mutators = root["mutators"].as_table())
+            read_mutators(*mutators, rules);
+
         for (const auto& [key, node] : root)
             if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection" &&
                 key != "stamina" && key != "melee" && key != "round_weight" && key != "ammo_piles" &&
-                key != "map_guns" && key != "ping")
+                key != "map_guns" && key != "ping" && key != "mutators")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
+
+        // brittle wears [melee]'s weapons: without [melee] it would do nothing
+        bool brittle = std::find(g_mutators.pool.begin(), g_mutators.pool.end(), "brittle") != g_mutators.pool.end();
+        for (const auto& [map, ids] : g_mutators.maps)
+            brittle = brittle || std::find(ids.begin(), ids.end(), "brittle") != ids.end();
+        if (g_mutators.enabled && brittle && !g_melee.enabled)
+            rules.errors.push_back("mutators: brittle needs [melee] (the weapons' wear); it does nothing without it");
+        refresh_mutated();
         return rules;
     }
 

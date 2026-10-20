@@ -7,6 +7,7 @@
 #include "game/backend.hpp"
 #include "game/client_remote.hpp"
 #include "game/entities.hpp"
+#include "game/mutators.hpp"
 #include "game/ping.hpp"
 
 #include <algorithm>
@@ -70,6 +71,8 @@ namespace game::detail
             if (type >= 0 && type < 32)
                 reserve = mem::read_or<int>(base + k_c_ammo + 4u * static_cast<unsigned>(type), -1);
         });
+        if (!in_game)
+            mutators_client_left(); // (the next map's own fog is read first; not under the lock: it may call the game)
         Session& s = local_session();
         std::lock_guard lock(s.mutex);
         s.playing = playing;
@@ -90,6 +93,8 @@ namespace game::detail
             ping_clear();
         if (!in_game)
             s.melee_hold = 0.f; // the next server says again whether it has [melee]
+        if (!in_game && !s.mutators.empty())
+            s.mutators.clear(); // (the next server tells its mutators again)
     }
 
     // The client's half of reload_held_back.  The game predicts its own weapon on the client: client.dll runs the

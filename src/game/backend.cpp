@@ -2,6 +2,7 @@
 
 #include "core/config.hpp"
 #include "core/log.hpp"
+#include "inv/rules.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -16,7 +17,8 @@ namespace game
 
         inv::Limits limits_from_config()
         {
-            return {.slots = core::config().slots, .max_weight = core::config().max_weight,
+            // (the carry limit with the chapter's mutators: heavy_load, see game/mutators.cpp)
+            return {.slots = core::config().slots, .max_weight = inv::mutated_max_weight(core::config().max_weight),
                     .weapon_slots = core::config().weapon_slots};
         }
 

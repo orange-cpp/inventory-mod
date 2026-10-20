@@ -10,6 +10,7 @@
 #include "game/entities.hpp"
 #include "game/infection.hpp"
 #include "game/melee.hpp"
+#include "game/mutators.hpp"
 #include "game/native_slots.hpp"
 #include "game/ping.hpp"
 #include "game/players.hpp"
@@ -245,6 +246,11 @@ namespace game::detail
         if (text != nullptr && std::strcmp(head, k_ping_marker) == 0)
         {
             mem::guarded([&] { apply_ping_line(text); });
+            return true;
+        }
+        if (text != nullptr && std::strcmp(head, k_mutator_marker) == 0)
+        {
+            mem::guarded([&] { apply_mutator_line(text); });
             return true;
         }
         if (text != nullptr && std::strcmp(head, k_melee_hit_marker) == 0)

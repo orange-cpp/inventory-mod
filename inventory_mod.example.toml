@@ -192,3 +192,54 @@ lifetime = 8       # seconds a ping stays
 cooldown = 0.4     # seconds between one player's pings
 per_player = 1
 range = 6000       # the farthest spot a ping can mark, in game units
+
+# Chapter mutators: when a chapter starts (the next one or a new campaign; not a restarted one) the host rolls: with
+# `chance` % the chapter gets `count` different mutators from `pool`, and every player with the mod is told
+# ("Mutator: Fog"). A map listed in [mutators.maps] gets its own list instead ([] : never any there).
+[mutators]
+enabled = true
+chance = 30        # % of chapters that get any
+count = 1          # how many a chapter gets
+pool = ["fog", "scarcity", "heavy_load", "contagion", "brittle", "horde_tide", "hunted"]   # brittle needs [melee]
+announce = true    # show which on the HUD when the chapter starts
+
+[mutators.maps]
+c3m1_plankcountry = ["fog"]   # the swamp is always foggy
+
+# A thick fog over the map. Each player's own game draws it, so players without the mod don't see it.
+[mutators.fog]
+density = 0.6      # 0 .. 1: how near it starts and how soon it is solid
+color = ""         # "r g b" (0 .. 255 each), like "40 60 40" for a green swamp; "" keeps the map's own fog colour
+
+# The gameplay mutators change the rules above for the chapter, on the server, so they work for every player. Each
+# switches on, with its defaults, the feature it builds on.
+
+# Ammo is scarce: ammo piles and map guns (as [ammo_piles] and [map_guns]) hold less.
+[mutators.scarcity]
+ammo = 50          # % of the magazines an ammo pile holds (at least 1), and of the reserve a map gun adds
+clip = 50          # % of the magazine a map gun is found with
+extra = 0          # extra ammo packs beside the map's item spots
+
+# Everything weighs more: a lower carry limit, and stamina used faster.
+[mutators.heavy_load]
+weight = 60        # % of the carry limit
+limit = 15         # the carry limit when [limits] has none
+stamina = 150      # % of what running, jumping, swings and shoves use
+
+# The infection spreads faster: [infection] on, with a shorter clock.
+[mutators.contagion]
+clock = 60         # % of the infection's clock (at least 10 seconds)
+
+# Melee weapons break sooner. Needs [melee] (the rules refuse it in the pool without it).
+[mutators.brittle]
+wear = 300         # % of the wear of every hit
+
+# Horde after horde: the director's panic event, again and again.
+[mutators.horde_tide]
+first = 60         # seconds after the survivors leave the start area
+every = 180        # seconds between hordes
+
+# More of one special infected at once. A finale's or a mutation's own director script still sets its own limits.
+[mutators.hunted]
+class = "random"   # smoker, boomer, hunter, spitter, jockey, charger; random: one each chapter
+limit = 3          # how many of it at once

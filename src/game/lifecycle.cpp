@@ -12,6 +12,7 @@
 #include "game/players.hpp"
 #include "game/rounds.hpp"
 #include "game/melee.hpp"
+#include "game/mutators.hpp"
 #include "game/stamina.hpp"
 #include "game/weapons.hpp"
 #include "inv/rules.hpp"
@@ -130,6 +131,7 @@ namespace game::detail
         INV_LOG("round start on %s: %s, %d inventories %s", map.c_str(),
                 next_chapter ? "the next chapter" : again ? "the same map again" : "a new game", sessions,
                 next_chapter ? "kept" : again ? "back as the chapter began" : "emptied");
+        mutators_on_round_start(map.c_str(), again); // (the chapter's mutators: see mutators.cpp)
         g_transition = false;
         g_round_map = map;
     }
@@ -260,16 +262,18 @@ namespace game::detail
         const char* name = name_fn != nullptr ? name_fn(event) : nullptr;
         if (name == nullptr || int_fn == nullptr)
             return;
+        // (the inventories: see "a death, a new game"; it rolls the chapter's mutators too, which the map's packs read)
         if (std::strcmp(name, "round_start") == 0)
-            on_round_start_piles(); // (the map's packs: see place_map_packs)
-        // (the inventories: see "a death, a new game")
-        if (std::strcmp(name, "round_start") == 0)
+        {
             on_round_start();
+            on_round_start_piles(); // (the map's packs: see place_map_packs)
+        }
         else if (std::strcmp(name, "map_transition") == 0)
             on_map_transition();
         else if (std::strcmp(name, "player_death") == 0)
             on_death(int_fn(event, "userid", 0));
         infection_on_event(name, event, int_fn);
+        mutators_on_event(name);
     }
 
     bool __fastcall hk_fire_event(void* self, void* edx, void* event, bool dont_broadcast)
@@ -412,6 +416,7 @@ namespace game::detail
                 stamina_frame();
                 melee_frame();
                 ping_frame();
+                mutators_frame();
                 retarget_ammo_types();
                 drop_dead_inventories();
                 cap_reserves();

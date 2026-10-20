@@ -100,9 +100,6 @@ namespace game::detail
         state_changed(activator);
         state.rounds -= n;
         INV_LOG("ammo pile %p: %s took %d %s, %d left", pile, bot ? "a bot" : "a survivor", n, state.kind.c_str(), state.rounds);
-        if (own)
-            notify("Took " + std::to_string(n) + " " + title +
-                   (state.rounds > 0 ? " (" + std::to_string(state.rounds) + " left in the pile)" : std::string()));
         if (state.rounds <= 0)
         {
             mem::guarded([&] { g.util_remove(pile); });

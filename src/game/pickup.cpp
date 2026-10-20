@@ -72,7 +72,7 @@ namespace game::detail
         }
         if (weapon_box >= 0)
             add_to_pool(local_player(), def.classname, reserve_type, reserve);
-        notify(std::string("Stored ") + def.name);
+        INV_LOG("stored %s", def.name);
         return true;
     }
 

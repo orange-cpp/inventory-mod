@@ -25,11 +25,25 @@ namespace game
         int wear = -1; // weapon_melee: its wear ([melee] durability: 0 .. inv::k_wear_broken; -1: none)
     };
 
+    // A mutex that a copy does not take along: a copy of a Session (what hud::paint_vgui paints from) gets a mutex of its
+    // own, and assigning one keeps the target's.
+    struct SessionMutex : std::mutex
+    {
+        SessionMutex() = default;
+        SessionMutex(const SessionMutex&) : std::mutex()
+        {
+        }
+        SessionMutex& operator=(const SessionMutex&)
+        {
+            return *this;
+        }
+    };
+
     // A player's inventory: on a game client the local player's, shared by the HUD (render thread) and the game code (main
     // thread); in a dedicated server one per connected player (see game/players.cpp).
     struct Session
     {
-        std::mutex mutex;
+        SessionMutex mutex;
         inv::Inventory inventory;
         // The game's own slots, refreshed by the backend on the main thread and shown first on the hotbar: always
         // k_native_slots entries, entry i is game slot i (primary, secondary, throwable, kit, pills, carried); an empty
@@ -68,6 +82,8 @@ namespace game
         ULONGLONG melee_winding_since = 0;
         bool melee_can_heavy = true;
         ULONGLONG melee_heavy_at = 0;
+        // Client only: the chapter's mutators as the server last told ("Fog"; empty: none), for the Debug tab.
+        std::string mutators;
         // Server side, main thread only: the player's reserve (m_iAmmo, by the game's index) when the chapter ended,
         // waiting for the next chapter: the game brings back only the reserve of the guns in the hands, and a stored
         // gun's reserve is the player's (see "a chapter transition" in game/lifecycle.cpp).

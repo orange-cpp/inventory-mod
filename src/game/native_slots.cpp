@@ -139,7 +139,6 @@ namespace game::detail
                 drop(player, weapon, nullptr, nullptr);
             }
             INV_LOG("dropped %s", name);
-            notify(std::string("Dropped ") + describe_weapon(name).name);
             return;
         }
     }

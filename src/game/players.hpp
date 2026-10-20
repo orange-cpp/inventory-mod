@@ -63,6 +63,15 @@ namespace game::detail
 
     // The rules file's [ammo] maxima into the game's own settings, once.
     void set_ammo_limits();
+    // server.dll's ConVar or ConCommand `name`, found by its registration (`push "<name>"; mov ecx, <object>`); 0 when
+    // not found.
+    std::uintptr_t find_server_convar(const char* name);
+    // Takes `flags` (0x2 development only, 0x4000 cheat) off a ConVar's flags and its parent's, or a ConCommand's
+    // (ConCommandBase::m_nFlags +0x14, ConVar::m_pParent +0x1C).
+    void unlock_convar(std::uintptr_t convar, int flags);
+    // A console command on the server, queued (it runs at the engine's next pass of the command buffer); false
+    // without ServerCommand.
+    bool server_command(const char* text);
 
     // engine.dll's ServerCommand (for set_ammo_limits); g_engine_server must be set.
     void install_server_command();

@@ -377,7 +377,7 @@ namespace game::detail
                     mem::read_or<int>(reinterpret_cast<std::uintptr_t>(given) + k_off_upgrades),
                     state.special, mem::read_or<int>(reinterpret_cast<std::uintptr_t>(given) + k_off_special_loaded));
         do_select_weapon(given_def->classname);
-        notify(std::string("Equipped ") + (state.melee.empty() ? def->name : state.melee));
+        INV_LOG("equipped %s", state.melee.empty() ? def->name : state.melee.c_str()); // (in the log only: the hands show it)
     }
 
     void do_use(int slot)
@@ -421,7 +421,7 @@ namespace game::detail
         if (!stored || (held != nullptr && held_def == def))
         {
             do_select_weapon(def->classname);
-            notify(std::string("Equipped ") + def->name);
+            INV_LOG("equipped %s", def->name); // (in the log only: the hands show it)
             return;
         }
         // like the game's panel switching slots: what occupies the slot goes back into its own box, then ours comes out
@@ -454,7 +454,7 @@ namespace game::detail
             s.inventory.set_held(slot, *def); // this box is the held item's home
         }
         do_select_weapon(def->classname); // the game does not switch to a given item by itself
-        notify(std::string("Equipped ") + def->name);
+        INV_LOG("equipped %s", def->name); // (in the log only: the hands show it)
     }
 
     bool player_view(void* player, Vec3& eye, Vec3& forward)
@@ -585,7 +585,7 @@ namespace game::detail
         }
         if (weapon_box >= 0)
             add_to_pool(player, best_def->classname, reserve_type, reserve);
-        notify(std::string("Picked up ") + best_def->name);
+        INV_LOG("picked up %s", best_def->name);
     }
 
 
@@ -691,7 +691,7 @@ namespace game::detail
                 if (taken < dropped)
                     s.inventory.remove_item(*def, dropped - taken);
             }
-            notify(std::string("Dropped ") + def->name + (dropped > 1 ? " x" + std::to_string(dropped) : ""));
+            INV_LOG("dropped %s x%d", def->name, dropped);
         }
     }
 
@@ -758,7 +758,7 @@ namespace game::detail
         if (def->weapon())
         {
             if (store_carried_weapon(player, item, *def) >= 0)
-                notify(std::string("Stored ") + def->name);
+                INV_LOG("stored %s", def->name);
             return;
         }
 
@@ -792,7 +792,7 @@ namespace game::detail
             notify("The game refused to take the item away");
             return;
         }
-        notify(std::string("Stored ") + def->name);
+        INV_LOG("stored %s", def->name);
     }
 
     int* reserve_of(void* player, int type)

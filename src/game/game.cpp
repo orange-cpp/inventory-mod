@@ -22,6 +22,7 @@
 #include "game/infection.hpp"
 #include "game/lifecycle.hpp"
 #include "game/melee.hpp"
+#include "game/mutators.hpp"
 #include "game/mem.hpp"
 #include "game/native_slots.hpp"
 #include "game/pickup.hpp"
@@ -137,6 +138,7 @@ namespace game
                                  (core::config().show_hotbar && core::shows_slots())));
                 refresh_view();
                 fog_tick();
+                mutators_client_tick();
                 reload_menus(); // once, at the main menu, after the menu's addon is mounted
                 for (;;)
                 {

@@ -75,13 +75,20 @@ namespace game::detail
     // replicated), and the console refuses those as an "Unknown command".  ConCommandBase::m_nFlags is at +0x14 and
     // ConVar::m_pParent at +0x1C (the value lives in the parent: on a listen server the client's copy); the flag is
     // taken off both so the command below can set it.
-    void unlock_convar(std::uintptr_t convar)
+    void unlock_convar(std::uintptr_t convar, int flags)
     {
         mem::guarded([&] {
-            *reinterpret_cast<int*>(convar + 0x14) &= ~0x2;
+            *reinterpret_cast<int*>(convar + 0x14) &= ~flags;
             if (const auto parent = mem::read_or<std::uintptr_t>(convar + 0x1C); parent != 0 && parent != convar)
-                *reinterpret_cast<int*>(parent + 0x14) &= ~0x2;
+                *reinterpret_cast<int*>(parent + 0x14) &= ~flags;
         });
+    }
+
+    bool server_command(const char* text)
+    {
+        if (g_server_command == nullptr || g_engine_server == nullptr)
+            return false;
+        return mem::guarded([&] { g_server_command(g_engine_server, text); });
     }
 
     void set_ammo_limits()
@@ -101,7 +108,7 @@ namespace game::detail
                 INV_LOG("ammo: %s not found in server.dll: not set", name);
                 continue;
             }
-            unlock_convar(convar);
+            unlock_convar(convar, 0x2);
             char command[64];
             std::snprintf(command, sizeof(command), "ammo_%s_max %d\n", kind, inv::ammo_max(kind));
             mem::guarded([&] { g_server_command(g_engine_server, command); });

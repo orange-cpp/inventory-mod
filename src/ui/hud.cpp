@@ -1814,17 +1814,32 @@ namespace hud
 
         // Everything but the inventory window, under the session lock: through VGUI from paint_vgui, or with ImGui from
         // draw() when the game's surface is not painting.
+        // The game side's status line ("Too heavy ...", "Mutator: Fog") when the hotbar, which shows it above itself,
+        // is not drawn (the game's own panel, or the wheel only): centred, low on the screen, above the game's
+        // hint line.
+        void draw_notice(const game::Session& session, Painter& p, ImVec2 display)
+        {
+            if (session.message.empty() || GetTickCount64() >= session.message_until)
+                return;
+            const float tw = p.width(HudFont::Text, session.message);
+            p.text(HudFont::Text, std::floor((display.x - tw) * 0.5f), std::floor(display.y * 0.72f),
+                   rgba(nc::GetPalette().TextSelected), session.message);
+        }
+
         void paint_hud(const game::Session& session, Painter& p, ImVec2 display, bool pointer)
         {
             paint_tint(p, display, g_infection_tint);
             paint_tint(p, display, g_stamina_tint);
-            if (core::config().show_hotbar && session.playing && core::shows_slots())
+            const bool hotbar = core::config().show_hotbar && session.playing && core::shows_slots();
+            if (hotbar)
             {
                 if (core::config().replace_native)
                     draw_hotbar(session, p, display);
                 else
                     draw_column(session, p, display);
             }
+            if (!(hotbar && core::config().replace_native) && session.playing)
+                draw_notice(session, p, display);
             if (!core::config().replace_native && session.playing)
                 draw_native_extras(session, p, display); // (whatever the view: the game's panel is there)
             draw_stamina_bar(p, display);
@@ -1996,7 +2011,7 @@ namespace hud
             nc::TextDisabled("Click selects, double click uses, right click for more, drag to move.");
         }
 
-        void debug_tab(inv::Inventory& inventory)
+        void debug_tab(inv::Inventory& inventory, const std::string& mutators)
         {
             static std::vector<const char*> names;
             if (names.empty())
@@ -2028,10 +2043,12 @@ namespace hud
                 nc::Checkbox("Preview the infection effect", &g_infection_preview);
                 if (g_infection_preview)
                     nc::SliderFloat("Infection:", &g_infection_preview_severity, 0.f, 1.f, "%.2f");
+                nc::TextDisabled("Chapter mutators: %s", mutators.empty() ? "none" : mutators.c_str());
                 if (nc::Checkbox("Fog over the map", &g_fog_enabled))
                     game::backend().fog(g_fog_enabled, g_fog_density);
                 nc::SetItemTooltip("The game's own distance fog (client.dll's fog_* ConVars): a real fog in the 3D world, in place of\n"
-                                   "the map's, off to get the map's back.");
+                                   "the map's, off to get the map's back. The fog mutator ([mutators] in inventory_mod.toml) may\n"
+                                   "switch it again when the next chapter starts.");
                 if (g_fog_enabled && nc::SliderFloat("Fog:", &g_fog_density, 0.f, 1.f, "%.2f"))
                     game::backend().fog(true, g_fog_density);
                 nc::Checkbox("Preview the stamina bar and vignette", &g_stamina_preview);
@@ -2161,7 +2178,7 @@ namespace hud
         std::atomic<bool> g_settings_page{false}; // the game's menu has the settings (set_settings_page)
         bool g_select_settings = false; // the next frame selects the Settings tab
 
-        void inventory_window(inv::Inventory& inventory, const int (&pool)[32])
+        void inventory_window(inv::Inventory& inventory, const int (&pool)[32], const std::string& mutators)
         {
             const ImVec2 display = ImGui::GetIO().DisplaySize;
             ImGui::SetNextWindowSize(ImVec2(300.f, 360.f), ImGuiCond_FirstUseEver);
@@ -2177,7 +2194,7 @@ namespace hud
                     }
                     if (nc::BeginTabItem("Debug"))
                     {
-                        debug_tab(inventory);
+                        debug_tab(inventory, mutators);
                         nc::EndTabItem();
                     }
                     const ImGuiTabItemFlags settings_flags = g_select_settings ? ImGuiTabItemFlags_SetSelected : 0;
@@ -2251,7 +2268,7 @@ namespace hud
                 paint_hud(session, painter, display, false);
             }
             if (g.open)
-                inventory_window(session.inventory, session.ammo_pool);
+                inventory_window(session.inventory, session.ammo_pool, session.mutators);
             // a dedicated server keeps (and saves) a remote inventory; the local file is left alone meanwhile
             if (!session.remote && session.inventory.revision() != g.saved_revision)
             {
@@ -2271,17 +2288,25 @@ namespace hud
 
     void paint_vgui()
     {
-        game::Session& session = game::local_session();
-        // (try: should the game ever paint from inside something of the mod's that holds the lock, a frame is skipped)
-        std::unique_lock lock(session.mutex, std::try_to_lock);
-        if (!lock.owns_lock())
-            return;
+        // The game's surface draws on this (main) thread and may wait for the render thread (seen at the end of a map's
+        // load: the text's glyphs), and the render thread's draw() waits for the session's lock: painting with the
+        // lock held hung the game.  So it paints a copy, taken under the lock and released before the first call into
+        // the game.  (try: should the game ever paint from inside something of the mod's that holds the lock, a frame
+        // is skipped)
+        static game::Session copy; // main thread only
+        {
+            game::Session& session = game::local_session();
+            std::unique_lock lock(session.mutex, std::try_to_lock);
+            if (!lock.owns_lock())
+                return;
+            copy = session;
+        }
         int w = 0, h = 0;
         ui::vgui::screen_size(w, h);
         if (w <= 0 || h <= 0)
             return;
         VguiPainter painter;
-        paint_hud(session, painter, ImVec2(static_cast<float>(w), static_cast<float>(h)), true);
+        paint_hud(copy, painter, ImVec2(static_cast<float>(w), static_cast<float>(h)), true);
     }
 
     bool wants_input()

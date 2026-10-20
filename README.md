@@ -165,6 +165,35 @@ the ray) and tells every teammate's mod, so it works as host, guest and on a ded
 mod see nothing. When you ping an item or an enemy your survivor says it, with the game's own look-at line
 ("Pills here", "Ammo here"; `vocalize smartlook auto`, the Z menu's Look). A ping stays where it was made: it does not follow a moving enemy.
 
+## Chapter mutators
+
+With `[mutators]` in the host's `inventory_mod.toml` a chapter can get mutators. When a chapter starts (the next one, or
+a new campaign; a lost round keeps the chapter's) the host rolls: with `chance` % (30 in the example) the chapter gets
+`count` different ones from `pool`. A map in `[mutators.maps]` gets its own list instead (`[]`: never any there). Every
+player with the mod is told, and with `announce` the HUD says "Mutator: Fog"; the Debug tab shows the chapter's.
+
+- **Fog** (`[mutators.fog]`): the game's own distance fog, thick and near (`density` 0 .. 1, 0.6), in the map's fog
+  colour or a `color` of its own (`"40 60 40"`). Each player's game draws it (client.dll's fog ConVars), so it works
+  as host, guest and on a dedicated server, but players without the mod don't see it. It goes when the chapter ends,
+  and the next map's own fog comes back first.
+
+The gameplay mutators change the host's rules for the chapter, on the server, so they apply to every player, with
+the mod or not. Each switches on, with its defaults, the feature it builds on:
+
+- **Scarcity** (`[mutators.scarcity]`): ammo piles hold `ammo` % of their magazines (at least 1), map guns are found
+  with `clip` % of theirs and add `ammo` % of their reserve, and `extra` packs lie by the item spots
+  (`[ammo_piles]`, `[map_guns]`).
+- **Heavy load** (`[mutators.heavy_load]`): the carry limit is `weight` % of `max_weight` (or `limit` when there is
+  none), and running, jumping, swings and shoves use `stamina` % (`[stamina]`).
+- **Contagion** (`[mutators.contagion]`): the infection is on, with `clock` % of its clock (`[infection]`).
+- **Brittle** (`[mutators.brittle]`): melee weapons wear `wear` % per hit. It needs `[melee]`; the rules refuse it in
+  the pool without it.
+- **Horde tide** (`[mutators.horde_tide]`): the director's panic event (`director_force_panic_event`) `first` seconds
+  after the survivors leave the start area (60), then every `every` seconds (180).
+- **Hunted** (`[mutators.hunted]`): up to `limit` (3) of one special infected at once, a `class` of its own or a
+  random one each chapter (the game's `z_<class>_limit`, put back at the next chapter). A finale's or a mutation's own
+  director script still sets its own limits, and the director's cap on all specials together still holds.
+
 ## Stamina
 
 With `[stamina]` in the host's `inventory_mod.toml` (on in the example): running uses stamina (`run` a second), and so

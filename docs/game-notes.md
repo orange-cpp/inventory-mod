@@ -777,3 +777,34 @@ these ConVars' fog (units, `fog_color "r g b"`) instead of the map's env_fog_con
 distance fog on the world, props and sky; `fog_override 0` gives the map's back. The cheat flag is taken off the ConVars
 (m_nFlags +0x14, parent +0x1C) so ClientCmd_Unrestricted (slot 107) can set them with sv_cheats off. Not yet seen working
 in the game.
+
+The fog mutator (`[mutators]`, `mutators.cpp`) uses the same ConVars. The server rolls a chapter's mutators at
+round_start (not on the same map again: a lost round keeps them) and tells every player whose client runs the mod with a
+ClientPrintf line, `@mut@ <generation> <announce>|fog <density per mille> <r g b or ->`, sent at once on a new roll and
+every 2 s after that, because a client forgets it when it leaves a game. The host of a listen server reads the same
+line in-process. The client applies it 1.5 s after it has a local player again, because `fog_override -1` copies the
+values of the map's env_fog_controller, and those come with the map's entities. Out of a game (`refresh_view`) it sends
+`fog_override 0`: the ConVars outlive a map change, and the next map's own fog must be read first. A given colour is
+written to `fog_color` and `fog_colorskybox` after the copy.
+
+The gameplay mutators are server rules only (`inv::set_active_mutators`): from the roll on, `infection_rules()`,
+`stamina_rules()`, `melee_rules()`, `ammo_pile_rules()` and `map_gun_rules()` return the host's rules with the
+chapter's changes, and `config_limits()` gives heavy_load's carry limit, with every inventory rebuilt to it at the
+roll. The roll happens in round_start before `on_round_start_piles`, so the map's packs read the chapter's
+`[ammo_piles]`. No new address.
+
+horde_tide and hunted go through the server's console (ServerCommand, VEngineServer022 slot 37, as set_ammo_limits does).
+server.dll registers both kinds of object with FCVAR_CHEAT (0x4000), and the mod takes the flag off (m_nFlags +0x14; for a
+ConVar its parent's too, but not for a ConCommand, whose +0x1C is its completion callback):
+
+- `director_force_panic_event`: ConCommand `0x1083E4DC` (registration `0x10594BE0`). Its callback `0x10287900` is
+  `TheDirector` (`[0x1083B1B8]`) -> ForcePanicEvent `0x1025CC60` (0, 0), with no check of who asked. horde_tide runs it
+  every `every` seconds of game time, starting `first` seconds after the event player_left_start_area.
+- `z_<class>_limit`: ConVars, default "1": smoker `0x1083D228`, boomer `0x1083D1E0`, hunter `0x1083D420`, spitter
+  `0x1083D4B0`, jockey `0x1083D540`, charger `0x1083D5D0` (registrations `0x10593BF0` .. `0x10593E90`). `0x107A5288` is a
+  table of them by zombie class. The director's limit of a class, `0x1025C7C0` (thiscall, the class as its argument),
+  asks two director script scopes first (`[this+0x648]`, `[this+0x640]`), and otherwise returns
+  `table[class]->m_pParent->m_nValue` (+0x1C, then +0x30). hunted reads that value, sets its own, and puts the old one
+  back at the next roll.
+
+Not yet seen working in the game.

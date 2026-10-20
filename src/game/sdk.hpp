@@ -339,6 +339,16 @@ namespace game::sdk
     // CGlobalVars (gpGlobals: PlayerInfoManager002 slot 1 GetGlobalVars)
     constexpr std::uintptr_t k_off_curtime = 0xC;
     constexpr std::uintptr_t k_off_mapname = 0x3C; // a string_t: the const char*
+    // The director's ConVars and commands the mutators use (horde_tide, hunted), found at run time by name
+    // (find_server_convar), all FCVAR_CHEAT: director_force_panic_event (ConCommand 0x1083E4DC, callback 0x10287900:
+    // TheDirector 0x1083B1B8 -> ForcePanicEvent 0x1025CC60 (0, 0)); z_<class>_limit (ConVars, default "1": smoker
+    // 0x1083D228, boomer 0x1083D1E0, hunter 0x1083D420, spitter 0x1083D4B0, jockey 0x1083D540, charger 0x1083D5D0),
+    // a table of them by zombie class at 0x107A5288 that the director's limit of a class (0x1025C7C0) falls back to
+    // when no director script sets one.
+    constexpr int k_fcvar_cheat = 0x4000;
+    constexpr std::uintptr_t k_off_convar_flags = 0x14; // ConCommandBase::m_nFlags
+    constexpr std::uintptr_t k_off_convar_parent = 0x1C; // ConVar::m_pParent (the value lives there)
+    constexpr std::uintptr_t k_off_convar_int = 0x30; // ConVar::m_nValue (0x1025C7C0 reads it so)
 
     using ClientCommandFn = void(__cdecl*)(void* player, const void* args);
     using ScriptCommandFn = void(__cdecl*)(const void* command);

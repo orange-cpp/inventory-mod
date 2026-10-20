@@ -282,4 +282,112 @@ namespace inv
     // The last apply_rules' [map_guns] (the defaults, disabled, without one).
     const MapGunRules& map_gun_rules();
 
+    // [mutators]: each chapter may get mutators that change how it plays or looks (inv/mutators.hpp has the list).
+    // When a chapter starts (the next one, or a new game; not the same map again after a lost round) the server rolls:
+    // with `chance` % the chapter gets `count` different ones from `pool`.  A map in [mutators.maps] gets its own list
+    // instead ([] : never any).  Every player with the mod is told; with announce their HUD says which.
+    //
+    //   [mutators]
+    //   enabled = true
+    //   chance = 100                 # % of chapters that get any
+    //   count = 1                    # how many a chapter gets
+    //   pool = ["fog"]               # what the roll draws from
+    //   announce = true              # "Mutator: Fog" on the HUD
+    //
+    //   [mutators.maps]              # a map's own list, in place of the roll
+    //   c3m1_plankcountry = ["fog"]
+    //
+    //   [mutators.fog]               # a thick fog over the map (drawn by the client: players without the mod see none)
+    //   density = 0.6                # 0 .. 1: how near it starts and how soon it is solid
+    //   color = ""                   # "r g b" (0 .. 255); empty: the map's own fog colour
+    //
+    // The gameplay mutators change the host's rules for the chapter (the accessors above give the changed ones while
+    // one is active, see set_active_mutators); a mutator switches on, with its defaults, the feature it builds on.
+    //
+    //   [mutators.scarcity]          # ammo is scarce: [ammo_piles] and [map_guns] on
+    //   ammo = 50                    # % of the magazines an ammo pile holds (at least 1), and of a map gun's reserve
+    //   clip = 50                    # % of the magazine a map gun is found with
+    //   extra = 0                    # packs put beside the map's item spots (in place of [ammo_piles] extra)
+    //
+    //   [mutators.heavy_load]        # everything weighs more: [stamina] on
+    //   weight = 60                  # % of the carry limit ([limits] max_weight)
+    //   limit = 15                   # the carry limit when the host has none
+    //   stamina = 150                # % of what running, jumping, swings and shoves use
+    //
+    //   [mutators.contagion]         # the infection spreads faster: [infection] on
+    //   clock = 60                   # % of the infection's clock (at least 10 seconds)
+    //
+    //   [mutators.brittle]           # melee weapons break sooner (with [melee]: it is an error without)
+    //   wear = 300                   # % of the wear of every hit (durability divided by it)
+    //
+    //   [mutators.horde_tide]        # the director's panic event (a horde) again and again
+    //   first = 60                   # seconds after the survivors leave the start area
+    //   every = 180                  # seconds between hordes
+    //
+    //   [mutators.hunted]            # more of one special infected (the game's z_<class>_limit)
+    //   class = "random"             # smoker, boomer, hunter, spitter, jockey, charger; random: one each chapter
+    //   limit = 3                    # how many of it at once (the director's own cap on all specials still holds)
+    struct FogMutatorRules
+    {
+        float density = 0.6f;
+        std::string color; // "r g b", or empty: the map's
+    };
+    struct ScarcityMutatorRules
+    {
+        int ammo = 50;
+        int clip = 50;
+        int extra = 0;
+    };
+    struct HeavyLoadMutatorRules
+    {
+        int weight = 60;
+        float limit = 15.f;
+        int stamina = 150;
+    };
+    struct ContagionMutatorRules
+    {
+        int clock = 60;
+    };
+    struct BrittleMutatorRules
+    {
+        int wear = 300;
+    };
+    struct HordeTideMutatorRules
+    {
+        int first = 60;
+        int every = 180;
+    };
+    struct HuntedMutatorRules
+    {
+        int klass = 0; // the game's zombie class: 1 smoker ... 6 charger; 0: random each chapter
+        int limit = 3;
+    };
+    struct MutatorRules
+    {
+        bool enabled = false;
+        int chance = 100;
+        int count = 1;
+        std::vector<std::string> pool{"fog"};
+        bool announce = true;
+        std::map<std::string, std::vector<std::string>> maps; // by map name ("c1m1_hotel")
+        FogMutatorRules fog;
+        ScarcityMutatorRules scarcity;
+        HeavyLoadMutatorRules heavy_load;
+        ContagionMutatorRules contagion;
+        BrittleMutatorRules brittle;
+        HordeTideMutatorRules horde_tide;
+        HuntedMutatorRules hunted;
+    };
+    // The last apply_rules' [mutators] (the defaults, disabled, without one).
+    const MutatorRules& mutator_rules();
+
+    // The chapter's mutators (the server's roll: game/mutators.cpp; ids of inv::mutators).  While one is active,
+    // infection_rules(), stamina_rules(), melee_rules(), ammo_pile_rules() and map_gun_rules() give the host's rules
+    // with its changes; they outlive apply_rules (a new rules file keeps the chapter's mutators).
+    void set_active_mutators(const std::vector<std::string>& ids);
+    const std::vector<std::string>& active_mutators();
+    bool mutator_active(std::string_view id);
+    // The carry limit ([limits] max_weight, 0: none) with the chapter's mutators (heavy_load).
+    float mutated_max_weight(float max_weight);
+
 } // namespace inv

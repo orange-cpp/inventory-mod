@@ -52,6 +52,8 @@ add_library(inventory_core STATIC
     src/inv/inventory.hpp
     src/inv/melee.cpp
     src/inv/melee.hpp
+    src/inv/mutators.cpp
+    src/inv/mutators.hpp
     src/inv/rules.cpp
     src/inv/rules.hpp)
 target_include_directories(inventory_core PUBLIC src)
@@ -61,6 +63,8 @@ inventory_options(inventory_core)
 enable_testing()
 add_executable(inventory_tests tests/inventory_test.cpp)
 target_link_libraries(inventory_tests PRIVATE inventory_core)
+# the documented template must parse with no errors
+target_compile_definitions(inventory_tests PRIVATE INV_EXAMPLE_RULES="${CMAKE_SOURCE_DIR}/inventory_mod.example.toml")
 inventory_options(inventory_tests)
 add_test(NAME inventory_tests COMMAND inventory_tests)
 
@@ -125,6 +129,8 @@ add_library(inventory_mod SHARED
     src/game/ping.cpp
     src/game/ping.hpp
     src/game/melee.hpp
+    src/game/mutators.cpp
+    src/game/mutators.hpp
     src/game/mem.cpp
     src/game/mem.hpp
     src/game/native_slots.cpp
