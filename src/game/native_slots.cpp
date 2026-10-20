@@ -161,16 +161,6 @@ namespace game::detail
                     classname_of(entity_from_handle(handle_at(player, k_off_active_weapon)), g_name_buffer, sizeof(g_name_buffer))
                         ? g_name_buffer
                         : "?");
-            // TEMP: why a thrown weapon would swap away
-            void* active = entity_from_handle(handle_at(player, k_off_active_weapon));
-            if (active != nullptr)
-            {
-                const auto w = reinterpret_cast<std::uintptr_t>(active);
-                const int type = mem::read_or<int>(w + k_off_ammo_type, -9), clip = mem::read_or<int>(w + k_off_clip, -9);
-                INV_LOG("TEMP select: ammo type %d, clip %d, reserve %d, next primary %.2f, game time %.2f", type, clip,
-                        type >= 0 && type < 32 ? mem::read_or<int>(reinterpret_cast<std::uintptr_t>(player) + k_off_player_ammo + 4u * type, -9) : -9,
-                        mem::read_or<float>(w + k_off_next_primary), game_time());
-            }
         }
     }
 

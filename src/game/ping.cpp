@@ -223,11 +223,13 @@ namespace game::detail
             if (target.kind == PingKind::Item && std::strcmp(name, "PlayerLook") == 0)
                 return false; // not a weapon the game knows: a line by name does better than "Look!"
             AiConcept concept_;
-            INV_LOG("ping: %s says %s (%s)", "the pinger", name, modifiers);
-            return mem::guarded([&] {
+            bool spoke = false;
+            const bool ran = mem::guarded([&] {
                 g_concept_ctor(&concept_, name);
-                speak(player, concept_, 2, modifiers, nullptr, 0, nullptr);
+                spoke = speak(player, concept_, 2, modifiers, nullptr, 0, nullptr);
             });
+            INV_LOG("ping: the pinger's survivor %s %s (%s)", spoke ? "says" : "could not say", name, modifiers);
+            return ran && spoke; // (when the game declines, the pinger's client asks for a line by name)
         }
 
         // One recipient's line.

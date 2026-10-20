@@ -271,8 +271,6 @@ namespace game::detail
             return buffer;
         };
         const std::string command = argc > 0 ? arg(0) : std::string();
-        if (command != "vocalize" && command != "inv_sync")
-            INV_LOG("TEMP client command from %p: %s %s %s", player, command.c_str(), arg(1).c_str(), arg(2).c_str()); // TEMP
         if (player == nullptr || command.rfind("inv_", 0) != 0 || (!g_dedicated && player == host_player()))
         {
             g_client_command.original()(player, args);
