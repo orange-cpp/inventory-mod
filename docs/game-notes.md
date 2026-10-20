@@ -404,8 +404,8 @@ game on 2026-10-19 (a listen server and the dedicated server).
 | the throw | `Weapon_Drop` (`0x10170AC0`) ignores the velocity it is given (a toss at the feet); the weapon's `Teleport` (slot 118, `0x10031090` -> `CBaseEntity::Teleport` `0x10066940`) moves its physics object with a velocity: seen flying about 880 units a second |
 | a broken weapon | `Weapon_Drop` switches to the next best weapon itself (`SwitchToNextBestWeapon` `0x100462F0`), then `UTIL_Remove`. Nothing gives a pistol back for an empty secondary slot (only incapacitation does, `0x1032EB40`) |
 
-The server's rules reach a player's client as `@mel@ <heavy_hold ms> <queue ms> <heavy_shove_hold ms> <overhead>`
-(the weapon in the hands' hold; `0 0 0 0`: none), when they change and once the player is known to run the mod; the
+The server's rules reach a player's client as `@mel@ <heavy_hold ms> <heavy_shove_hold ms> <features>`
+(the weapon in the hands' hold; features 1 the overhead swing, 2 the throw; `0 0 0`: none), when they change and once the player is known to run the mod; the
 host's own client half reads the same line. A hit's impact goes to the attacker as `@mhi@ <1: heavy>`. The client's
 `m_flNextSecondaryAttack` is +0x964 (`ReloadOrSwitchWeapons` compares both). The wear of a melee weapon in the world is
 kept by its handle; a stored one's is the inventory's (the save file's last field of a weapon line).

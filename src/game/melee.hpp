@@ -1,5 +1,5 @@
 #pragma once
-// [melee]: the melee of No More Room in Hell 2 (light and heavy swings, the wind-up, the queue, the cleave, the weapon
+// [melee]: the melee of No More Room in Hell 2 (light and heavy swings, the wind-up, the cleave, the weapon
 // classes, wear, block and deflect, the heavy shove, the throw).  The server's half (melee.cpp: PrimaryAttack,
 // SecondaryAttack, TakeDamage and WeaponSound hooks; from GameFrame what each player's client reports) and the
 // client's (melee_client.cpp: the buttons held back, the GetButtonBits hook; the pose over the viewmodel, the
@@ -10,8 +10,8 @@
 namespace game::detail
 {
 
-    // The start of the line a player's client DLL reads the server's [melee] from: "@mel@ <heavy_hold ms> <queue ms>
-    // <heavy_shove_hold ms> <1: overhead>" (the hold is the weapon in the hands'), and "@mhi@ <1: heavy>" when their
+    // The start of the line a player's client DLL reads the server's [melee] from: "@mel@ <heavy_hold ms>
+    // <heavy_shove_hold ms> <features: 1 overhead, 2 throw>" (the hold is the weapon in the hands'), and "@mhi@ <1: heavy>" when their
     // swing hit (the impact).
     constexpr char k_melee_marker[] = "@mel@";
     constexpr char k_melee_hit_marker[] = "@mhi@";

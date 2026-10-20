@@ -36,7 +36,7 @@ namespace inv
             if (f.next_attack != released_next_ && released_next_ > f.game_time + k_ready_slack)
                 released_next_ = f.next_attack;
             // the weapon swung (its wait moved on: the client's prediction runs the swing), or it did not in time
-            if (f.next_attack != released_next_ || f.now - released_at_ > f.queue)
+            if (f.next_attack != released_next_ || f.now - released_at_ > k_release_grace)
             {
                 state_ = State::idle;
                 if (attack && pressed_again_at_ >= 0.0)
@@ -48,7 +48,7 @@ namespace inv
                 pressed_again_at_ = -1.0;
             }
         }
-        if (state_ == State::winding && pressed_reload)
+        if (state_ == State::winding && pressed_reload && f.throwing)
         {
             // the reload key while winding up throws the weapon
             state_ = State::cancelled;
@@ -84,7 +84,7 @@ namespace inv
         {
             if (f.next_shove != shove_released_next_ && shove_released_next_ > f.game_time + k_ready_slack)
                 shove_released_next_ = f.next_shove;
-            if (f.next_shove != shove_released_next_ || f.now - shove_released_at_ > f.queue)
+            if (f.next_shove != shove_released_next_ || f.now - shove_released_at_ > k_release_grace)
                 shove_ = Shove::idle;
         }
         if (shove_ == Shove::passing && !attack2)

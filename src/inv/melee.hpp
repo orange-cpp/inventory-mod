@@ -5,8 +5,8 @@
 //
 // NMRiH2's melee is a state machine (its combat states Windup, Holding, Release, ComboWindow, Recovery: see
 // docs/nmrih2-melee-notes.md).  Here the game's own swing is the Release: the attack button is held back from the game
-// while it is held (Windup / Holding), and given to it when it is let go, until the weapon swings (a swing asked for
-// during the last one's wait is the queue).  The shove is the same: held back while held, a heavy shove when held long
+// while it is held (Windup / Holding), and given to it when it is let go, until the weapon swings (if it is not ready
+// within k_release_grace, the swing is dropped: no queue).  The shove is the same: held back while held, a heavy shove when held long
 // enough.  The server is told, in button bits the game does not use, that the player is winding up, that the swing or
 // shove given is a heavy one, and that the weapon is thrown; it checks the time held itself.
 
@@ -37,8 +37,8 @@ namespace inv
         float next_shove = 0.f; // ... m_flNextSecondaryAttack (it moves on with a shove)
         float game_time = 0.f; // the client's clock they are compared with
         float hold = 0.f; // heavy_hold of the weapon in the hands (0: no [melee])
-        float queue = 0.f;
         float shove_hold = 0.f; // heavy_shove_hold (0: no heavy shove)
+        bool throwing = true; // the server allows the throw
     };
 
     class MeleeInput
@@ -49,7 +49,7 @@ namespace inv
             idle, // nothing held back
             winding, // the attack is held; the game does not see it
             cancelled, // a shove or a throw called the swing off: nothing until the attack is let go
-            releasing // let go: the game sees the attack until the weapon swings, or `queue` runs out
+            releasing // let go: the game sees the attack until the weapon swings, or k_release_grace runs out
         };
         enum class Shove
         {
@@ -100,6 +100,10 @@ namespace inv
         // heavy swing's longer wait reaching the client): within this much of the client's clock it is a swing (the
         // client's clock is behind its predicted one by the interpolation).
         static constexpr float k_ready_slack = 0.3f;
+        // How long a swing or shove let go is given to the game: long enough to reach a weapon that is ready (the
+        // prediction runs it a command later), not through its wait (no queue: let go during the recovery, it is
+        // dropped).
+        static constexpr double k_release_grace = 0.1;
         // How long the throw bit is sent (the server samples the buttons once a tick).
         static constexpr double k_throw_for = 0.15;
 

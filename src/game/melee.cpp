@@ -69,7 +69,7 @@ namespace game::detail
         std::vector<void*> victims; // what the last swing hit, in order
         float block_since = -1.f; // blocking since (-1: not)
         float thrown_at = -1000.f;
-        int sent_hold = -1, sent_queue = -1, sent_shove = -1; // what the player's client was last told
+        int sent_hold = -1, sent_shove = -1, sent_features = -1; // what the player's client was last told
         bool sent_mod = false; // ... while they ran the mod
         ULONGLONG checked_at = 0; // the last look at whether they run the mod
         float applied = 1.f; // the m_flLaggedMovementValue melee_frame set (without [stamina]; 1: left alone)
@@ -177,22 +177,24 @@ namespace game::detail
 
     // ---- telling the client ---------------------------------------------------------------------------------------
 
-    // The server's [melee] to the player: the host's own session, or "@mel@ <hold ms> <queue ms> <shove hold ms>" for
+    // The server's [melee] to the player: the host's own session, or "@mel@ <hold ms> <shove hold ms> <features>" for
     // their client DLL (0 0 0: none), whenever it changes (the hold is the weapon in the hands') and once they are
     // known to run the mod.
     void tell_melee(void* player, Swinger& s, const inv::MeleeRules& rules)
     {
         const float weapon_hold = profile_of(held_melee(player)).heavy_hold;
-        const int hold = rules.enabled ? static_cast<int>(std::lround(weapon_hold * 1000.f)) : 0;
-        const int queue = rules.enabled ? static_cast<int>(std::lround(rules.queue * 1000.f)) : 0;
-        const int shove = rules.enabled ? static_cast<int>(std::lround(rules.heavy_shove_hold * 1000.f)) : 0;
-        const bool same = hold == s.sent_hold && queue == s.sent_queue && shove == s.sent_shove;
+        // (heavy off: no wind-up at all, the client gives the game its own buttons)
+        const int hold = rules.enabled && rules.heavy ? static_cast<int>(std::lround(weapon_hold * 1000.f)) : 0;
+        const int shove = rules.enabled && rules.heavy_shove ? static_cast<int>(std::lround(rules.heavy_shove_hold * 1000.f)) : 0;
+        // the features the client takes part in: 1 the overhead swing, 2 the throw
+        const int features = (rules.overhead ? 1 : 0) | (rules.throwing ? 2 : 0);
+        const bool same = hold == s.sent_hold && shove == s.sent_shove && features == s.sent_features;
         if (player == host_player())
         {
             if (same)
                 return;
             char line[64]; // the host's client half reads the same line
-            std::snprintf(line, sizeof(line), "%s %d %d %d %d", k_melee_marker, hold, queue, shove, rules.overhead ? 1 : 0);
+            std::snprintf(line, sizeof(line), "%s %d %d %d", k_melee_marker, hold, shove, features);
             apply_melee_line(line);
         }
         else
@@ -209,20 +211,20 @@ namespace game::detail
                 return;
             }
             char line[64];
-            std::snprintf(line, sizeof(line), "%s %d %d %d %d\n", k_melee_marker, hold, queue, shove, rules.overhead ? 1 : 0);
+            std::snprintf(line, sizeof(line), "%s %d %d %d\n", k_melee_marker, hold, shove, features);
             mem::guarded([&] { g_client_printf(g_engine_server, edict, line); });
             s.sent_mod = true;
         }
         s.sent_hold = hold;
-        s.sent_queue = queue;
         s.sent_shove = shove;
+        s.sent_features = features;
     }
 
     // The impact of a hit, for the attacker: their viewmodel jolts (melee_client.cpp), their view kicks.
     void tell_hit(void* player, bool heavy)
     {
         const inv::MeleeRules& rules = inv::melee_rules();
-        if (g_view_punch != nullptr && rules.view_punch > 0.f)
+        if (g_view_punch != nullptr && rules.view_kick && rules.view_punch > 0.f)
         {
             // the weapon stopped by what it hit: the view kicks down and a little aside
             const float kick = rules.view_punch * (heavy ? 1.f : 0.33f);
@@ -279,7 +281,7 @@ namespace game::detail
     void wear_out(void* player, void* weapon, float hits)
     {
         const inv::MeleeProfile profile = profile_of(weapon);
-        if (profile.durability <= 0 || weapon == nullptr)
+        if (!inv::melee_rules().breaking || profile.durability <= 0 || weapon == nullptr)
             return;
         const int before = melee_wear(weapon);
         const int after = inv::melee_wear_after(before, hits, profile.durability);
@@ -329,7 +331,7 @@ namespace game::detail
         if (s == nullptr)
             return 1.f;
         float scale = 1.f;
-        if (s->winding_since >= 0.f)
+        if (s->winding_since >= 0.f && rules.wind_slowdown)
         {
             const float hold = std::max(0.1f, profile_of(held_melee(player)).heavy_hold);
             const float charge = std::clamp((game_time() - s->winding_since) / hold, 0.f, 1.f);
@@ -511,7 +513,7 @@ namespace game::detail
             return damage;
         const float raised = game_time() - s->block_since;
         const inv::MeleeProfile profile = profile_of(held_melee(victim));
-        if (raised <= rules.deflect)
+        if (rules.deflecting && raised <= rules.deflect)
         {
             INV_LOG("melee: userid %d deflected a hit (%.0f)", s->user_id, damage);
             stagger(attacker, victim, origin_of(victim));
@@ -568,14 +570,14 @@ namespace game::detail
                 s.winding_since = -1.f;
             }
             // blocking: the reload key with a melee weapon, not winding up, not exhausted
-            const bool blocking = rules.enabled && weapon != nullptr && (buttons & inv::k_button_reload) != 0 && !winding &&
+            const bool blocking = rules.enabled && rules.blocking && weapon != nullptr && (buttons & inv::k_button_reload) != 0 && !winding &&
                                   !stamina_exhausted(player);
             if (blocking && s.block_since < 0.f)
                 s.block_since = now;
             else if (!blocking)
                 s.block_since = -1.f;
             // the throw
-            if (rules.enabled && weapon != nullptr && (buttons & inv::k_button_throw) != 0 && now - s.thrown_at > 0.5f)
+            if (rules.enabled && rules.throwing && weapon != nullptr && (buttons & inv::k_button_throw) != 0 && now - s.thrown_at > 0.5f)
                 throw_weapon(player, s, weapon);
             if (!is_bot(player))
                 tell_melee(player, s, rules);
@@ -629,7 +631,7 @@ namespace game::detail
         const bool exhausted = stamina_exhausted(player);
         s->weapon = weapon;
         s->swing_at = now;
-        s->heavy = claimed && !exhausted && wound + k_wind_slack >= profile.heavy_hold;
+        s->heavy = rules.heavy && claimed && !exhausted && wound + k_wind_slack >= profile.heavy_hold;
         s->hit_anything = false;
         s->bounced = false;
         s->victims.clear();
@@ -681,7 +683,7 @@ namespace game::detail
         if (player == nullptr)
             return;
         const int buttons = mem::read_or<int>(reinterpret_cast<std::uintptr_t>(player) + k_off_buttons);
-        if ((buttons & inv::k_button_heavy_shove) == 0 || stamina_exhausted(player))
+        if (!rules.heavy_shove || (buttons & inv::k_button_heavy_shove) == 0 || stamina_exhausted(player))
             return;
         if (mem::guarded([&] { *reinterpret_cast<float*>(w + k_off_next_secondary) = now + (secondary - now) * 1.5f; }))
             state_changed(weapon);
@@ -789,7 +791,7 @@ namespace game::detail
             wear_out(attacker, active, s->heavy ? 1.5f : 1.f);
             if (earlier == 0 && !is_bot(attacker))
                 tell_hit(attacker, s->heavy);
-            if (s->heavy && dealt < static_cast<float>(health))
+            if (s->heavy && rules.hit_stagger && dealt < static_cast<float>(health))
                 stagger(victim, attacker, origin_of(attacker)); // a heavy hit knocks it back
         }
         if (!is_bot(attacker))
@@ -892,7 +894,7 @@ namespace game::detail
 
     // A swing into a wall (NMRiH's bounce): the weapon's trace hit something that is not a character, before any
     // target, and there is a wall right ahead (not the floor, not a prop: the game plays the same sound for those):
-    // the swing stops short, the survivor staggers back a step, their view kicks, and the weapon wears 3 hits.
+    // the view kicks and the weapon wears 3 hits.
     void __fastcall hk_weapon_sound(void* weapon, void* edx, int type, float soundtime)
     {
         g_weapon_sound.original()(weapon, edx, type, soundtime);
@@ -910,13 +912,6 @@ namespace game::detail
                 !wall_ahead(player))
                 return;
             s->bounced = true;
-            Vec3 eye{}, angles{};
-            if (eyes_of(player, eye, angles) && g_stagger_player != nullptr)
-            {
-                const Vec3 f = forward_of({0.f, angles.y, 0.f});
-                const Vec3 wall{eye.x + f.x * 48.f, eye.y + f.y * 48.f, eye.z - 30.f};
-                g_stagger_player(player, nullptr, nullptr, &wall);
-            }
             wear_out(player, weapon, 3.f);
             if (!is_bot(player))
                 tell_hit(player, true);

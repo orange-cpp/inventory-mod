@@ -115,7 +115,10 @@ Melee (when the host's inventory_mod.toml has [melee])
   A light swing does not kill a zombie by itself, and only the head finishes one: about three hits to the body, two
   to the head; a heavy hit to the head kills. Heavy swings, hits, winding up and blocking tire you; you walk slower
   while winding up or blocking. Weapons wear out and break (a bar on a stored weapon's box, and under the crosshair
-  for the one in your hands once half worn). A swing into a wall bounces off and staggers you.
+  for the one in your hands once half worn). A swing into a wall bounces off. There is no queue: swing
+  again once the weapon is ready.
+  The host can switch each of these off in inventory_mod.toml under [melee] (blocking = false, throwing = false,
+  wall_bounce = false ...).
   Turn the ring off in the window's Settings tab ("Melee") or on Options > Inventory Mod.
 
 Files the mod writes next to the DLL

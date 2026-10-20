@@ -175,7 +175,15 @@ With `[melee]` in the host's `inventory_mod.toml` (on in the example) melee weap
 | the reload key while holding | throws the weapon |
 | hold the reload key | block |
 | hold the shove, let go | a heavy shove (`heavy_shove_hold`, 0.5 s) |
-| attack again during the recovery | the next swing comes as soon as it can (`queue`, 0.8 s) |
+
+There is no queue: a swing let go while the weapon is still recovering is dropped, each swing is its own click once
+the weapon is ready.
+
+Each feature can be switched off on its own under `[melee]` (all on when left out): `heavy` (heavy swings and the
+wind-up; off, every swing is light and there is no throw), `wind_slowdown`, `blocking`, `deflecting`, `heavy_shove`,
+`throwing`, `breaking` (wear), `hit_stagger` (a heavy hit staggers), `view_kick`, `wall_bounce` (a swing into a wall
+stops short), `head_only`, `overhead` and `gesture`. The numbers below tune
+what stays on.
 
 **Damage.** The game's swing kills a common outright; here a swing does a share of a full hit (a common's health when
 new, 50; anything else the game's own damage): `light_damage` % (40) for a light one, `heavy_damage` % (200) for a
@@ -212,8 +220,8 @@ front within reach.
 **Throw.** The reload key while winding up throws the weapon along your aim (`throw_speed`, 900): the first infected it
 passes takes `throw_damage` % (250) of a full hit and staggers; the weapon falls there to be picked up again.
 
-**A wall.** A swing that goes into a wall (`wall_bounce`) before it hits anything stops short: you stagger back a step,
-your view kicks and the weapon wears more. The floor and props do not count.
+**A wall.** A swing that goes into a wall (`wall_bounce`) before it hits anything stops short: your view kicks and the
+weapon wears more (you do not stagger). The floor and props do not count.
 
 **How it looks.** The weapon in your hands is drawn back, raised and turned as the swing winds up, and trembles once a
 heavy swing is ready; let go, it snaps forward into the game's swing with a follow-through, a deeper lunge for a heavy

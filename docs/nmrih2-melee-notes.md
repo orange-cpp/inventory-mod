@@ -99,8 +99,8 @@ is around it:
   takes more (`head_damage`), a heavy swing kills.
 - Release: let go, the attack is given to the game until the weapon swings. Held past `heavy_hold`: a heavy swing
   (`heavy_damage`, `heavy_recovery`, `heavy_stamina`), checked by the server against the wind-up it saw.
-- The queue (EventOnQueueAbility, AllowQueue): a swing let go during the last one's recovery is kept for `queue`
-  seconds and comes when the weapon is ready.
+- The queue (EventOnQueueAbility, AllowQueue): built, then taken out (2026-10-19): a swing let go during the
+  recovery is dropped; each swing is its own click.
 - CancelAttack: a shove while winding up calls it off.
 - Holding slows the player: `wind_speed` %, eased in over the charge.
 - GE_StaminaStarved: an exhausted survivor only swings light.

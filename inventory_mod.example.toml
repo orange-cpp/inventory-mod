@@ -116,8 +116,7 @@ bots = false           # the survivor bots too
 # Melee, as in No More Room in Hell 2. Hold the attack with a melee weapon to wind the swing up, let go to swing: let go
 # before heavy_hold seconds it is a light swing, after it a heavy one (more damage, more stamina, a longer wait). Winding
 # up slows you and tires you; run out and the swing goes off by itself. A shove while winding up calls the swing off;
-# the reload key while winding up throws the weapon. A swing asked for during the last one's wait is kept for `queue`
-# seconds. A light swing does not kill a common by itself; only the head kills (head_only). One swing into a crowd does
+# the reload key while winding up throws the weapon. A swing let go while the weapon is still recovering is dropped. A light swing does not kill a common by itself; only the head kills (head_only). One swing into a crowd does
 # less to each further one. Hold the reload key to block the commons' hits from the front (just in time: a deflect);
 # hold the shove for a heavy shove that knocks them back. Weapons wear out and break. Each weapon has a class
 # (blade_1h, blunt_1h, blade_2h, blunt_2h) that scales these numbers; [melee.weapons.<name>] sets one weapon's own.
@@ -133,7 +132,6 @@ head_damage = 200      # % on a hit to the head, on top of light / heavy (two li
 head_only = true       # a common is killed only by a hit to the head (the body leaves it at 1 health)
 cleave = 70            # each further target of one swing takes this % of what the one before took (blades more)
 cleave_min = 30        # but never less than this % of what the first took
-queue = 0.8            # seconds a swing asked for during the last one's wait is kept
 wind_speed = 65        # % of the normal speed while winding up (eased in as the swing charges)
 wind_stamina = 4       # with [stamina]: used per second of winding up
 hit_stamina = 3        # with [stamina]: used per target hit
@@ -146,10 +144,21 @@ heavy_shove_hold = 0.5 # seconds the shove is held for a heavy shove (0: none)
 heavy_shove_stamina = 20  # with [stamina]: what a heavy shove costs (instead of its `shove`)
 throw_damage = 250     # % of a full hit a thrown weapon does
 throw_speed = 900      # how fast it flies
-wall_bounce = true     # a swing into a wall stops short: you stagger, the weapon wears more
 view_punch = 3         # degrees your view kicks on a heavy hit (a light one a third)
 overhead = true        # a heavy swing comes down from above where the weapon has such a swing
 gesture = true         # others see your weapon raised while you wind up
+
+# Each feature on or off (all on when left out):
+heavy = true           # heavy swings (false: no wind-up, every swing light, and no throw)
+wind_slowdown = true   # winding up slows you (wind_speed)
+blocking = true        # the reload key blocks a common's hit
+deflecting = true      # a block raised just in time takes nothing and staggers (deflect)
+heavy_shove = true     # a held shove is a heavy shove
+throwing = true        # the reload key while winding up throws the weapon
+breaking = true        # weapons wear and break (durability)
+hit_stagger = true     # a heavy hit staggers what it does not kill
+view_kick = true       # your view kicks on a hit (view_punch)
+wall_bounce = true     # a swing into a wall stops short: your view kicks, the weapon wears more
 
 # One weapon's own numbers (class, heavy_hold, light_damage, heavy_damage, cleave, stamina %, durability in hits):
 # [melee.weapons.frying_pan]

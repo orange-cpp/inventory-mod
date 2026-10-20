@@ -1,4 +1,4 @@
-// [melee], the client's half: the attack and shove buttons of each user command (the wind-up, the queue, the heavy
+// [melee], the client's half: the attack and shove buttons of each user command (the wind-up, the heavy
 // shove, the throw) and the animation laid over the viewmodel.
 
 #include "game/melee.hpp"
@@ -39,8 +39,8 @@ namespace game::detail
     //       button is given until then.  They also move on when the server's longer wait after a heavy swing reaches
     //       the client (a prediction correction, a round trip after the swing): that is told apart by the client's
     //       clock, gpGlobals->curtime (the pointer that C_BaseCombatWeapon::ReloadOrSwitchWeapons reads at
-    //       0x10017922 before comparing it with +0x960 and +0x964): the weapon was not ready yet (seen in the game: a
-    //       swing queued behind a heavy one was dropped without it).
+    //       0x10017922 before comparing it with +0x960 and +0x964): the weapon was not ready yet (seen in the game,
+    //       when there was a queue: a swing let go during a heavy one's wait was dropped without it).
 
     core::Hook<GetButtonBitsFn> g_get_button_bits;
     core::Hook<CalcViewModelViewFn> g_calc_viewmodel_view;
@@ -48,6 +48,7 @@ namespace game::detail
     inv::MeleeInput g_melee_input;
     std::uintptr_t g_c_melee_vtable = 0;
     std::uintptr_t g_c_globals = 0; // the client's CGlobalVars**
+    bool g_throwing = true; // the server allows the throw (its features, apply_melee_line)
     ULONGLONG g_released_at = 0; // for the log: when the last swing was let go, and the weapon's wait then
     float g_released_next = 0.f;
 
@@ -84,13 +85,12 @@ namespace game::detail
 
     int melee_command(int bits)
     {
-        float hold = 0.f, queue = 0.f, shove_hold = 0.f;
+        float hold = 0.f, shove_hold = 0.f;
         bool exhausted = false;
         {
             Session& s = local_session();
             std::lock_guard lock(s.mutex);
             hold = s.melee_hold;
-            queue = s.melee_queue;
             shove_hold = s.melee_shove_hold;
             exhausted = s.stamina_exhausted;
         }
@@ -105,8 +105,8 @@ namespace game::detail
         f.next_shove = f.melee ? mem::read_or<float>(w + k_cw_next_secondary) : 0.f;
         f.game_time = mem::read_or<float>(mem::read_or<std::uintptr_t>(g_c_globals) + k_off_curtime);
         f.hold = hold;
-        f.queue = queue;
         f.shove_hold = shove_hold;
+        f.throwing = g_throwing;
         const ULONGLONG now = GetTickCount64();
         const inv::MeleeInput::State before = g_melee_input.state();
         const inv::MeleeInput::Shove shove_before = g_melee_input.shove();
@@ -204,13 +204,13 @@ namespace game::detail
 
     void apply_melee_line(const char* text)
     {
-        int hold = 0, queue = 0, shove_hold = 0, overhead = 0;
-        std::sscanf(text + sizeof(k_melee_marker) - 1, "%d %d %d %d", &hold, &queue, &shove_hold, &overhead);
-        g_overhead = hold > 0 && overhead != 0;
+        int hold = 0, shove_hold = 0, features = 0;
+        std::sscanf(text + sizeof(k_melee_marker) - 1, "%d %d %d", &hold, &shove_hold, &features);
+        g_overhead = hold > 0 && (features & 1) != 0;
+        g_throwing = (features & 2) != 0;
         Session& s = local_session();
         std::lock_guard lock(s.mutex);
         s.melee_hold = std::clamp(hold, 0, 10000) / 1000.f;
-        s.melee_queue = std::clamp(queue, 0, 10000) / 1000.f;
         s.melee_shove_hold = std::clamp(shove_hold, 0, 10000) / 1000.f;
     }
 

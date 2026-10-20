@@ -86,7 +86,7 @@ namespace game::detail
             s.stamina_exhausted = false;
         }
         if (!in_game)
-            s.melee_hold = s.melee_queue = 0.f; // the next server says again whether it has [melee]
+            s.melee_hold = 0.f; // the next server says again whether it has [melee]
     }
 
     // The client's half of reload_held_back.  The game predicts its own weapon on the client: client.dll runs the

@@ -235,7 +235,7 @@ namespace game::detail
             });
             return true;
         }
-        // [melee]: "@mel@ <hold ms> <queue ms> <shove hold ms>", "@mhi@ <heavy>"
+        // [melee]: "@mel@ <hold ms> <shove hold ms> <features>", "@mhi@ <heavy>"
         if (text != nullptr && std::strcmp(head, k_melee_marker) == 0)
         {
             mem::guarded([&] { apply_melee_line(text); });

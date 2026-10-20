@@ -234,7 +234,6 @@ namespace inv
                 {"head_damage", &MeleeRules::head_damage, 0, 1000},
                 {"cleave", &MeleeRules::cleave, 0, 100},
                 {"cleave_min", &MeleeRules::cleave_min, 0, 100},
-                {"queue", &MeleeRules::queue, 0, 3},
                 {"wind_speed", &MeleeRules::wind_speed, 10, 100},
                 {"wind_stamina", &MeleeRules::wind_stamina, 0, 100},
                 {"hit_stamina", &MeleeRules::hit_stamina, 0, 100},
@@ -257,7 +256,11 @@ namespace inv
             static constexpr Flag k_flags[] = {
                 {"enabled", &MeleeRules::enabled},         {"head_only", &MeleeRules::head_only},
                 {"wall_bounce", &MeleeRules::wall_bounce}, {"overhead", &MeleeRules::overhead},
-                {"gesture", &MeleeRules::gesture},
+                {"gesture", &MeleeRules::gesture},         {"heavy", &MeleeRules::heavy},
+                {"wind_slowdown", &MeleeRules::wind_slowdown}, {"blocking", &MeleeRules::blocking},
+                {"deflecting", &MeleeRules::deflecting},   {"heavy_shove", &MeleeRules::heavy_shove},
+                {"throwing", &MeleeRules::throwing},       {"breaking", &MeleeRules::breaking},
+                {"hit_stagger", &MeleeRules::hit_stagger}, {"view_kick", &MeleeRules::view_kick},
             };
             for (const auto& [key, node] : table)
             {

@@ -112,8 +112,8 @@ namespace inv
     // [melee]: the melee of No More Room in Hell 2.  Pressing the attack winds the swing up and letting go swings: let
     // go before heavy_hold seconds it is a light swing, after it a heavy one (more damage, more stamina, a longer
     // wait); winding up slows the player and uses stamina, and running out lets the swing go by itself.  A shove while
-    // winding up calls the swing off; the reload key while winding up throws the weapon.  A swing asked for during the
-    // last one's wait is kept for `queue` seconds and comes as soon as the weapon is ready.  One swing that hits several
+    // winding up calls the swing off; the reload key while winding up throws the weapon.  A swing let go while the
+    // weapon is still recovering is dropped.  One swing that hits several
     // targets does less to each further one (cleave), and every target hit costs stamina.  The game's swing kills a
     // common infected outright; here a light swing does light_damage % of a common's health (three to the body), the
     // head takes head_damage % more, and with head_only the body alone never kills one.  Holding the reload key with a
@@ -132,7 +132,6 @@ namespace inv
     //   head_only = true             # a common is killed only by a hit to the head (the body leaves it at 1)
     //   cleave = 70                  # each further target of one swing takes this % of what the one before took
     //   cleave_min = 30              # but never less than this % of what the first took
-    //   queue = 0.8                  # seconds a swing asked for during the last one's wait is kept
     //   wind_speed = 65              # % of the normal speed while winding up a heavy swing (eased in with the charge)
     //   wind_stamina = 4             # with [stamina]: used per second of winding up
     //   hit_stamina = 3              # with [stamina]: used per target hit (and the rest waits)
@@ -145,7 +144,18 @@ namespace inv
     //   heavy_shove_stamina = 20     # with [stamina]: what a heavy shove costs (instead of its `shove`)
     //   throw_damage = 250           # % of a full hit a thrown weapon does
     //   throw_speed = 900            # how fast it flies (units a second)
-    //   wall_bounce = true           # a swing into a wall stops short: the player staggers, the weapon wears more
+    //
+    //   # each feature on or off (all on by default)
+    //   heavy = true                 # heavy swings (false: no wind-up, every swing light; no throw either)
+    //   wind_slowdown = true         # winding up slows the player (wind_speed)
+    //   blocking = true              # the reload key blocks a common's hit
+    //   deflecting = true            # a block raised just in time takes nothing and staggers (deflect)
+    //   heavy_shove = true           # a held shove is a heavy shove
+    //   throwing = true              # the reload key while winding up throws the weapon
+    //   breaking = true              # weapons wear and break (durability)
+    //   hit_stagger = true           # a heavy hit staggers what it does not kill
+    //   view_kick = true             # the view kicks on a hit (view_punch)
+    //   wall_bounce = true           # a swing into a wall stops short: the view kicks, the weapon wears more
     //   view_punch = 3               # degrees the view kicks on a heavy hit (a light one a third)
     //   overhead = true              # a heavy swing comes down from above where the weapon has such a swing
     //   gesture = true               # other players see the weapon raised while winding up
@@ -173,7 +183,6 @@ namespace inv
         bool head_only = true;
         float cleave = 70.f;
         float cleave_min = 30.f;
-        float queue = 0.8f;
         float wind_speed = 65.f;
         float wind_stamina = 4.f;
         float hit_stamina = 3.f;
@@ -186,6 +195,15 @@ namespace inv
         float heavy_shove_stamina = 20.f;
         float throw_damage = 250.f;
         float throw_speed = 900.f;
+        bool heavy = true;
+        bool wind_slowdown = true;
+        bool blocking = true;
+        bool deflecting = true;
+        bool heavy_shove = true;
+        bool throwing = true;
+        bool breaking = true;
+        bool hit_stagger = true;
+        bool view_kick = true;
         bool wall_bounce = true;
         float view_punch = 3.f;
         bool overhead = true;
