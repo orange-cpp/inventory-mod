@@ -1,5 +1,6 @@
 // Tests of the inventory model.  A plain program: exit code 0 when every check passes.
 
+#include "game/remote_state.hpp"
 #include "inv/inventory.hpp"
 #include "inv/melee.hpp"
 #include "inv/mutators.hpp"
@@ -78,6 +79,12 @@ namespace
         CHECK(inventory.weight() == 4.f);
         CHECK(inventory.add(item("weapon_pain_pills"), 3) == 1); // 1 left
         CHECK(inventory.add(item("weapon_gascan"), 1) == 0);
+        inventory.set_max_weight(3.f);
+        CHECK(inventory.weight() == 5.f);
+        CHECK(inventory.count_of(pipe) == 2);
+        CHECK(inventory.add(item("weapon_pain_pills"), 1) == 0);
+        inventory.set_max_weight(6.f);
+        CHECK(inventory.add(item("weapon_pain_pills"), 1) == 1);
     }
 
     void remove()
@@ -212,6 +219,44 @@ namespace
         CHECK(inventory.set_held(1, medkit) && inventory.remove_from_slot(1, 1) == 1 && !inventory.slot(1).empty());
         inventory.clear_held(1);
         CHECK(inventory.slot(1).empty());
+
+        // fuel ([chainsaw]: the gas can holds can_fuel; a box keeps what its cans lack)
+        const auto& can = item("weapon_gascan");
+        CHECK(can.fuel == 0);
+        inv::Inventory cans({.slots = 3});
+        CHECK(cans.add(can, 1, 40) == 1 && cans.slot(0).spent == 0 && cans.slot(0).fuel() == 0); // no fuel without it
+        CHECK(inv::apply_rules("[chainsaw]\ncan_fuel = 90\n[stack]\ngascan = 3\n").errors.empty() && can.fuel == 90);
+        cans.clear();
+        CHECK(cans.add(can, 2) == 2 && cans.slot(0).fuel() == 180 && cans.next_spent(0) == 0);
+        CHECK(cans.take_fuel(0, 30) == 30 && cans.slot(0).count == 2 && cans.slot(0).spent == 30 && cans.slot(0).fuel() == 150);
+        CHECK(cans.take_fuel(0, 70) == 70 && cans.slot(0).count == 1 && cans.slot(0).spent == 10); // one ran dry: gone
+        CHECK(cans.next_spent(0) == 10);
+        CHECK(cans.take_fuel(0, 500) == 80 && cans.slot(0).empty()); // the last one too
+        CHECK(cans.take_fuel(0, 10) == 0);
+        CHECK(cans.add(can, 1, 60) == 1 && cans.slot(0).spent == 60 && cans.slot(0).fuel() == 30);
+        CHECK(cans.add(can, 1, 60) == 1 && cans.slot(0).count == 1 && cans.slot(0).spent == 30); // poured together: one is gone
+        // in the hands and back, lacking some
+        CHECK(cans.set_held(1, can) && cans.slot(1).count == 0);
+        cans.release_held(1, 20);
+        CHECK(cans.slot(1).count == 1 && cans.slot(1).spent == 20 && !cans.slot(1).held);
+        // the full ones leave first: the open one stays with the spent
+        CHECK(cans.add_to_slot(1, can, 1) == 1 && cans.next_spent(1) == 0 && cans.remove_from_slot(1, 1) == 1 &&
+              cans.slot(1).spent == 20);
+        // two boxes poured into one
+        CHECK(cans.move(1, 0) && cans.slot(1).empty() && cans.slot(0).count == 2 && cans.slot(0).spent == 50 &&
+              cans.slot(0).fuel() == 130);
+        cans.add_spent(0, 40);
+        CHECK(cans.slot(0).count == 1 && cans.slot(0).spent == 0);
+        // the save file keeps it
+        cans.clear();
+        CHECK(cans.add(can, 2, 25) == 2);
+        inv::Inventory reread({.slots = 3});
+        CHECK(reread.from_text(cans.to_text()) && reread.slot(0).count == 2 && reread.slot(0).spent == 25);
+        CHECK(reread.from_text("inventory 1\n0 weapon_gascan 1 200\n1 weapon_gascan 1\n") && reread.slot(0).empty() &&
+              reread.slot(1).count == 1 && reread.slot(1).spent == 0);
+        inv::apply_rules("");
+        inv::set_item_stack("weapon_gascan", 1);
+        CHECK(can.fuel == 0);
     }
 
     void weapons()
@@ -633,8 +678,51 @@ molotov = 1
         CHECK(!inv::apply_rules("[mutators.hunted]\nclass = \"tank\"\n").errors.empty());
         CHECK(!inv::apply_rules("[mutators.hunted]\nlimit = 11\n").errors.empty());
         CHECK(!inv::apply_rules("[mutators.hunted]\nkind = 1\n").errors.empty());
+        // crowd, witch, tank: % of the game's settings
+        CHECK(inv::apply_rules("[mutators]\npool = [\"crowd\", \"witch\", \"tank\"]\n").errors.empty() &&
+              inv::mutator_rules().crowd.commons == 200 && inv::mutator_rules().crowd.mobs == 150 &&
+              inv::mutator_rules().witch.health == 150 && inv::mutator_rules().witch.anger == 300 &&
+              inv::mutator_rules().witch.space == 300 && inv::mutator_rules().witch.damage == 45 &&
+              inv::mutator_rules().tank.health == 150 && inv::mutator_rules().tank.speed == 110);
+        CHECK(std::string(inv::find_mutator("crowd")->title) == "Crowd" && inv::find_mutator("tank") != nullptr);
+        CHECK(inv::apply_rules("[mutators.crowd]\ncommons = 300\n[mutators.witch]\ndamage = 20\n[mutators.tank]\nspeed = 90\n")
+                  .errors.empty() &&
+              inv::mutator_rules().crowd.commons == 300 && inv::mutator_rules().witch.damage == 20 &&
+              inv::mutator_rules().tank.speed == 90 && inv::mutator_rules().tank.health == 150);
+        CHECK(!inv::apply_rules("[mutators.crowd]\ncommons = 5\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.tank]\nspeed = 400\n").errors.empty());
+        CHECK(!inv::apply_rules("[mutators.witch]\nrage = 2\n").errors.empty());
         inv::apply_rules("");
         CHECK(!inv::melee_rules().enabled && !inv::infection_rules().enabled);
+
+        // [self_revive]
+        CHECK(!inv::self_revive_rules().enabled && !inv::revives("weapon_adrenaline"));
+        CHECK(inv::apply_rules("[self_revive]\n").errors.empty() && inv::self_revive_rules().enabled &&
+              inv::self_revive_rules().seconds == 3.f && inv::self_revive_rules().ledge && inv::self_revive_rules().rush &&
+              inv::revives("weapon_adrenaline") && !inv::revives("weapon_pain_pills"));
+        CHECK(inv::apply_rules("[self_revive]\nitems = [\"pain_pills\", \"weapon_first_aid_kit\"]\nseconds = 0\nledge = false\n")
+                  .errors.empty() &&
+              inv::revives("weapon_pain_pills") && inv::revives("weapon_first_aid_kit") && !inv::revives("weapon_adrenaline") &&
+              inv::self_revive_rules().seconds == 0.f && !inv::self_revive_rules().ledge);
+        CHECK(inv::apply_rules("[self_revive]\nitems = []\n").errors.empty() && !inv::revives("weapon_adrenaline"));
+        CHECK(inv::apply_rules("[self_revive]\nenabled = false\n").errors.empty() && !inv::revives("weapon_adrenaline"));
+        CHECK(!inv::apply_rules("[self_revive]\nitems = [\"molotov\"]\n").errors.empty());
+        CHECK(!inv::apply_rules("[self_revive]\nitems = \"adrenaline\"\n").errors.empty());
+        CHECK(!inv::apply_rules("[self_revive]\nseconds = 31\n").errors.empty());
+        CHECK(!inv::apply_rules("[self_revive]\nrush = 1\n").errors.empty());
+
+        // [chainsaw]
+        CHECK(inv::apply_rules("[chainsaw]\n").errors.empty() && inv::chainsaw_rules().enabled &&
+              inv::chainsaw_rules().can_fuel == 90 && inv::chainsaw_rules().seconds == 2.f &&
+              item("weapon_gascan").fuel == 90);
+        CHECK(inv::apply_rules("[chainsaw]\ncan_fuel = 30\nseconds = 0.5\n").errors.empty() && item("weapon_gascan").fuel == 30 &&
+              inv::chainsaw_rules().seconds == 0.5f);
+        CHECK(inv::apply_rules("[chainsaw]\nenabled = false\n").errors.empty() && item("weapon_gascan").fuel == 0);
+        CHECK(!inv::apply_rules("[chainsaw]\ncan_fuel = 0\n").errors.empty());
+        CHECK(!inv::apply_rules("[chainsaw]\nfuel = 10\n").errors.empty());
+        CHECK(!inv::set_item_fuel("weapon_chainsaw", 30) && !inv::set_item_fuel("weapon_nothing", 30));
+        inv::apply_rules("");
+        CHECK(!inv::chainsaw_rules().enabled && !inv::self_revive_rules().enabled && item("weapon_gascan").fuel == 0);
 
 
         // [map_guns]
@@ -719,6 +807,19 @@ molotov = 1
         inv::set_item_stack("weapon_molotov", molotov_stack);
     }
 
+    void remote_state()
+    {
+        inv::apply_rules("");
+        inv::Inventory inventory({.slots = 2, .max_weight = 20.0f, .weapon_slots = 1});
+        CHECK(inventory.add(item("weapon_pain_pills")) == 1);
+        CHECK(inventory.set_held(0, item("weapon_pain_pills")));
+        std::vector<game::NativeWeapon> native(game::k_native_slots);
+        native[1] = {.classname = "weapon_melee", .active = true, .melee = "fireaxe", .wear = 123};
+        native[4].classname = "weapon_pain_pills";
+        CHECK(game::detail::encode_remote_state(inventory, native, "Stored") ==
+              "@inv@ 2 20.00 2.00 1|0 weapon_pain_pills 1 1,|-,*weapon_melee:fireaxe:123,-,-,weapon_pain_pills,-|Stored\n");
+    }
+
     // The documented template parses with no errors (last: its weights and ammo maxima stay in the item table).
     void example_rules()
     {
@@ -754,6 +855,7 @@ int main()
     held_box();
     weapons();
     rules_file();
+    remote_state();
     example_rules();
     if (g_failed == 0)
         std::printf("all inventory tests passed\n");

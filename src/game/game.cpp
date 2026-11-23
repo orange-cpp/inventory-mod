@@ -19,6 +19,7 @@
 #include "game/client_view.hpp"
 #include "game/entities.hpp"
 #include "game/fog.hpp"
+#include "game/fuel.hpp"
 #include "game/infection.hpp"
 #include "game/lifecycle.hpp"
 #include "game/melee.hpp"
@@ -28,6 +29,7 @@
 #include "game/pickup.hpp"
 #include "game/ping.hpp"
 #include "game/players.hpp"
+#include "game/revive.hpp"
 #include "game/rounds.hpp"
 #include "game/stamina.hpp"
 #include "game/unload.hpp"
@@ -352,6 +354,8 @@ namespace game
             install_infection();
             install_stamina();
             install_melee(); // after the stamina: gpGlobals
+            install_revive(); // [self_revive] (see revive.cpp)
+            install_chainsaw(); // [chainsaw]: an empty chainsaw stays in the hands (see fuel.cpp)
             install_client_commands();
         install_ping(); // pings (see ping.cpp)
             install_transition_restore(); // a chapter transition keeps the reserve of the stored guns (see lifecycle)

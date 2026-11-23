@@ -8,6 +8,8 @@
 #include "game/map_guns.hpp"
 #include "game/melee.hpp"
 #include "game/native_slots.hpp"
+#include "game/fuel.hpp"
+#include "game/revive.hpp"
 #include "inv/rules.hpp"
 
 #include <algorithm>
@@ -192,11 +194,12 @@ namespace game::detail
             return false;
         int home = -1;
         bool full = false;
+        const int spent = can_spent(weapon); // a gas can's: what it lacks comes back with it
         {
             Session& s = session();
             std::lock_guard lock(s.mutex);
             home = s.inventory.held_slot(def);
-            full = home < 0 && s.inventory.add(def, 1) == 0;
+            full = home < 0 && s.inventory.add(def, 1, spent) == 0;
         }
         if (full)
         {
@@ -214,7 +217,7 @@ namespace game::detail
         {
             Session& s = session();
             std::lock_guard lock(s.mutex);
-            s.inventory.release_held(home);
+            s.inventory.release_held(home, spent);
         }
         INV_LOG("swap: %s went back into box %d", def.classname, home);
         return true;
@@ -399,6 +402,9 @@ namespace game::detail
             notify("Not in a game");
             return;
         }
+        // down, with an item that gets them up ([self_revive]): it is used where it is, not taken in hand
+        if (start_self_revive(player, *def, slot))
+            return;
         put_away_carried(player, def->classname);
         if (def->weapon())
         {
@@ -430,6 +436,12 @@ namespace game::detail
             notify(std::string("Your hands are full: no room for ") + def->name);
             return;
         }
+        int spent = 0; // a gas can's: what it lacks goes with it (the box's full ones go first)
+        {
+            Session& s = session();
+            std::lock_guard lock(s.mutex);
+            spent = s.inventory.next_spent(slot);
+        }
         if (!take_from_slot(slot, *def))
             return;
         const auto give = reinterpret_cast<GiveFn>(mem::vslot(player, k_vt_give_named_item));
@@ -437,17 +449,21 @@ namespace game::detail
         const bool gave = give != nullptr && mem::guarded([&] { give(player, def->classname, 0, 0, 0); });
         g_giving = false;
         // GiveNamedItem's result is not reliable: look whether the player has it now
-        if (!gave || !player_has_slot(player, def->game_slot))
+        const inv::ItemDef* given_def = nullptr;
+        void* given = gave ? carried_in_slot(player, def->game_slot, &given_def) : nullptr;
+        if (given == nullptr)
         {
             {
                 Session& s = session();
                 std::lock_guard lock(s.mutex);
-                if (s.inventory.add_to_slot(slot, *def, 1) == 0)
-                    s.inventory.add(*def, 1);
+                if (s.inventory.add_to_slot(slot, *def, 1, spent) == 0)
+                    s.inventory.add(*def, 1, spent);
             }
             notify(gave ? std::string("Could not equip ") + def->name : std::string("The game refused the item"));
             return;
         }
+        if (spent > 0)
+            set_can_spent(given, spent);
         {
             Session& s = session();
             std::lock_guard lock(s.mutex);
@@ -563,7 +579,7 @@ namespace game::detail
                 stored = weapon_box >= 0 ? 1 : 0;
             }
             else
-                stored = s.inventory.add(*best_def, 1);
+                stored = s.inventory.add(*best_def, 1, can_spent(best));
         }
         if (stored == 0)
         {
@@ -590,8 +606,9 @@ namespace game::detail
 
 
     // A stored item put into the world at `position` (and dropped to the floor): a gun with its magazine, upgrades
-    // and any reserve of its own, a melee weapon as the one it was.  nullptr when the game would not make it.
-    void* spawn_dropped(const inv::ItemDef& def, const inv::WeaponState& state, const Vec3& position)
+    // and any reserve of its own, a melee weapon as the one it was, a gas can lacking `spent`.  nullptr when the game
+    // would not make it.
+    void* spawn_dropped(const inv::ItemDef& def, const inv::WeaponState& state, const Vec3& position, int spent)
     {
         void* entity = nullptr;
         const bool ok = mem::guarded([&] {
@@ -628,6 +645,8 @@ namespace game::detail
             know_gun(entity);
         if (entity != nullptr && !state.melee.empty())
             set_melee_wear(entity, state.wear); // [melee] durability
+        if (entity != nullptr && spent > 0)
+            set_can_spent(entity, spent);
         return entity;
     }
 
@@ -635,6 +654,7 @@ namespace game::detail
     {
         const inv::ItemDef* def = nullptr;
         int stored = 0;
+        int spent = 0; // the box's gas cans: what the open one lacks (it goes last, the full ones first)
         inv::WeaponState state;
         {
             Session& s = session();
@@ -644,6 +664,7 @@ namespace game::detail
                 return;
             def = stack.def;
             stored = stack.count;
+            spent = stack.spent;
             state = stack.weapon;
         }
         // the box only shows the item in the player's hands: that one is dropped the game's way
@@ -673,7 +694,7 @@ namespace game::detail
             const float distance = 48.f + 6.f * static_cast<float>(i);
             const Vec3 position{eye.x + forward.x * distance, eye.y + forward.y * distance,
                                 eye.z + forward.z * distance - 14.f};
-            void* entity = spawn_dropped(*def, state, position);
+            void* entity = spawn_dropped(*def, state, position, i == stored - 1 ? spent : 0);
             if (entity == nullptr)
             {
                 notify(std::string("Could not drop ") + def->name);
@@ -762,17 +783,18 @@ namespace game::detail
             return;
         }
 
-        // back into its own box when it has one
+        // back into its own box when it has one (a gas can with what it lacks)
         int home = -1;
         bool full = false;
+        const int spent = can_spent(item);
         {
             Session& s = session();
             std::lock_guard lock(s.mutex);
             home = s.inventory.held_slot(*def);
             if (home >= 0)
-                s.inventory.release_held(home);
+                s.inventory.release_held(home, spent);
             else
-                full = s.inventory.add(*def, 1) == 0;
+                full = s.inventory.add(*def, 1, spent) == 0;
         }
         if (full)
         {

@@ -193,6 +193,24 @@ cooldown = 0.4     # seconds between one player's pings
 per_player = 1
 range = 6000       # the farthest spot a ping can mark, in game units
 
+# Self-revive: down (or hanging from a ledge), take one of `items` from your inventory (or your pills slot) and you get
+# up by yourself after `seconds` (the game's progress bar), as if a friend had revived you: it counts as an incap. Being
+# pinned, revived by a friend first or dying calls it off, and the item stays.
+[self_revive]
+enabled = true
+items = ["adrenaline"]   # what gets you up: adrenaline, pain_pills, first_aid_kit
+seconds = 3              # how long it takes (0: at once)
+ledge = true             # off a ledge too
+rush = true              # adrenaline also gives its rush
+
+# Chainsaw fuel: an empty chainsaw is not thrown away; it stays in your hands, dead, until you refuel it. R with the
+# chainsaw in hand pours from the gas cans in your inventory (half-empty ones first). A can holds `can_fuel` (a full
+# chainsaw takes 30); one poured dry is gone, and a can keeps what it holds when you drop it or take it in hand.
+[chainsaw]
+enabled = true
+can_fuel = 90      # what a full gas can holds
+seconds = 2        # how long a refuel takes
+
 # Chapter mutators: when a chapter starts (the next one or a new campaign; not a restarted one) the host rolls: with
 # `chance` % the chapter gets `count` different mutators from `pool`, and every player with the mod is told
 # ("Mutator: Fog"). A map listed in [mutators.maps] gets its own list instead ([] : never any there).
@@ -200,7 +218,7 @@ range = 6000       # the farthest spot a ping can mark, in game units
 enabled = true
 chance = 30        # % of chapters that get any
 count = 1          # how many a chapter gets
-pool = ["fog", "scarcity", "heavy_load", "contagion", "brittle", "horde_tide", "hunted"]   # brittle needs [melee]
+pool = ["fog", "scarcity", "heavy_load", "contagion", "brittle", "horde_tide", "hunted", "crowd", "witch", "tank"]   # brittle needs [melee]
 announce = true    # show which on the HUD when the chapter starts
 
 [mutators.maps]
@@ -243,3 +261,23 @@ every = 180        # seconds between hordes
 [mutators.hunted]
 class = "random"   # smoker, boomer, hunter, spitter, jockey, charger; random: one each chapter
 limit = 3          # how many of it at once
+
+# These three set the game's own settings for the chapter, as % of what they were (the next chapter puts them back).
+# A finale's or a mutation's director script may still set its own.
+
+# More common infected.
+[mutators.crowd]
+commons = 200      # % of how many may be about at once (z_common_limit, 30)
+mobs = 150         # % of a mob's size (the smallest, the largest and the panic event's)
+
+# An angrier, tougher Witch who hits less hard: she no longer incaps with one blow.
+[mutators.witch]
+health = 150       # % of her health (1000)
+anger = 300        # % of how fast she gets angry
+space = 300        # % of how near is too near
+damage = 45        # % of her hit on a standing survivor (100: an incap)
+
+# A tougher, faster Tank.
+[mutators.tank]
+health = 150       # % of its health (the difficulty scales it too)
+speed = 110        # % of its speed

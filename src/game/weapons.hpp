@@ -43,7 +43,8 @@ namespace game::detail
     // of the angle off the view) that nobody carries and that `wanted` accepts; nullptr when there is none.
     void* item_in_front(const Vec3& eye, const Vec3& forward, float min_facing, bool (*wanted)(const inv::ItemDef&),
                         const inv::ItemDef** found_def, float* found_score = nullptr);
-    void* spawn_dropped(const inv::ItemDef& def, const inv::WeaponState& state, const Vec3& position);
+    // `spent`: a gas can's, what it lacks of its fuel ([chainsaw], see fuel.cpp).
+    void* spawn_dropped(const inv::ItemDef& def, const inv::WeaponState& state, const Vec3& position, int spent = 0);
 
     void do_use(int slot);
     void do_drop(int slot, int count);

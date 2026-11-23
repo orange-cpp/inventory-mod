@@ -14,9 +14,6 @@
 namespace game::detail
 {
 
-    // The start of the line a player's client DLL reads their inventory from (see send_state).
-    constexpr char k_state_marker[] = "@inv@";
-
     extern ClientPrintfFn g_client_printf; // VEngineServer022 slot 46 ClientPrintf: a line to one player's console
 
     struct ServerPlayer
@@ -60,6 +57,27 @@ namespace game::detail
 
     // Served through an Activation (not the host, and the server side is up).
     bool served_remotely(void* player);
+
+    // Runs `work` with `player`'s inventory the active session: the host's own, or another player's through an
+    // Activation.  False (nothing run) for a bot or a player whose game does not run the mod: they have none.
+    template <class F>
+    bool with_inventory_of(void* player, F&& work)
+    {
+        if (player == nullptr)
+            return false;
+        if (player == g_active_player || (g_active_player == nullptr && player == host_player()))
+        {
+            work();
+            return true;
+        }
+        if (!served_remotely(player))
+            return false;
+        Activation active(player);
+        if (!active.ok())
+            return false;
+        work();
+        return true;
+    }
 
     // The rules file's [ammo] maxima into the game's own settings, once.
     void set_ammo_limits();

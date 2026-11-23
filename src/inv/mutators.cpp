@@ -15,6 +15,9 @@ namespace inv
             {"brittle", "Brittle"},
             {"horde_tide", "Horde tide"},
             {"hunted", "Hunted"},
+            {"crowd", "Crowd"},
+            {"witch", "Witch"},
+            {"tank", "Tank"},
         };
 
         // A small generator of its own (a 32-bit xorshift): the pick follows from `random` alone, the same on every

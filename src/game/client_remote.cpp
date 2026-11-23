@@ -146,7 +146,14 @@ namespace game::detail
                         inventory.add_weapon(*def, state, index);
                     }
                     else if (count > 0)
-                        inventory.add_to_slot(index, *def, count);
+                    {
+                        // a gas can's fuel ([chainsaw]): "<spent> <full>" where a weapon has its rounds; the server's
+                        // rules say what a full one holds, for the HUD
+                        const int spent = read >= 6 ? state.clip : 0, full = read >= 6 ? state.ammo : 0;
+                        if (full > 0 && def->fuel != full)
+                            inv::set_item_fuel(def->classname, full);
+                        inventory.add_to_slot(index, *def, count, std::max(0, spent));
+                    }
                     if (held != 0 && !def->weapon())
                         inventory.set_held(index, *def);
                 }

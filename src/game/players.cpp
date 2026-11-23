@@ -180,38 +180,7 @@ namespace game::detail
             Session& s = sp.session;
             std::lock_guard lock(s.mutex);
             const inv::Inventory& inventory = s.inventory;
-            char head[64];
-            std::snprintf(head, sizeof(head), "%s %d %.2f %.2f %d|", k_state_marker, inventory.slot_count(),
-                          inventory.limits().max_weight, inventory.weight(), inventory.weapon_slot_count());
-            line = head;
-            for (int i = 0; i < inventory.total_slots(); ++i)
-            {
-                const inv::Stack& stack = inventory.slot(i);
-                if (stack.empty())
-                    continue;
-                line += std::to_string(i) + ' ' + stack.def->classname + ' ' + std::to_string(stack.count) + ' ' +
-                        (stack.held ? '1' : '0');
-                if (stack.def->weapon()) // a weapon's rounds and kind, as in the save file
-                    line += ' ' + std::to_string(stack.weapon.clip) + ' ' + std::to_string(stack.weapon.ammo) + ' ' +
-                            (stack.weapon.melee.empty() ? std::string("-") : stack.weapon.melee) + ' ' +
-                            std::to_string(stack.weapon.upgrades) + ' ' + std::to_string(stack.weapon.special) + ' ' +
-                            std::to_string(stack.weapon.wear);
-                line += ',';
-            }
-            line += '|';
-            for (std::size_t i = 0; i < s.native.size(); ++i)
-            {
-                if (i != 0)
-                    line += ',';
-                if (s.native[i].classname.empty())
-                    line += '-';
-                else
-                    line += (s.native[i].active ? "*" : "") + s.native[i].classname +
-                            (s.native[i].melee.empty() ? std::string() : ":" + s.native[i].melee) +
-                            (s.native[i].melee.empty() || s.native[i].wear < 0 ? std::string() : ":" + std::to_string(s.native[i].wear));
-            }
-            line += '|';
-            line += s.message; // sent once
+            line = encode_remote_state(inventory, s.native, s.message);
             s.message.clear();
             if (inventory.revision() != sp.saved_revision)
             {
@@ -219,7 +188,6 @@ namespace game::detail
                 to_save = inventory.to_text();
             }
         }
-        line += '\n';
         if (!to_save.empty())
             if (FILE* f = _wfopen(sp.file.c_str(), L"wb"))
             {

@@ -35,10 +35,19 @@ namespace inv
         // Never for a weapon (ItemDef::weapon()): the game's own panel shows the gun and melee in the hands.
         bool held = false;
         WeaponState weapon; // a weapon's (count is then 1)
+        // An item with fuel (ItemDef::fuel, the gas can): what the stored ones lack together, always less than one
+        // full one's worth.  The first of them is the open one, the rest are full; the one in the hands has its own
+        // (the game code keeps it with the entity).
+        int spent = 0;
 
         bool empty() const
         {
             return def == nullptr || (count <= 0 && !held);
+        }
+        // What the stored ones hold together (0 for an item without fuel).
+        int fuel() const
+        {
+            return def != nullptr && def->fuel > 0 ? count * def->fuel - spent : 0;
         }
     };
 
@@ -58,6 +67,8 @@ namespace inv
         {
             return limits_;
         }
+        // A chapter can change the carry limit while the survivor already holds items.
+        void set_max_weight(float weight);
         // The boxes are numbered 0 .. total_slots() - 1: first the item boxes (0 .. slot_count() - 1), then the weapon
         // boxes (first_weapon_slot() ..).  An item only goes into an item box, a weapon (ItemDef::weapon()) only into a
         // weapon box.
@@ -86,9 +97,11 @@ namespace inv
 
         // Fills the existing stacks of the item first, then empty slots.  Returns how many were stored (less than
         // asked when the slots or the weight limit run out).  A weapon: each into a free weapon box, as it comes.
-        int add(const ItemDef& def, int count = 1);
+        // `spent`: an item with fuel that lacks that much (a gas can picked up half empty); it goes into the box the
+        // first one went into (add_spent).
+        int add(const ItemDef& def, int count = 1, int spent = 0);
         // Into one slot only (empty, or holding the same item with room).  Returns how many were stored.
-        int add_to_slot(int index, const ItemDef& def, int count = 1);
+        int add_to_slot(int index, const ItemDef& def, int count = 1, int spent = 0);
         // A weapon, with its state, into weapon box `index` when it is empty (-1: the first empty weapon box).  Returns
         // the box, or -1 when there is none or it is too heavy.
         int add_weapon(const ItemDef& def, const WeaponState& state, int index = -1);
@@ -111,8 +124,18 @@ namespace inv
         bool set_held(int index, const ItemDef& def);
         // The held item is gone from the hands (used up, thrown, dropped): the box keeps only what is stored.
         void clear_held(int index);
-        // The held item comes back into its box from the hands (stored again; the weight stays the same).
-        void release_held(int index);
+        // The held item comes back into its box from the hands (stored again; the weight stays the same), lacking
+        // `spent` of its fuel.
+        void release_held(int index, int spent = 0);
+
+        // Fuel (ItemDef::fuel, the gas cans).  Takes up to `amount` from box `index`: the open one first, then the next;
+        // one that runs dry is gone.  Returns how much was taken (0 for an item without fuel).
+        int take_fuel(int index, int amount);
+        // One that lacks `spent` came into box `index` (its count already counts it): the box lacks that much more,
+        // poured together, so two half-empty ones make one full one and the other is gone.
+        void add_spent(int index, int spent);
+        // What the next one taken out of box `index` lacks: the open one goes last, with the rest of the box's spent.
+        int next_spent(int index) const;
 
         int count_of(const ItemDef& def) const;
         int used_slots() const;
@@ -157,8 +180,8 @@ namespace inv
 
         // "inventory 1" then one "<slot> <classname> <count>" line per occupied slot; a weapon's line goes on with
         // "<clip> <ammo> <melee script name or -> <upgrades> <special rounds>" (files from before the upgrades end at the
-        // melee name).  Reading puts what is in the wrong kind of box (a weapon in an
-        // item box: files from before the weapon boxes) into a free box of its kind.
+        // melee name), an item's with fuel with "<spent>" when it lacks any.  Reading puts what is in the wrong kind of
+        // box (a weapon in an item box: files from before the weapon boxes) into a free box of its kind.
         std::string to_text() const;
         // Replaces the contents.  Unknown items are skipped; a box number past the end goes into a free box of its kind
         // (a smaller slot count loses only what does not fit); false when the header is wrong.
@@ -168,6 +191,8 @@ namespace inv
         int room_for(const ItemDef& def) const;
 
     private:
+        // Keeps a box's spent below one full one's worth: each full worth lacking is one fewer.
+        void settle_fuel(Stack& s);
 
         Limits limits_;
         std::vector<Stack> slots_;

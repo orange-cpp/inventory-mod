@@ -602,6 +602,18 @@ namespace hud
             p.rect(x0 + 3.f, y1 - h - 2.f, x0 + 3.f + std::floor((x1 - x0 - 6.f) * left), y1 - 2.f, color);
         }
 
+        // [chainsaw]: what the open gas can of a box holds, a thin amber bar along the bottom of its box; nothing while
+        // every one is full.
+        void draw_fuel(Painter& p, float x0, float y1, float x1, const inv::Stack& stack)
+        {
+            if (stack.def == nullptr || stack.def->fuel <= 0 || stack.spent <= 0 || stack.count <= 0)
+                return;
+            const float left = 1.f - std::clamp(static_cast<float>(stack.spent) / static_cast<float>(stack.def->fuel), 0.f, 1.f);
+            const float h = 3.f;
+            p.rect(x0 + 3.f, y1 - h - 2.f, x1 - 3.f, y1 - 2.f, IM_COL32(0, 0, 0, 153));
+            p.rect(x0 + 3.f, y1 - h - 2.f, x0 + 3.f + std::floor((x1 - x0 - 6.f) * left), y1 - 2.f, IM_COL32(240, 170, 40, 255));
+        }
+
         // One slot, in the toolkit's colours: used by the hotbar and by the inventory window's grid.
         void draw_slot(Painter& p, float x, float y, float size, const inv::Stack& stack, bool selected, bool hovered, int number)
         {
@@ -622,6 +634,7 @@ namespace hud
                 }
                 if (!stack.weapon.melee.empty())
                     draw_wear(p, x, y + size, x + size, stack.weapon.wear);
+                draw_fuel(p, x, y + size - (stack.held ? 4.f : 0.f), x + size, stack);
                 // the item in the player's hands lives in this box: a bar along the bottom, and it counts in the number
                 if (stack.held)
                     p.rect(x + 3.f, y + size - 4.f, x + size - 3.f, y + size - 2.f, IM_COL32(115, 217, 89, 255));
@@ -939,6 +952,7 @@ namespace hud
                         const std::string text = std::to_string(shown);
                         p.text(HudFont::Text, x1 - p.width(HudFont::Text, text) - 3.f, y1 - line - 1.f, ink, text);
                     }
+                    draw_fuel(p, x0, y1, x1, stack);
                 }
                 // the key that takes it in hand: 3..9, 0
                 if (i < 8)
@@ -1357,6 +1371,14 @@ namespace hud
                             std::snprintf(text, sizeof(text), "%d / %d +%d", stack.weapon.clip, reserve, stack.weapon.ammo);
                         else
                             std::snprintf(text, sizeof(text), "%d / %d", stack.weapon.clip, reserve);
+                    }
+                    else if (stack.def->fuel > 0 && stack.count > 0)
+                    {
+                        // a gas can's fuel ([chainsaw]): what the stored ones hold together, and how many
+                        if (const int n = stack.count + (stack.held ? 1 : 0); n > 1)
+                            std::snprintf(text, sizeof(text), "x%d  fuel %d", n, stack.fuel());
+                        else
+                            std::snprintf(text, sizeof(text), "fuel %d / %d", stack.fuel(), stack.def->fuel);
                     }
                     else if (const int n = stack.count + (stack.held ? 1 : 0); n > 1)
                         std::snprintf(text, sizeof(text), "x%d", n);
@@ -1916,6 +1938,11 @@ namespace hud
                     else if (stack.def->weapon() && stack.weapon.clip >= 0)
                         nc::SetItemTooltip("%s\nMagazine: %d (the reserve is yours, shared by its ammo type)\nWeight: %.1f",
                                            stack.def->name, stack.weapon.clip, stack.def->weight);
+                    else if (stack.def->fuel > 0 && stack.count > 0)
+                        nc::SetItemTooltip("%s\n%s\nFuel: %d (a full one holds %d; R with the chainsaw in hand refuels it)\n"
+                                           "Weight: %.1f",
+                                           stack.def->name, stack.def->description, stack.fuel(), stack.def->fuel,
+                                           stack.def->weight);
                     else
                         nc::SetItemTooltip("%s\n%s\nWeight: %.1f", stack.def->name, stack.def->description,
                                            stack.def->weight);

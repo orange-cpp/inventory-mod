@@ -100,6 +100,21 @@ Chapter mutators
     Brittle: melee weapons break sooner.
     Horde tide: a horde every few minutes once you leave the saferoom.
     Hunted: more of one special infected at once.
+    Crowd: more common infected, and bigger mobs.
+    Witch: an angrier, tougher Witch, whose hit no longer incaps you in one blow.
+    Tank: a tougher, faster Tank.
+
+Self-revive (when the host's inventory_mod.toml has [self_revive])
+  Down, or hanging from a ledge? Take your adrenaline (the host's rules may allow pain pills or a first aid kit too)
+  from a box, the wheel or your pills slot. The game's progress bar fills, and then you are up as if a friend had
+  revived you. It still counts as going down: the last time leaves you black and white. The item is used only once you
+  are up. Being pinned, a friend getting you up first, or dying calls it off, and you keep the item.
+
+Chainsaw fuel (when the host's inventory_mod.toml has [chainsaw])
+  An empty chainsaw is not thrown away: it stays in your hands, dead, until you refuel it. Press R with the chainsaw
+  in hand to fill it from the gas cans in your inventory. A gas can holds three tanks; one poured dry is gone. A thin
+  amber bar under a gas can's box shows what the open can has left. A can keeps its fuel when you drop it or pick it
+  up again.
 
 Chapters, deaths, new campaigns
   The inventory comes with you to the next chapter, with the reserve rounds of the guns in it. A lost round or a

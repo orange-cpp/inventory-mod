@@ -173,6 +173,36 @@ namespace game::sdk
     using CommitSuicideFn = void(__thiscall*)(void* player, bool explode, bool force);
     using SetShovePenaltyFn = void(__thiscall*)(void* player, int penalty);
 
+    // Incapacitated, pinned, revived ([self_revive]).  CTerrorPlayer's VScript bindings (the table built at 0x10330690:
+    // name at +0, function at +0x28 of each 0x30-byte entry) lead to them:
+    //   IsIncapacitated (0x102FDCF0: jmp [eax+0x7E4]) is vtable slot 505 (0x10325540): alive (m_lifeState +0xF0 == 0)
+    //       and m_isIncapacitated (+0x2DA8, the SendProp at 0x102FEB38), which a survivor hanging from a ledge has too;
+    //   IsHangingFromLedge (0x100F3740): m_isHangingFromLedge, the byte at +0x3A05 (SendProp at 0x102FF694);
+    //   IsDominatedBySpecialInfected (0x102CB240, non-virtual, thiscall, bool): m_pummelAttacker +0x3E5C, m_pounceAttacker
+    //       +0x3E7C, m_tongueOwner +0x33D8, m_jockeyAttacker +0x3EF4, m_carryAttacker +0x2A5C (each a SendProp of the
+    //       same names) any of them a live handle;
+    //   ReviveFromIncap (0x102FDD10: jmp [eax+0x91C]) is vtable slot 583, CTerrorPlayer::OnRevived (0x1031F900, thiscall,
+    //       no arguments): for a living incapacitated survivor; up off a ledge, or up from the ground with the next
+    //       m_currentReviveCount (+0x2E68: SurvivorMaxIncapacitatedCount makes it the last life, "Player.Heartbeat"),
+    //       fires "revive_success" with the reviver m_reviveOwner (+0x2E38) or, with none, the survivor themselves.
+    //   UseAdrenaline is CTerrorPlayer::OnAdrenalineUsed(float seconds) (0x10318750, thiscall, ret 4): the rush, no
+    //       health ("Cause the effect of Adrenaline - but no HP").
+    // The progress bar the game draws (DT_CSPlayer's SendProps, the table of 0x10240940): m_flProgressBarStartTime
+    // +0x2910 (game time) and m_flProgressBarDuration +0x2914 (seconds; 0: none).
+    constexpr int k_vt_is_incapacitated = 505;
+    constexpr std::uintptr_t k_rva_is_incapacitated = 0x325540;
+    constexpr int k_vt_on_revived = 583;
+    constexpr std::uintptr_t k_rva_on_revived = 0x31F900;
+    constexpr std::uintptr_t k_rva_is_dominated = 0x2CB240;
+    constexpr std::uintptr_t k_rva_on_adrenaline_used = 0x318750;
+    constexpr std::uintptr_t k_off_hanging_from_ledge = 0x3A05;
+    constexpr std::uintptr_t k_off_revive_owner = 0x2E38;
+    constexpr std::uintptr_t k_off_progress_start = 0x2910, k_off_progress_duration = 0x2914;
+    using IsIncapacitatedFn = bool(__thiscall*)(void* player);
+    using OnRevivedFn = void(__thiscall*)(void* player);
+    using IsDominatedFn = bool(__thiscall*)(void* player);
+    using OnAdrenalineUsedFn = void(__thiscall*)(void* player, float seconds);
+
     // CTerrorPlayer::OnStaggered(CBaseEntity* source, const Vector* from) (0x1032CE80, non-virtual, thiscall, ret 8;
     // what the VScript "Stagger" wraps, 0x1032D730): the player staggers away from `from` (or from source's origin);
     // nothing for a ghost or an incapacitated player; it breaks pins.  Specials: z_max_stagger_duration, survivors:
@@ -300,6 +330,19 @@ namespace game::sdk
     constexpr int k_sound_melee_hit_world = 10;
     using WeaponSoundFn = void(__fastcall*)(void* weapon, void* edx, int type, float soundtime);
 
+    // The chainsaw ([chainsaw]).  CChainsaw's primary vtable is 0x106BC7FC (its RTTI .?AVCChainsaw@@); slot 272, its
+    // ItemPostFrame (0x103CA970, void __thiscall, the only reference to it is that slot), runs while it is in the hands:
+    // first, when m_iClip1 (the fuel) is 0, it takes the chainsaw away from the owner (0x102485B0) and gives them a
+    // "weapon_pistol" (the owner's slot 431, GiveNamedItem); then it burns 1 fuel per tick of its timer while it runs,
+    // and at 0 plays "Chainsaw.Die" and stops the motor; it ends with the base ItemPostFrame (0x103F1C20).  The owner
+    // is at +0x1800.  CBaseCombatWeapon::GetMaxClip1 is slot 323 (the VScript GetMaxClip1, 0x103ECD60: jmp [eax+0x50C]).
+    constexpr std::uintptr_t k_rva_chainsaw_vtable = 0x6BC7FC;
+    constexpr int k_vt_item_post_frame = 272;
+    constexpr std::uintptr_t k_rva_chainsaw_post_frame = 0x3CA970;
+    constexpr int k_vt_get_max_clip1 = 323;
+    using ItemPostFrameFn = void(__fastcall*)(void* weapon, void* edx);
+    using GetMaxClip1Fn = int(__thiscall*)(void* weapon);
+
     // CTerrorGun::Use (0x103E8700, slot 106 of CTerrorGun's vtable 0x106D5544)
     constexpr std::uintptr_t k_rva_gun_use = 0x3E8700;
     // Reload (slot 281): CTerrorGun's (0x103E8860) and the shotguns' (0x103C2F80, CPumpShotgun's vtable 0x106CC994);
@@ -345,9 +388,16 @@ namespace game::sdk
     // 0x1083D228, boomer 0x1083D1E0, hunter 0x1083D420, spitter 0x1083D4B0, jockey 0x1083D540, charger 0x1083D5D0),
     // a table of them by zombie class at 0x107A5288 that the director's limit of a class (0x1025C7C0) falls back to
     // when no director script sets one.
+    // The crowd, witch and tank mutators set z_common_limit, z_mob_spawn_min_size, z_mob_spawn_max_size,
+    // z_mega_mob_size, z_witch_health, z_witch_anger_rate, z_witch_personal_space, z_witch_damage, z_tank_health and
+    // z_tank_speed the same way (each registered by a static constructor: `push flags; push "<default>"; push
+    // "<name>"; mov ecx, <ConVar>`; z_witch_anger_rate's at 0x105A82A0, flags 0x4000, "0.2", ConVar 0x10871250).
     constexpr int k_fcvar_cheat = 0x4000;
     constexpr std::uintptr_t k_off_convar_flags = 0x14; // ConCommandBase::m_nFlags
     constexpr std::uintptr_t k_off_convar_parent = 0x1C; // ConVar::m_pParent (the value lives there)
+    // ConVar::m_fValue (0x1041D806 reads z_witch_anger_rate so: `mov eax, [0x1087126C]` (its m_pParent); `movss xmm0,
+    // [eax+0x2C]`)
+    constexpr std::uintptr_t k_off_convar_float = 0x2C;
     constexpr std::uintptr_t k_off_convar_int = 0x30; // ConVar::m_nValue (0x1025C7C0 reads it so)
 
     using ClientCommandFn = void(__cdecl*)(void* player, const void* args);

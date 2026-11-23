@@ -30,7 +30,7 @@ namespace inv
              rgb(240, 90, 40), 3},
             {"weapon_upgradepack_explosive", "Explosive Ammo", "EA", "Explosive ammo upgrade pack.", 1, 3.0f,
              rgb(250, 170, 40), 3},
-            {"weapon_gascan", "Gas Can", "GC", "Fuel for the generator.", 1, 6.0f, rgb(200, 60, 40), 5},
+            {"weapon_gascan", "Gas Can", "GC", "Fuel for a generator, or the chainsaw.", 1, 6.0f, rgb(200, 60, 40), 5},
             {"weapon_propanetank", "Propane Tank", "PT", "Explodes when shot.", 1, 5.0f, rgb(220, 220, 230), 5},
             {"weapon_oxygentank", "Oxygen Tank", "OT", "Explodes when shot.", 1, 5.0f, rgb(110, 170, 220), 5},
             {"weapon_fireworkcrate", "Fireworks", "FW", "Loud and attractive.", 1, 4.0f, rgb(200, 80, 160), 5},
@@ -269,6 +269,15 @@ namespace inv
         if (def == nullptr || max_stack < 1 || def->weapon()) // a weapon stays one per box: it has its own rounds
             return false;
         def->max_stack = max_stack;
+        return true;
+    }
+
+    bool set_item_fuel(std::string_view classname, int fuel)
+    {
+        ItemDef* def = find_mutable(classname);
+        if (def == nullptr || fuel < 0 || def->weapon())
+            return false;
+        def->fuel = fuel;
         return true;
     }
 

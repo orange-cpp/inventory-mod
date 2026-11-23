@@ -282,6 +282,49 @@ namespace inv
     // The last apply_rules' [map_guns] (the defaults, disabled, without one).
     const MapGunRules& map_gun_rules();
 
+    // [self_revive]: an incapacitated survivor gets up by themselves with an item from their inventory (or the one in
+    // their pills slot): taken in hand from a box, or chosen on the wheel, it starts the game's progress bar, and when
+    // it is full they are up as a friend's revive would have them (it counts as an incap, the last one leaves them black
+    // and white) and the item is used up.  Not while pinned by a special, and not off a ledge without `ledge`; being
+    // pinned, revived by a friend or dying calls it off and the item stays.
+    //
+    //   [self_revive]
+    //   enabled = true
+    //   items = ["adrenaline"]        # what gets you up: adrenaline, pain_pills, first_aid_kit
+    //   seconds = 3                   # how long it takes (0: at once)
+    //   ledge = true                  # off a ledge too
+    //   rush = true                   # adrenaline also gives its rush (faster, for adrenaline_duration seconds)
+    struct SelfReviveRules
+    {
+        bool enabled = false;
+        std::vector<std::string> items{"weapon_adrenaline"}; // classnames
+        float seconds = 3.f;
+        bool ledge = true;
+        bool rush = true;
+    };
+    // The last apply_rules' [self_revive] (the defaults, disabled, without one).
+    const SelfReviveRules& self_revive_rules();
+    // Whether `classname` gets an incapacitated survivor up ([self_revive] on and in its items).
+    bool revives(std::string_view classname);
+
+    // [chainsaw]: the chainsaw runs on fuel the survivors carry.  The game throws an empty chainsaw away (and hands out
+    // a pistol); here it stays in the hands, dead, until it is refuelled: the reload key with the chainsaw in hand pours
+    // from a gas can in the inventory (the game's progress bar, `seconds` long).  A gas can holds `can_fuel` (a full
+    // chainsaw's tank is 30); one poured dry is gone.  A can keeps what it holds on the ground and in the hands too.
+    //
+    //   [chainsaw]
+    //   enabled = true
+    //   can_fuel = 90                 # what a full gas can holds (the chainsaw's tank: 30)
+    //   seconds = 2                   # how long a refuel takes
+    struct ChainsawRules
+    {
+        bool enabled = false;
+        int can_fuel = 90;
+        float seconds = 2.f;
+    };
+    // The last apply_rules' [chainsaw] (the defaults, disabled, without one).
+    const ChainsawRules& chainsaw_rules();
+
     // [mutators]: each chapter may get mutators that change how it plays or looks (inv/mutators.hpp has the list).
     // When a chapter starts (the next one, or a new game; not the same map again after a lost round) the server rolls:
     // with `chance` % the chapter gets `count` different ones from `pool`.  A map in [mutators.maps] gets its own list
@@ -327,6 +370,23 @@ namespace inv
     //   [mutators.hunted]            # more of one special infected (the game's z_<class>_limit)
     //   class = "random"             # smoker, boomer, hunter, spitter, jockey, charger; random: one each chapter
     //   limit = 3                    # how many of it at once (the director's own cap on all specials still holds)
+    //
+    // The director's mutators set the game's own settings for the chapter, as % of what they were (the next roll puts
+    // them back):
+    //
+    //   [mutators.crowd]             # more common infected
+    //   commons = 200                # % of how many may be about at once (z_common_limit, 30)
+    //   mobs = 150                   # % of a mob's size (z_mob_spawn_min_size / _max_size 10 .. 30, z_mega_mob_size 50)
+    //
+    //   [mutators.witch]             # an angrier, tougher Witch who hits less hard
+    //   health = 150                 # % of her health (z_witch_health, 1000)
+    //   anger = 300                  # % of how fast she gets angry (z_witch_anger_rate)
+    //   space = 300                  # % of how near is too near (z_witch_personal_space)
+    //   damage = 45                  # % of her hit on a standing survivor (z_witch_damage, 100: an incap)
+    //
+    //   [mutators.tank]              # a tougher, faster Tank
+    //   health = 150                 # % of its health (z_tank_health, 4000; the difficulty scales it)
+    //   speed = 110                  # % of its speed (z_tank_speed, 210)
     struct FogMutatorRules
     {
         float density = 0.6f;
@@ -362,6 +422,23 @@ namespace inv
         int klass = 0; // the game's zombie class: 1 smoker ... 6 charger; 0: random each chapter
         int limit = 3;
     };
+    struct CrowdMutatorRules
+    {
+        int commons = 200;
+        int mobs = 150;
+    };
+    struct WitchMutatorRules
+    {
+        int health = 150;
+        int anger = 300;
+        int space = 300;
+        int damage = 45;
+    };
+    struct TankMutatorRules
+    {
+        int health = 150;
+        int speed = 110;
+    };
     struct MutatorRules
     {
         bool enabled = false;
@@ -377,6 +454,9 @@ namespace inv
         BrittleMutatorRules brittle;
         HordeTideMutatorRules horde_tide;
         HuntedMutatorRules hunted;
+        CrowdMutatorRules crowd;
+        WitchMutatorRules witch;
+        TankMutatorRules tank;
     };
     // The last apply_rules' [mutators] (the defaults, disabled, without one).
     const MutatorRules& mutator_rules();

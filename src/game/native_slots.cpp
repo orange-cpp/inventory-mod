@@ -5,6 +5,7 @@
 #include "core/log.hpp"
 #include "game/backend.hpp"
 #include "game/map_guns.hpp"
+#include "game/revive.hpp"
 #include "game/weapons.hpp"
 
 #include <algorithm>
@@ -85,31 +86,7 @@ namespace game::detail
         }
         Session& s = session();
         std::lock_guard lock(s.mutex);
-        // the "in hand" marks of the inventory's boxes follow what the player really carries
-        inv::Inventory& inventory = s.inventory;
-        for (int i = 0; i < inventory.slot_count(); ++i)
-        {
-            const inv::Stack& stack = inventory.slot(i);
-            if (!stack.held)
-                continue;
-            const bool carried = std::any_of(list.begin(), list.end(), [&](const NativeWeapon& w) {
-                return w.classname == stack.def->classname;
-            });
-            if (!carried || inventory.held_slot(*stack.def) != i)
-                inventory.clear_held(i);
-        }
-        for (const NativeWeapon& weapon : list)
-        {
-            const inv::ItemDef* def = weapon.classname.empty() ? nullptr : inv::find_item(weapon.classname);
-            if (def != nullptr && !def->weapon() && inventory.held_slot(*def) < 0)
-                inventory.set_held(inventory.home_for(*def), *def); // picked up in the game: it gets a box
-        }
-        // the gun and the melee / pistol count against the weight limit too
-        float weapons = 0.f;
-        for (const NativeWeapon& weapon : list)
-            weapons += inv::weapon_weight(weapon.classname);
-        inventory.set_weapons_weight(weapons);
-        inventory.set_ammo_weight(rounds_weight);
+        reconcile_native_inventory(s.inventory, list, rounds_weight);
         s.native = std::move(list);
     }
 
@@ -150,6 +127,9 @@ namespace game::detail
     {
         void* player = local_player();
         if (player == nullptr)
+            return;
+        // down, with an item that gets them up ([self_revive]): the one in their slot
+        if (const inv::ItemDef* def = inv::find_item(classname); def != nullptr && start_self_revive(player, *def, -1))
             return;
         put_away_carried(player, classname.c_str());
         const auto select_item = reinterpret_cast<SelectItemFn>(mem::vslot(player, k_vt_select_item));

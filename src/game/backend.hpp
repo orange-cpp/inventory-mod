@@ -2,7 +2,7 @@
 // The seam between the inventory and the game.  The HUD and the hotkeys only talk to this; what really happens in the
 // game (taking an item out of the world, putting one back, a use) lives behind it.
 
-#include "inv/inventory.hpp"
+#include "game/remote_state.hpp"
 
 #include <mutex>
 #include <string>
@@ -11,19 +11,6 @@
 
 namespace game
 {
-
-    constexpr int k_native_slots = 6; // primary, secondary, throwable, kit, pills, carried
-
-    // A weapon or item the player carries in the game's own slots (the ones the native weapon panel lists).
-    struct NativeWeapon
-    {
-        std::string classname; // "weapon_rifle_ak47"
-        std::string name; // "Rifle Ak47"
-        char tag[3] = {}; // two letters for the slot
-        bool active = false; // in the player's hands now
-        std::string melee; // weapon_melee: which one ("fireaxe" ...), for its icon
-        int wear = -1; // weapon_melee: its wear ([melee] durability: 0 .. inv::k_wear_broken; -1: none)
-    };
 
     // A mutex that a copy does not take along: a copy of a Session (what hud::paint_vgui paints from) gets a mutex of its
     // own, and assigning one keeps the target's.

@@ -4,6 +4,7 @@
 #   inventory_tests   tests of the model
 #   nc_ui             static library, imgui-nullcore's sources + Dear ImGui and its Win32 / D3D9 backends
 #   inventory_mod     the DLL to load into left4dead2.exe (HUD, hooks)
+#   inventory_mod_server  the native Linux dedicated-server plugin
 #   injector          a small LoadLibrary injector for development
 #
 # L4D2 is a 32-bit process: configure with an x86 toolchain (build.bat does it: vcvarsall x86 + Ninja).
@@ -15,30 +16,41 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # static CRT: nothing to install next to the DLL
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out/$<CONFIG>)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out/$<CONFIG>)
+if(WIN32)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out/$<CONFIG>)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out/$<CONFIG>)
+endif()
 
-if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "inventory-mod targets 32-bit Windows (left4dead2.exe is x86): use an x86 toolchain, see build.bat")
 endif()
 
-set(INVENTORY_NULLCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../imgui-nullcore" CACHE PATH "Checkout of imgui-nullcore")
-if(NOT EXISTS "${INVENTORY_NULLCORE_DIR}/include/imgui_nullcore/imgui_nullcore.hpp")
-    message(FATAL_ERROR "imgui-nullcore not found at ${INVENTORY_NULLCORE_DIR} (set INVENTORY_NULLCORE_DIR)")
+option(INVENTORY_LINUX_SERVER "Build the native Linux dedicated-server plugin" OFF)
+if(INVENTORY_LINUX_SERVER)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR "The Linux server plugin requires a Linux x86 toolchain (configure with -DCMAKE_CXX_FLAGS=-m32)")
+    endif()
+
+    set(INVENTORY_L4D2_SDK_DIR "" CACHE PATH "Checkout of the AlliedModders hl2sdk l4d2 branch")
+    if(NOT EXISTS "${INVENTORY_L4D2_SDK_DIR}/public/engine/iserverplugin.h")
+        message(FATAL_ERROR "Set INVENTORY_L4D2_SDK_DIR to the L4D2 branch of AlliedModders' hl2sdk")
+    endif()
+
+    # Match Windows x86 scalar precision for rule values and time comparisons.
+    add_compile_options(-msse2 -mfpmath=sse)
+
+    # Use the header-only target so a system installation of the 64-bit shared library cannot enter the x86 link.
+    include(FetchContent)
+    FetchContent_Declare(tomlplusplus GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(tomlplusplus)
+else()
+    find_package(tomlplusplus CONFIG REQUIRED)
 endif()
 
-# Libraries from vcpkg (vcpkg.json; build.bat passes the toolchain and the x86-windows-static triplet, whose static
-# CRT matches the one above).  Dear ImGui stays a fetched source tree: imgui-nullcore builds against its sources at
-# this exact version.
-find_package(minhook CONFIG REQUIRED)
-find_package(tomlplusplus CONFIG REQUIRED)
-
-include(FetchContent)
-FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.92.8 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(imgui)
-
 function(inventory_options target)
-    target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    endif()
     if(MSVC)
         target_compile_options(${target} PRIVATE /utf-8 /EHsc /W4)
     endif()
@@ -46,6 +58,10 @@ endfunction()
 
 # ---- the model ---------------------------------------------------------------------------------------------------
 add_library(inventory_core STATIC
+    src/game/infection_sounds.cpp
+    src/game/infection_sounds.hpp
+    src/game/remote_state.cpp
+    src/game/remote_state.hpp
     src/inv/items.cpp
     src/inv/items.hpp
     src/inv/inventory.cpp
@@ -67,6 +83,48 @@ target_link_libraries(inventory_tests PRIVATE inventory_core)
 target_compile_definitions(inventory_tests PRIVATE INV_EXAMPLE_RULES="${CMAKE_SOURCE_DIR}/inventory_mod.example.toml")
 inventory_options(inventory_tests)
 add_test(NAME inventory_tests COMMAND inventory_tests)
+
+if(INVENTORY_LINUX_SERVER)
+    add_library(inventory_mod_server MODULE
+        src/server/linux_game.cpp
+        src/server/linux_game.hpp
+        src/server/linux_actions.cpp
+        src/server/linux_infection.cpp
+        src/server/linux_melee.cpp
+        src/server/linux_memory.hpp
+        src/server/linux_mutators.cpp
+        src/server/linux_mutators.hpp
+        src/server/linux_plugin.cpp
+        src/server/linux_sdk.hpp
+        src/server/linux_stamina.cpp)
+    target_link_libraries(inventory_mod_server PRIVATE inventory_core tomlplusplus::tomlplusplus ${CMAKE_DL_LIBS})
+    target_include_directories(inventory_mod_server SYSTEM PRIVATE
+        "${INVENTORY_L4D2_SDK_DIR}/public"
+        "${INVENTORY_L4D2_SDK_DIR}/public/tier0"
+        "${INVENTORY_L4D2_SDK_DIR}/public/tier1")
+    target_compile_definitions(inventory_mod_server PRIVATE _LINUX LINUX POSIX GNUC COMPILER_GCC)
+    target_compile_options(inventory_mod_server PRIVATE -Wall -Wextra)
+    # SRCDS preloads an older libstdc++. Keep the plugin's C++ runtime private.
+    target_link_options(inventory_mod_server PRIVATE
+        -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,--no-undefined)
+    set_target_properties(inventory_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set_target_properties(inventory_mod_server PROPERTIES CXX_VISIBILITY_PRESET hidden PREFIX "")
+endif()
+
+if(NOT WIN32)
+    return()
+endif()
+
+set(INVENTORY_NULLCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../imgui-nullcore" CACHE PATH "Checkout of imgui-nullcore")
+if(NOT EXISTS "${INVENTORY_NULLCORE_DIR}/include/imgui_nullcore/imgui_nullcore.hpp")
+    message(FATAL_ERROR "imgui-nullcore not found at ${INVENTORY_NULLCORE_DIR} (set INVENTORY_NULLCORE_DIR)")
+endif()
+
+# build.bat passes vcpkg's x86-windows-static triplet. Dear ImGui stays at the version used by imgui-nullcore.
+find_package(minhook CONFIG REQUIRED)
+include(FetchContent)
+FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.92.8 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(imgui)
 
 # ---- ImGui + the nullcore look -----------------------------------------------------------------------------------
 add_library(nc_ui STATIC
@@ -116,6 +174,8 @@ add_library(inventory_mod SHARED
     src/game/entities.hpp
     src/game/fog.cpp
     src/game/fog.hpp
+    src/game/fuel.cpp
+    src/game/fuel.hpp
     src/game/game.cpp
     src/game/game.hpp
     src/game/infection.cpp
@@ -139,6 +199,8 @@ add_library(inventory_mod SHARED
     src/game/pickup.hpp
     src/game/players.cpp
     src/game/players.hpp
+    src/game/revive.cpp
+    src/game/revive.hpp
     src/game/rounds.cpp
     src/game/rounds.hpp
     src/game/stamina.cpp

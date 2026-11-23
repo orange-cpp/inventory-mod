@@ -6,6 +6,7 @@
 #include "core/hook.hpp"
 #include "core/log.hpp"
 #include "game/backend.hpp"
+#include "game/fuel.hpp"
 #include "game/map_guns.hpp"
 #include "game/native_slots.hpp"
 #include "game/players.hpp"
@@ -50,7 +51,7 @@ namespace game::detail
                 stored = weapon_box >= 0 ? 1 : 0;
             }
             else
-                stored = s.inventory.add(def, 1);
+                stored = s.inventory.add(def, 1, can_spent(weapon)); // (a gas can: what it lacks)
         }
         if (stored == 0)
         {

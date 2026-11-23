@@ -6,10 +6,12 @@
 #include "core/log.hpp"
 #include "game/ammo_piles.hpp"
 #include "game/backend.hpp"
+#include "game/fuel.hpp"
 #include "game/infection.hpp"
 #include "game/map_guns.hpp"
 #include "game/ping.hpp"
 #include "game/players.hpp"
+#include "game/revive.hpp"
 #include "game/rounds.hpp"
 #include "game/melee.hpp"
 #include "game/mutators.hpp"
@@ -172,7 +174,13 @@ namespace game::detail
     // The active session's inventory and the player's reserve onto the ground around `at`.  Main thread.
     void drop_inventory(void* player, const Vec3& at)
     {
-        std::vector<std::pair<const inv::ItemDef*, inv::WeaponState>> items;
+        struct Dropped
+        {
+            const inv::ItemDef* def;
+            inv::WeaponState state;
+            int spent; // a gas can's: the box's open one lacks it, the others are full
+        };
+        std::vector<Dropped> items;
         {
             Session& s = session();
             std::lock_guard lock(s.mutex);
@@ -180,7 +188,7 @@ namespace game::detail
             {
                 const inv::Stack& stack = s.inventory.slot(i);
                 for (int n = 0; !stack.empty() && n < stack.count; ++n)
-                    items.emplace_back(stack.def, stack.weapon);
+                    items.push_back({stack.def, stack.weapon, n == stack.count - 1 ? stack.spent : 0});
             }
             s.inventory.clear();
         }
@@ -192,10 +200,10 @@ namespace game::detail
             const float angle = static_cast<float>(i) * 2.39996f; // the golden angle: no two in one place
             const float radius = std::min(4.f + 3.f * static_cast<float>(i), 18.f);
             const Vec3 position{at.x + std::cos(angle) * radius, at.y + std::sin(angle) * radius, at.z + 16.f};
-            if (spawn_dropped(*items[i].first, items[i].second, position) != nullptr)
+            if (spawn_dropped(*items[i].def, items[i].state, position, items[i].spent) != nullptr)
                 ++dropped;
             else
-                INV_LOG("death: %s could not be dropped: it is lost", items[i].first->classname);
+                INV_LOG("death: %s could not be dropped: it is lost", items[i].def->classname);
         }
         AmmoPool pool = read_pool(player);
         std::vector<const char*> kinds;
@@ -417,6 +425,8 @@ namespace game::detail
                 melee_frame();
                 ping_frame();
                 mutators_frame();
+                revive_frame();
+                chainsaw_frame();
                 retarget_ammo_types();
                 drop_dead_inventories();
                 cap_reserves();

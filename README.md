@@ -6,6 +6,7 @@ bar, melee ring, radial wheel) is drawn by the game itself, with its VGUI surfac
 talks to the game's own functions (found by reverse engineering, see [docs/game-notes.md](docs/game-notes.md)).
 
 L4D2 is a **32-bit** process, so everything here is built for x86.
+The Windows client can also connect to the [Linux dedicated server plugin](#linux-dedicated-server).
 
 > Run the game with `-insecure`. A foreign DLL in a VAC-secured session can get the account banned. Use this in
 > single player, listen servers and private servers only.
@@ -194,6 +195,38 @@ the mod or not. Each switches on, with its defaults, the feature it builds on:
 - **Hunted** (`[mutators.hunted]`): up to `limit` (3) of one special infected at once, a `class` of its own or a
   random one each chapter (the game's `z_<class>_limit`, put back at the next chapter). A finale's or a mutation's own
   director script still sets its own limits, and the director's cap on all specials together still holds.
+- **Crowd** (`[mutators.crowd]`): `commons` % (200) of the common infected about at once (`z_common_limit`) and `mobs`
+  % (150) of a mob's size (`z_mob_spawn_min_size`, `_max_size`, `z_mega_mob_size`).
+- **Witch** (`[mutators.witch]`): an angrier, tougher Witch who hits less hard: `health` % (150) of her health, `anger`
+  % (300) of how fast she gets angry, `space` % (300) of how near is too near, and `damage` % (45) of her hit on a
+  standing survivor, so one blow no longer incaps (`z_witch_health`, `_anger_rate`, `_personal_space`, `_damage`).
+- **Tank** (`[mutators.tank]`): `health` % (150) of its health and `speed` % (110) of its speed (`z_tank_health`,
+  `z_tank_speed`; the difficulty still scales the health).
+
+Hunted, crowd, witch and tank set the game's own ConVars for the chapter, as % of what they were (hunted: a number);
+the next chapter puts them back. A finale's or a mutation's director script may still set its own.
+
+## Self-revive
+
+With `[self_revive]` in the host's `inventory_mod.toml` (on in the example) a survivor who is down, or hanging from a
+ledge (`ledge`), gets up by themselves with an item: take one of `items` (adrenaline in the example; also pain pills,
+first aid kit) from an inventory box (the hotbar, the wheel, the window), or pick the one in your pills slot. The game's
+own progress bar fills for `seconds` (3), then you are up as if a friend had revived you: it counts as an incap, and the
+last one leaves you black and white. The item is used up only then; being pinned by a special, revived by a friend
+first or dying calls it off, and the item stays. Adrenaline also gives its rush (`rush`). It is the server's, so it
+works as host, guest and on a dedicated server (a player without the mod has no inventory, but sees the progress bar of
+anything the server does).
+
+## Chainsaw fuel
+
+With `[chainsaw]` in the host's `inventory_mod.toml` (on in the example) the chainsaw runs on the fuel the survivors
+carry. The game throws an empty chainsaw away and hands out a pistol; here it stays in your hands, dead (no motor, no
+swing, no shove), until it is refuelled. Press R with the chainsaw in hand: the game's progress bar fills for `seconds`
+(2), and the tank (30) is filled from the gas cans in your inventory, half-empty ones first. A gas can holds `can_fuel`
+(90, three tanks); one poured dry is gone. A can keeps what it holds when it is dropped, taken in hand, picked up again
+or dropped where you died; a thin amber bar under its box shows the open one, and the wheel and the window's tooltip
+the fuel. A can poured into a generator or a scavenge goal counts whole, whatever it held. Switching away, going down or
+being pinned calls a refuel off.
 
 ## Stamina
 
@@ -317,6 +350,7 @@ Settings tab is back (it also rebinds a key to any key at all).
 | `H` | pick up the item in front of you |
 | `V` | ping: mark the spot, item or enemy you look at for your team (`[ping]`) |
 | `U` | unload the gun in your hands (or the one on the ground you look at) into your reserve. U is the game's team chat key by default: while you play, the mod's key wins; rebind one of them if you need both |
+| `R` | with the chainsaw in hand: refuel it from the gas cans in your inventory (`[chainsaw]`; the game's reload key, read by the server) |
 | `Ctrl+End` | unload the DLL |
 
 ## Build
@@ -337,6 +371,41 @@ Outputs in `out\Release`: `inventory_mod.dll`, `injector.exe`, `inventory_tests.
 The ammo packs' addon is built apart, by `python -I tools/make_rounds_addon.py` (Python 3 with Pillow, and the game
 installed: it reads the game's own ammo pack model from its VPKs) into `out\Release\addons\inventory_mod_rounds.vpk`.
 The addon in use by a running game cannot be replaced; the game keeps it open until it closes.
+
+### Linux dedicated server
+
+Build the 32-bit server plugin with an x86 C++ runtime and development toolchain, CMake, Ninja, and the L4D2 Source
+SDK headers. The commands below fetch the tested SDK revision.
+
+```sh
+git init ../hl2sdk-l4d2
+git -C ../hl2sdk-l4d2 fetch --depth 1 https://github.com/alliedmodders/hl2sdk.git ee978cde412bb8720453f1f89e5748ec1449a4b3
+git -C ../hl2sdk-l4d2 checkout --detach FETCH_HEAD
+cmake -S . -B build/linux-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-m32 \
+  -DINVENTORY_LINUX_SERVER=ON -DINVENTORY_L4D2_SDK_DIR="$PWD/../hl2sdk-l4d2"
+cmake --build build/linux-x86
+ctest --test-dir build/linux-x86 --output-on-failure
+```
+
+Copy `build/linux-x86/inventory_mod_server.so` into the dedicated server's `left4dead2/addons/` folder and start
+`srcds_run` with `-game left4dead2 -insecure +plugin_load addons/inventory_mod_server`. The plugin checks the Linux
+`server_srv.so` build before loading. It targets Left 4 Dead 2 version **2.2.4.3**. Put `inventory_mod.toml` in
+`left4dead2/addons/inventory_mod/`, where the plugin
+also saves inventories for clients with a Steam ID. The Windows client uses the same console commands and state replies
+as on a Windows server.
+
+The Linux server supports native slot sync and selection, inventory drag and drop, and the
+explicit pickup, store, use, and drop commands for items and weapons. A stored gun retains its magazine and upgrades,
+and the player keeps their reserve when they store or swap a gun. Unloading shares the same ammo limits as dropped
+piles. Stored items and reserve ammo drop on death. With `[ammo_piles]` enabled, the server can make the map's
+piles finite and add extra packs. The Linux plugin tints the map's existing pile models and uses a built-in model for
+new packs. The server stores a pickup when its native slot is occupied and the inventory has room. To also store
+stackable items when their native slot is free, set `auto_store = true` under `[play]` in
+`left4dead2/addons/inventory_mod/inventory_mod_settings.toml`. The server also supports `[map_guns]`, `[stamina]`,
+chainsaw fuel, self-revive, and team pings with moving enemy markers and temporary glow. Chapter mutators use the
+existing Windows HUD announcement and fog settings. Infection, including Contagion, uses the Windows client's
+existing countdown and effects. Expanded melee rules and Brittle use the existing wind-up controls, hit feedback,
+and durability display.
 
 ## Release
 
@@ -373,7 +442,7 @@ src/ui/        overlay.cpp (D3D9 hooks, WndProc, cursor), hud.cpp (boxes, wheel,
                the whole HUD but the window is drawn with them)
 src/game/      backend.hpp (the seam), game.cpp (the real backend: the request queue and init),
                one module per topic (entities, weapons, pickup, rounds, players, infection,
-               stamina, melee, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets
+               stamina, melee, revive, fuel, lifecycle, client_remote ...), sdk.hpp (the game's addresses, offsets
                and signatures), mem.cpp (guarded reads and calls)
 tests/         inventory_test.cpp
 assets/        the screamer picture, textures/ (each round type's ammo pack)

@@ -1,10 +1,100 @@
 # L4D2 internals used by the mod
 
-Everything here was read out of the game's DLLs with `tools/re/pe_tools.py` (capstone + pefile) and then checked in
+The Windows addresses were read out of the game's DLLs with `tools/re/pe_tools.py` (capstone + pefile) and then checked in
 the running game. It is for **one build**: game 2.2.4.3, `server.dll` PE timestamp `0x6A440E53`
 (sha256 `a93ec916...`). `game::init()` refuses to run on any other `server.dll`, so a game update fails closed.
 Addresses are RVAs from the preferred base `0x10000000`; the mod itself finds them at run time (see "how it is found").
 In the code they are declared in `src/game/sdk.hpp`.
+
+## Linux dedicated server
+
+Steam depot 222863, manifest 868244163643826330, ships the 32-bit `left4dead2/bin/server_srv.so` used by SRCDS.
+Its GNU build ID is `c9b0cd3d1800cb19083026f349a9de15933c05ac`. `nm -Cn` names the local symbols and
+`objdump -d -M intel` shows their x86 calling conventions and prologues. The plugin checks the in-memory build ID and
+each function's bytes at the offsets in [linux_sdk.hpp](../src/server/linux_sdk.hpp) before calling them.
+
+The plugin loaded and the server opened `c1m1_hotel` in WSL. The loader used the SDK's
+`ISERVERPLUGINCALLBACKS002`, `VEngineServer022`, `PlayerInfoManager002`, `ServerGameEnts001`, and `VSERVERTOOLS001`
+interfaces. `CBaseCombatCharacter::Weapon_GetSlot` walks the weapon handles, and `GetActiveWeapon` resolves the
+active handle. `CBaseEntity::GetClassname` returns the entity's name. `CBasePlayer::SelectItem` looks up a carried item
+by classname. The remaining bindings provide eye and origin vectors, test item ownership and pending deletion, give
+items, and use the base player's drop method followed by `UTIL_Remove` to store carried items.
+
+`CBaseCombatWeapon::Clip1` reads the magazine at `0x1420`. The send tables put the extra ammo at `0x14fc`, the
+upgrade bits at `0x17e4`, and the special rounds at `0x1790`. The special round count is a byte, as confirmed by the
+weapon's reload code. `CBaseCombatCharacter::SetAmmoCount` updates the reserve array at `0x1874`. During a live
+Windows-client test the Linux server equipped an M16, swapped it for an SMG, dropped the M16, and picked it up with its
+original 13-round magazine. The drop path uses `SetAbsOrigin` before spawning and checks `DispatchSpawn`'s status
+before accessing the resulting entity.
+
+The plugin uses `GAMEEVENTSMANAGER002` for campaign events. A live survivor death produced `player_death` before the
+player's dead state became visible to `IPlayerInfo`. The plugin captures the position at that event and waits for the
+dead state in `GameFrame` before dropping stored items. A subsequent `round_start` restored the chapter snapshot.
+
+The Linux ammo-pile vtable points to `CWeaponAmmoSpawn::Use` at slot 107, with the slot at `0xce8c14`. The mod
+validates the slot and tracks pile contents using the entity handle at `0x3b4`. Static pile physics is created at the
+selected floor position. A temporary `info_target` locates that floor before the pile is spawned. The live test
+unloaded 13 rifle rounds into a reserve with five spaces, produced an eight-round overflow pile, dropped another
+20 rounds, and refilled the reserve by using that pile.
+
+`CTerrorGun::Reload` and `CBaseShotgun::Reload` occupy slot 282. `HandleFireOnEmpty` occupies slot 277. The reload
+handler reads the owner's buttons at `0x1cb0` and the fire handler uses the flag at `0x145a`. The test verified that
+an unloaded gun stayed empty while idle, then accepted a manual reload. `CWeaponSpawn::Use` decrements the map
+spawner's item count at `0x144c`. `GetSpawnedWeaponName` returns a weapon alias, which the mod resolves to a
+catalogue classname. A live test unloaded a one-use rifle spawner, transferred 50 rounds, and removed the spawner.
+With finite map piles enabled, `c2m1_highway` registered five existing piles and placed three extra packs.
+
+`CTerrorPlayer::BumpWeapon` occupies slot 427, with its slot at `0xd0b0f4`. Ordinary weapon use calls that slot.
+The plugin also binds the validated use handlers for guns and map spawners. The held-item path bypasses auto-store
+while an item is being equipped from a box. Live smoke tests covered loose items, a one-use item spawner, and storing
+a second rifle when the primary slot was occupied. With `[map_guns]` set to 20% and a zero reserve bonus, a new
+rifle spawner gave a 10-round rifle, left the reserve unchanged, and was consumed.
+
+Linux pings use `EngineTraceServer003`. The plugin sends the existing `@png@` messages to tracked teammates and
+uses the same kind-3 updates to follow an enemy. A Windows client sent its usual V hotkey and rendered the Linux
+server's marker in the game world. The Linux send tables put the entity's `m_Glow` property at `0x1f0`.
+The plugin uses the game's glow setters and saves the original state until the last ping on that entity expires.
+A live common-infected test verified target tracking, the red glow, and restoration of the original glow state.
+
+Linux stamina uses `PlayerInfoManager002::GetGlobalVars` for simulation time and the existing `@sta@` reply for
+the Windows HUD. The Linux send tables put `m_fFlags` at `0x150`, `m_vecVelocity` at `0x2ec`, and
+`m_flLaggedMovementValue` at `0x20cc`. The attack timers are at `0x13fc` and `0x1400`. The damage hook uses
+the class's `OnTakeDamage` slot 73 and copies the 96-byte damage record before applying the stamina scale. A live
+fixture measured 55% movement speed, a swing delay of 1.0 seconds from a 0.5-second input, and five damage from
+a 20-point melee hit at 25% damage. Movement returned to its original speed after recovery.
+
+The Linux chainsaw's `ItemPostFrame` occupies vtable slot 273, with the slot at `0xc2608c`. The drop and equip
+paths keep partial gas cans by entity handle. Linux progress uses the start time and duration
+send properties at `0x2904` and `0x2908`. A live refuel filled an empty 30-unit tank, drained the opened can first,
+and kept the next can's spent fuel when it was equipped and stored. Self-revive uses `CTerrorPlayer::OnRevived` at
+`0x9b36b0`. A live test verified that the progress bar completed before the survivor got up and their pills were
+consumed.
+
+Linux chapter mutators use `VEngineCvar007` to read and update the director's variables, and send the existing
+`@mut@` message. Horde tide calls `CDirector::OnMapInvokedPanicEvent` at `0x865130` with the same arguments as
+the game's panic-event command and reads the director pointer at `0xfeff08`. A live test verified the Windows HUD
+announcement, unchanged selection on a round restart, a triggered horde, and restoration of the director settings
+and carry limit on the next chapter.
+
+Linux infection listens to the same grab, vomit, incap, pills, and round events, and sends the existing `@inf@`
+countdown and turn messages. It uses `CBasePlayer::CommitSuicide` and `ZombieManager::SpawnSpecial` to turn a
+survivor. The death model's survivor character is at `0x17d8`, copied from the player at `0x2ba0`. Linux
+`CSurvivorRescue::CallForHelp` lives at `0x959fc0` and takes the survivor pointer. The hook sends a null survivor
+for users who turned. The block survives `mission_lost` until the next round or map. A live Contagion test started a
+shortened countdown, cleared it on pills, and verified that a second exposure shortened the new countdown. On expiry
+the server spawned the configured Hunter, removed the death model, and blocked a rescue closet assignment. The Windows
+client displayed its stock turn effect with both the image and audio.
+
+Linux melee patches `CTerrorMeleeWeapon` slots 283 and 284 for primary and secondary attacks and slot 302 for
+the hit sound. It uses the same wind-up buttons and `@mel@` and `@mhi@` messages as the Windows client. The
+Linux melee animation choices are at `0xc20` in the weapon info, with their count at `0xc2c`. An overhead
+swing selects its sequence at `0x17fc` before the built-in attack. The damage hook combines stamina, block,
+head hits, and the weapon's melee profile. Wear is kept in the save and client state when a weapon is stored.
+A live Brittle test measured 80 and 40 damage on consecutive targets, 3000 wear units out of 10000, and 50
+damage from a thrown axe. The Windows client also released charged attacks and sent inventory actions to the
+production Linux plugin with the example rules loaded. A live defense test measured a 40-point hit reduced to
+zero on a deflect and to 10 after the deflect window. A head-on hit against a wall added 1500 wear units. The
+production server logged a 1.05-second recovery for a heavy shove from the Windows client.
 
 ## Tool
 
@@ -807,6 +897,74 @@ ConVar its parent's too, but not for a ConCommand, whose +0x1C is its completion
   `table[class]->m_pParent->m_nValue` (+0x1C, then +0x30). hunted reads that value, sets its own, and puts the old one
   back at the next roll.
 
+crowd, witch and tank set more of the director's ConVars the same way, each to a % of what it was: `z_common_limit`,
+`z_mob_spawn_min_size`, `z_mob_spawn_max_size`, `z_mega_mob_size`; `z_witch_health`, `z_witch_anger_rate`,
+`z_witch_personal_space`, `z_witch_damage`; `z_tank_health`, `z_tank_speed`. Each is registered by a static constructor:
+`push <flags>; push "<default>"; push "<name>"; mov ecx, <ConVar>; call ConVar::ConVar`. For `z_witch_anger_rate` that is
+at `0x105A82A0` (flags 0x4000, "0.2", ConVar `0x10871250`). The value is read as a float, `m_pParent->m_fValue` (+0x2C), the way the
+game reads it at `0x1041D806` (`mov eax, [0x1087126C]`, which is its m_pParent; `movss xmm0, [eax+0x2C]`). What each setting was
+is kept, and the next roll puts it back. When the next chapter changes the same setting, its new value is worked out
+from the kept value: the last roll's commands are queued and may not have run yet. hunted works the same way now.
+Before, when the same class came up two chapters in a row, it read its own limit back as the value to restore.
+
+Not yet seen working in the game.
+
+## Self-revive (`[self_revive]`, `revive.cpp`)
+
+CTerrorPlayer's VScript bindings are built by `0x10330690`. Each entry is 0x30 bytes, with the name at +0 and the
+function at +0x28. They lead to everything the self-revive needs:
+
+- `IsIncapacitated` (`0x102FDCF0`: `jmp [eax+0x7E4]`) is vtable slot 505, `0x10325540`. It is true when the player is
+  alive (`m_lifeState` +0xF0 == 0) and `m_isIncapacitated` (+0x2DA8, SendProp at `0x102FEB38`) is set.
+- `IsHangingFromLedge` (`0x100F3740`) is the byte `m_isHangingFromLedge` at +0x3A05 (SendProp at `0x102FF694`).
+- `IsDominatedBySpecialInfected` (`0x102CB240`, non-virtual, thiscall, returns a bool) is true when any of these is a
+  live handle: `m_pummelAttacker` +0x3E5C, `m_pounceAttacker` +0x3E7C, `m_tongueOwner` +0x33D8 (`0x100F3700`),
+  `m_jockeyAttacker` +0x3EF4 (`0x101ECC20`), `m_carryAttacker` +0x2A5C (`0x102C7AA0`). Each is a SendProp of
+  DT_TerrorPlayer (`0x102FE490`).
+- `ReviveFromIncap` (`0x102FDD10`: `jmp [eax+0x91C]`) is vtable slot 583, `CTerrorPlayer::OnRevived`
+  (`0x1031F900`, thiscall, no arguments). It requires the player to be alive (slot 74) and incapacitated
+  (`0x100F3750`). It handles a ledge (+0x3A05) and a fall to the ground, and takes its reviver from `m_reviveOwner`
+  (+0x2E38); with none, the survivor is their own reviver. It raises `m_currentReviveCount` (+0x2E68); at
+  `SurvivorMaxIncapacitatedCount` it plays "Player.Heartbeat" (black and white). It fires `revive_success` (userid,
+  subject, ledge_hang, lastlife), speaks "RevivedByFriend", and fires `player_ledge_release` when the survivor was
+  hanging.
+- `UseAdrenaline` is bound to `OnAdrenalineUsed(float seconds)` (`0x10318750`, thiscall, `ret 4`): "Cause the effect of
+  Adrenaline - but no HP". The rush lasts `adrenaline_duration` seconds (read from the ConVar's +0x2C, 15 by default).
+
+The progress bar the client draws comes from DT_CSPlayer's SendProps (the table of `0x10240940`):
+`m_flProgressBarStartTime` +0x2910 (game time) and `m_flProgressBarDuration` +0x2914 (seconds; 0 means no bar).
+Writing both and marking the edict changed shows the bar on that player's screen, with or without the mod.
+
+The request comes in through the Use of an inventory box (`do_use`) or the selection of the pills slot
+(`do_select_weapon`). When the player is down and the item is one of `items`, the mod starts the bar instead of handing
+the item over. The next GameFrames check that they are still down, not pinned and alive. At the end the item is taken
+(from that box, any box, or else the one in the player's own slot: Weapon_Drop, then UTIL_Remove). Then
+`OnRevived` runs, plus `OnAdrenalineUsed` for adrenaline. Not yet seen working in the game.
+
+## Chainsaw fuel (`[chainsaw]`, `fuel.cpp`)
+
+CChainsaw's primary vtable is `0x106BC7FC` (RTTI `.?AVCChainsaw@@`; slots 282 and 283 are its PrimaryAttack
+`0x103CA5B0` and SecondaryAttack `0x103CA8D0`, where the melee weapon has `0x103EC3B0` / `0x103EB1F0`). Slot 272,
+`0x103CA970`, is its ItemPostFrame. Its only reference is that slot. It starts with
+`53 8B DC 83 EC 08 83 E4 F0 83 C4 04 55 8B 6B 04 89 6C 24 04 8B EC 81 EC A8 01 00 00`:
+
+- `m_iClip1` (+0x1414) is the fuel. When it is 0 on entry, `0x102485B0` (owner, chainsaw, 1, 0) takes the chainsaw off
+  its owner (`[this+0x1800]`), and the owner's slot 431 (+0x6BC, GiveNamedItem) gives them "weapon_pistol". This is how
+  the game throws an empty chainsaw away.
+- While the motor runs, it burns 1 clip per tick of a timer (+0x17E4). At 0 it stops the motor and plays
+  "Chainsaw.Die" (`0x103CABE5`).
+- It ends with the base ItemPostFrame, `0x103F1C20`, which handles the attack buttons.
+
+The hook skips the whole function while `m_iClip1` is 0 and `[chainsaw]` is on. The chainsaw then stays in the hands
+with no motor, swing or shove. The tank's size comes from CBaseCombatWeapon::GetMaxClip1, slot 323 (the VScript
+`GetMaxClip1`, `0x103ECD60`: `jmp [eax+0x50C]`; 30 from the weapon script).
+
+The refuel is the reload key (`m_nButtons` & IN_RELOAD 0x2000, read on the server for each living human survivor),
+pressed with weapon_chainsaw active. It shows the same progress bar as the self-revive, then writes the new `m_iClip1`
+and marks the weapon's edict changed. A gas can's fuel stays with the item. In an inventory box it is
+`inv::Stack::spent`: what the box's cans lack, less than one can's worth. In the world or the hands it is kept by the
+can's EHANDLE: the mod records it when it creates a can (drop, a death) or hands one out (do_use), and reads it back
+when one comes into a box (pick up, auto-store, store, swap). Entries whose entity is gone are dropped every 5 s.
 Not yet seen working in the game.
 
 The scoreboard (Tab) shows the chapter's mutators under its title. It is client.dll's CClientScoreBoardDialog

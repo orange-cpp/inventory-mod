@@ -19,6 +19,9 @@ namespace inv
         std::uint32_t color; // r | g << 8 | b << 16 | a << 24 (ImGui's ImU32 layout)
         int game_slot; // the player's L4D2 inventory slot: 0 gun, 1 melee / pistol, 2 throwable, 3 medkit / upgrade,
                        // 4 pills, 5 carried item
+        // What a full one holds of fuel ([chainsaw] in the rules: the gas can), 0 for an item without any.  A box of
+        // them keeps what its cans lack (Stack::spent).
+        int fuel = 0;
 
         // A gun or melee weapon (slots 0 and 1): stored one per box with its rounds (WeaponState), shown in the hands
         // by the game's own panel.
@@ -36,6 +39,8 @@ namespace inv
     // for an unknown classname or a value out of range (weight < 0, stack < 1).
     bool set_item_weight(std::string_view classname, float weight);
     bool set_item_stack(std::string_view classname, int max_stack);
+    // What a full one holds of fuel (ItemDef::fuel; 0: none).  False for an unknown classname, a weapon or fuel < 0.
+    bool set_item_fuel(std::string_view classname, int fuel);
 
     // What a gun or melee weapon weighs (what the player carries in the game's slots 0 and 1 counts against the weight
     // limit too); 0 for a classname that is not one of them.

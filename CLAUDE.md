@@ -5,6 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 An inventory mod for Left 4 Dead 2 (game build 2.2.4.3 only), built as a 32-bit DLL injected into `left4dead2.exe` or
 `srcds.exe`. It hooks D3D9 for its HUD and calls the game's own functions, found by reverse engineering. The game must
 run with `-insecure`. README.md describes the features; docs/game-notes.md is the reference for every address.
+Linux dedicated servers load the native 32-bit `inventory_mod_server.so` plugin. The existing Windows client uses
+the same network messages on both server platforms. README.md lists the pinned SDK revision and Linux build steps.
 
 ## Commands
 
@@ -44,13 +46,15 @@ Crash dumps go to the game folder (`left4dead2_crash_*.mdmp`); `tools/mdmp_summa
 
 **Layers.**
 - `src/inv` is the model: items, inventory, the TOML rules. It has no Windows or ImGui code and is tested alone.
+- `src/server` is the Linux dedicated-server implementation. It validates the Linux game build before binding
+  private game functions and uses the engine's server plugin interface to receive commands and game events.
 - `src/game/backend.hpp` is the seam between the UI and the game.
 - `src/game/game.cpp` is the real backend: it queues the HUD's requests, runs them in `pump()`, and `init()` calls
   each module's `install_*` in order.
 - The hooks and game calls live in `game::detail` modules, one per topic, each with a header that declares what other
   modules use: `entities` (Env, the entity list, players), `weapons` (use, drop, store, pick up), `native_slots`,
   `pickup` (+use hooks, spawners), `weapon_panel` (client HUD hooks), `map_guns`, `rounds`, `addons`, `players`
-  (other players, `Activation`), `unload`, `ammo_piles`, `infection`, `stamina`, `melee` (the server's swing, shove, damage, wear, block,
+  (other players, `Activation`), `unload`, `ammo_piles`, `infection`, `stamina`, `revive` (`[self_revive]`), `fuel` (`[chainsaw]`), `melee` (the server's swing, shove, damage, wear, block,
   throw; `melee_client.cpp`: the client's buttons and viewmodel animation), `lifecycle` (deaths, new games, the
   FireEvent and GameFrame hooks that dispatch to the others), `client_remote`, `client_view`. A module checks and hooks
   its own functions.
@@ -79,7 +83,8 @@ Crash dumps go to the game folder (`left4dead2_crash_*.mdmp`); `tools/mdmp_summa
 
 **Rules and settings.**
 - `inventory_mod.toml` holds the host's rules: `[limits]`, `[weight]`, `[ammo]`, `[round_weight]`, `[infection]`,
-  `[stamina]`, `[melee]`, `[ammo_piles]`, `[map_guns]`. It is parsed in `src/inv/rules.cpp`; a table switches its feature on.
+  `[stamina]`, `[melee]`, `[ammo_piles]`, `[map_guns]`, `[ping]`, `[self_revive]`, `[chainsaw]`, `[mutators]`. It is
+  parsed in `src/inv/rules.cpp`; a table switches its feature on.
 - `inventory_mod.example.toml` is the documented template.
 - `inventory_mod_settings.toml` holds each player's presentation settings (`src/core/config.cpp`).
 

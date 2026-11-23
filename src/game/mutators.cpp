@@ -11,6 +11,7 @@
 #include "inv/mutators.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -56,24 +57,35 @@ namespace game::detail
 
         constexpr ULONGLONG k_tell_again_ms = 2000;
 
-        // ---- the director: horde_tide, hunted ---------------------------------------------------------------------
+        // ---- the director: horde_tide, hunted, crowd, witch, tank ---------------------------------------------------
         //
-        // Both go through the game's own console on the server (ServerCommand), as set_ammo_limits does: horde_tide runs
+        // All go through the game's own console on the server (ServerCommand), as set_ammo_limits does: horde_tide runs
         // director_force_panic_event (its callback 0x10287900 is TheDirector's ForcePanicEvent, 0x1025CC60, with no
         // check of who asked), every `every` seconds of game time from `first` seconds after the event
-        // player_left_start_area; hunted sets z_<class>_limit, which the director's limit of a class (0x1025C7C0) reads
-        // when no director script gives one (a finale's or a mutation's script still wins), and puts the value it
-        // found back at the next roll.  All of them are FCVAR_CHEAT, which the console refuses with sv_cheats off: the
-        // flag is taken off them (ConCommandBase::m_nFlags +0x14; a ConVar's parent's too).  See sdk.hpp.
+        // player_left_start_area.  The others set the game's ConVars for the chapter: hunted z_<class>_limit, which the
+        // director's limit of a class (0x1025C7C0) reads when no director script gives one (a finale's or a mutation's
+        // script still wins); crowd the commons' and mobs' sizes; witch and tank theirs.  What each was is read off the
+        // ConVar (its parent's m_fValue, +0x2C) and put back at the next roll, unless the next chapter changes it too:
+        // then it is worked out from the same value (a command queued by the last roll may not have run yet).  All of
+        // them are FCVAR_CHEAT, which the console refuses with sv_cheats off: the flag is taken off them
+        // (ConCommandBase::m_nFlags +0x14; a ConVar's parent's too).  See sdk.hpp.
 
         constexpr const char* k_limit_names[] = {nullptr,          "z_smoker_limit", "z_boomer_limit", "z_hunter_limit",
                                                  "z_spitter_limit", "z_jockey_limit", "z_charger_limit"};
         constexpr const char* k_class_plurals[] = {"", "smokers", "boomers", "hunters", "spitters", "jockeys", "chargers"};
 
         int g_hunted_class = 0; // the chapter's hunted class (1 smoker ... 6 charger), 0: none
-        int g_hunted_before = -1; // its limit before the mutator set it (-1: not read)
         bool g_horde_armed = false; // the survivors have left the start area: the hordes come
         float g_horde_at = 0.f; // the game time of the next one
+
+        struct Setting
+        {
+            std::string name;
+            float before; // what it was before any mutator
+            bool whole; // a whole number (a count, a health)
+        };
+        std::vector<Setting> g_settings; // the chapter's changed settings
+        std::vector<Setting> g_prior; // during a roll: the last chapter's
 
         // The director's ConVar or ConCommand `name`, with the cheat flag off; 0 when not found.
         std::uintptr_t director_object(const char* name, bool command)
@@ -91,42 +103,93 @@ namespace game::detail
             return object;
         }
 
-        // A ConVar's whole-number value (m_nValue, read from the parent as the director does); -1 when unreadable.
-        int convar_int(std::uintptr_t convar)
+        // A ConVar's value (m_fValue, read from the parent as the game does); -1 when unreadable.
+        float convar_value(std::uintptr_t convar)
         {
             std::uintptr_t holder = mem::read_or<std::uintptr_t>(convar + k_off_convar_parent, 0);
             if (holder == 0)
                 holder = convar;
-            return mem::read_or<int>(holder + k_off_convar_int, -1);
+            return mem::read_or<float>(holder + k_off_convar_float, -1.f);
         }
 
-        void set_class_limit(int klass, int limit)
+        void write_setting(const std::string& name, float value, bool whole)
         {
-            char command[48];
-            std::snprintf(command, sizeof(command), "%s %d\n", k_limit_names[klass], limit);
+            char command[96];
+            if (whole)
+                std::snprintf(command, sizeof(command), "%s %ld\n", name.c_str(), std::lround(value));
+            else
+                std::snprintf(command, sizeof(command), "%s %g\n", name.c_str(), value);
             if (server_command(command))
                 INV_LOG("mutators: %s", command);
         }
 
-        void hunted_revert()
+        // Sets the director's ConVar `name` for the chapter to to(what it was before any mutator).
+        template <class F>
+        void change_setting(const char* name, bool whole, F&& to)
         {
-            if (g_hunted_class != 0 && g_hunted_before >= 0)
-                set_class_limit(g_hunted_class, g_hunted_before);
-            g_hunted_class = 0;
-            g_hunted_before = -1;
-        }
-
-        void hunted_apply()
-        {
-            const inv::HuntedMutatorRules& rules = inv::mutator_rules().hunted;
-            const int klass = rules.klass != 0 ? rules.klass : static_cast<int>(mutator_random()() % 6u) + 1;
-            const std::uintptr_t convar = director_object(k_limit_names[klass], false);
+            const std::uintptr_t convar = director_object(name, false);
             if (convar == 0)
                 return;
-            g_hunted_class = klass;
-            g_hunted_before = convar_int(convar);
-            set_class_limit(klass, rules.limit);
-            INV_LOG("mutators: hunted by %s (%d at once, %d before)", k_class_plurals[klass], rules.limit, g_hunted_before);
+            float before = -1.f;
+            for (const Setting& prior : g_prior)
+                if (prior.name == name)
+                    before = prior.before;
+            if (before < 0.f)
+                before = convar_value(convar);
+            if (before < 0.f)
+            {
+                INV_LOG("mutators: %s could not be read: left as it is", name);
+                return;
+            }
+            float value = to(before);
+            if (whole)
+                value = std::max(0.f, std::round(value));
+            g_settings.push_back({name, before, whole});
+            write_setting(name, value, whole);
+        }
+
+        // % of a setting
+        auto percent(int value)
+        {
+            return [value](float before) { return before * static_cast<float>(value) / 100.f; };
+        }
+
+        // The chapter's settings (hunted, crowd, witch, tank); the last chapter's that this one leaves alone go back.
+        void apply_settings()
+        {
+            g_prior = std::move(g_settings);
+            g_settings.clear();
+            g_hunted_class = 0;
+            const inv::MutatorRules& rules = inv::mutator_rules();
+            if (inv::mutator_active("hunted"))
+            {
+                const int klass = rules.hunted.klass != 0 ? rules.hunted.klass : static_cast<int>(mutator_random()() % 6u) + 1;
+                change_setting(k_limit_names[klass], true, [&](float) { return static_cast<float>(rules.hunted.limit); });
+                g_hunted_class = klass;
+                INV_LOG("mutators: hunted by %s (%d at once)", k_class_plurals[klass], rules.hunted.limit);
+            }
+            if (inv::mutator_active("crowd"))
+            {
+                change_setting("z_common_limit", true, percent(rules.crowd.commons));
+                for (const char* name : {"z_mob_spawn_min_size", "z_mob_spawn_max_size", "z_mega_mob_size"})
+                    change_setting(name, true, percent(rules.crowd.mobs));
+            }
+            if (inv::mutator_active("witch"))
+            {
+                change_setting("z_witch_health", true, percent(rules.witch.health));
+                change_setting("z_witch_anger_rate", false, percent(rules.witch.anger));
+                change_setting("z_witch_personal_space", false, percent(rules.witch.space));
+                change_setting("z_witch_damage", false, percent(rules.witch.damage));
+            }
+            if (inv::mutator_active("tank"))
+            {
+                change_setting("z_tank_health", true, percent(rules.tank.health));
+                change_setting("z_tank_speed", false, percent(rules.tank.speed));
+            }
+            for (const Setting& prior : g_prior)
+                if (std::none_of(g_settings.begin(), g_settings.end(), [&](const Setting& s) { return s.name == prior.name; }))
+                    write_setting(prior.name, prior.before, prior.whole);
+            g_prior.clear();
         }
 
         void horde_tide_frame()
@@ -175,13 +238,11 @@ namespace game::detail
         g_rolled = true;
         g_active = inv::pick_mutators(inv::mutator_rules(), map != nullptr ? map : "", mutator_random()());
         ++g_generation;
-        hunted_revert(); // (the last chapter's)
-        if (std::find(g_active.begin(), g_active.end(), "hunted") != g_active.end())
-            hunted_apply();
         // the gameplay ones: the rules read with their changes from now on (inv::set_active_mutators), and every
         // inventory gets the chapter's carry limit (heavy_load), keeping what it holds (as session_apply_limits does)
         const float weight_before = config_limits().max_weight;
         inv::set_active_mutators(g_active);
+        apply_settings(); // the director's (hunted, crowd, witch, tank); the last chapter's back
         if (config_limits().max_weight != weight_before)
         {
             auto rebuild = [](Session& s) {

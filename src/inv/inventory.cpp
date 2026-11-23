@@ -37,6 +37,11 @@ namespace inv
         slots_.assign(static_cast<std::size_t>(limits_.slots + limits_.weapon_slots), Stack{});
     }
 
+    void Inventory::set_max_weight(float weight)
+    {
+        limits_.max_weight = std::max(0.f, weight);
+    }
+
     const Stack& Inventory::slot(int index) const
     {
         if (index < 0 || index >= total_slots())
@@ -55,7 +60,7 @@ namespace inv
         return static_cast<int>(std::floor(left / def.weight + 1e-4f));
     }
 
-    int Inventory::add(const ItemDef& def, int count)
+    int Inventory::add(const ItemDef& def, int count, int spent)
     {
         if (def.weapon())
         {
@@ -66,6 +71,7 @@ namespace inv
         }
         count = std::min(count, room_for(def));
         int added = 0;
+        Stack* first = nullptr; // where the first one went: it brings the spent
         const auto items = slots_.begin() + slot_count();
         for (auto it = slots_.begin(); it != items; ++it)
         {
@@ -77,6 +83,7 @@ namespace inv
             const int take = std::min(def.max_stack - s.count, count - added);
             s.count += take;
             added += take;
+            first = first != nullptr ? first : &s;
         }
         for (auto it = slots_.begin(); it != items; ++it)
         {
@@ -86,16 +93,21 @@ namespace inv
             if (!s.empty())
                 continue;
             const int take = std::min(def.max_stack, count - added);
-            s.def = &def;
-            s.count = take;
+            s = Stack{&def, take};
             added += take;
+            first = first != nullptr ? first : &s;
+        }
+        if (first != nullptr && spent > 0)
+        {
+            first->spent += spent;
+            settle_fuel(*first);
         }
         if (added > 0)
             ++revision_;
         return added;
     }
 
-    int Inventory::add_to_slot(int index, const ItemDef& def, int count)
+    int Inventory::add_to_slot(int index, const ItemDef& def, int count, int spent)
     {
         if (def.weapon())
             return count > 0 && add_weapon(def, {}, index) >= 0 ? 1 : 0;
@@ -110,6 +122,8 @@ namespace inv
         if (s.empty())
             s = Stack{&def, 0};
         s.count += take;
+        s.spent += std::max(0, spent);
+        settle_fuel(s);
         ++revision_;
         return take;
     }
@@ -149,7 +163,9 @@ namespace inv
         const int removed = std::min(count, s.count);
         if (removed <= 0)
             return 0;
-        s.count -= removed;
+        s.count -= removed; // (the full ones go first: the open one keeps the spent while it stays)
+        if (s.count <= 0)
+            s.spent = 0;
         if (s.count <= 0 && !s.held)
             s = Stack{};
         ++revision_;
@@ -188,6 +204,12 @@ namespace inv
             {
                 b.count += moved;
                 a.count -= moved;
+                if (a.count <= 0) // its open one went too: poured into the other box's
+                {
+                    b.spent += a.spent;
+                    a.spent = 0;
+                    settle_fuel(b);
+                }
                 if (a.count <= 0 && !a.held)
                     a = Stack{};
             }
@@ -242,14 +264,70 @@ namespace inv
         ++revision_;
     }
 
-    void Inventory::release_held(int index)
+    void Inventory::release_held(int index, int spent)
     {
         if (index < 0 || index >= slot_count() || !slots_[static_cast<std::size_t>(index)].held)
             return;
         Stack& s = slots_[static_cast<std::size_t>(index)];
         s.held = false;
         ++s.count;
+        s.spent += std::max(0, spent);
+        settle_fuel(s);
         ++revision_;
+    }
+
+    void Inventory::settle_fuel(Stack& s)
+    {
+        const int full = s.def != nullptr ? s.def->fuel : 0;
+        if (full <= 0)
+        {
+            s.spent = 0;
+            return;
+        }
+        s.spent = std::max(0, s.spent);
+        while (s.spent >= full && s.count > 0)
+        {
+            --s.count; // a whole one's worth lacking: one ran dry
+            s.spent -= full;
+        }
+        if (s.count <= 0)
+        {
+            s.spent = 0;
+            if (!s.held)
+                s = Stack{};
+        }
+    }
+
+    int Inventory::take_fuel(int index, int amount)
+    {
+        if (index < 0 || index >= slot_count() || amount <= 0)
+            return 0;
+        Stack& s = slots_[static_cast<std::size_t>(index)];
+        const int taken = std::min(amount, s.fuel());
+        if (taken <= 0)
+            return 0;
+        s.spent += taken;
+        settle_fuel(s);
+        ++revision_;
+        return taken;
+    }
+
+    void Inventory::add_spent(int index, int spent)
+    {
+        if (index < 0 || index >= slot_count() || spent <= 0)
+            return;
+        Stack& s = slots_[static_cast<std::size_t>(index)];
+        if (s.empty())
+            return;
+        s.spent += spent;
+        settle_fuel(s);
+        ++revision_;
+    }
+
+    int Inventory::next_spent(int index) const
+    {
+        const Stack& s = slot(index);
+        return s.count == 1 ? s.spent : 0;
     }
 
     int Inventory::count_of(const ItemDef& def) const
@@ -320,6 +398,8 @@ namespace inv
                 out += ' ' + std::to_string(s.weapon.clip) + ' ' + std::to_string(s.weapon.ammo) + ' ' +
                        (s.weapon.melee.empty() ? std::string("-") : s.weapon.melee) + ' ' + std::to_string(s.weapon.upgrades) +
                        ' ' + std::to_string(s.weapon.special) + ' ' + std::to_string(s.weapon.wear);
+            else if (s.spent > 0)
+                out += ' ' + std::to_string(s.spent);
             out += '\n';
         }
         return out;
@@ -372,6 +452,13 @@ namespace inv
                 int wear = 0; // (a file from before the durability has none)
                 if (parse_int(next_token(line), wear) && wear >= 0)
                     stack.weapon.wear = wear;
+            }
+            else if (int spent = 0; parse_int(next_token(line), spent) && spent > 0)
+            {
+                stack.spent = spent;
+                settle_fuel(stack); // (nothing lacks without [chainsaw]: the fuel is 0)
+                if (stack.empty())
+                    continue;
             }
             // the right kind of box at that number, else (a weapon in an item box, a box number past the end) later
             const bool fits = index >= 0 && index < total_slots() && (index >= slot_count()) == def->weapon() &&

@@ -422,6 +422,92 @@ namespace inv
             g_ping = ping;
         }
 
+        SelfReviveRules g_self_revive;
+
+        // [self_revive] (see rules.hpp)
+        void read_self_revive(const toml::table& table, Rules& rules)
+        {
+            SelfReviveRules revive;
+            revive.enabled = true; // a table at all switches it on, unless it says otherwise
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled" || key == "ledge" || key == "rush")
+                {
+                    if (const auto on = node.value_exact<bool>())
+                        (key == "enabled" ? revive.enabled : key == "ledge" ? revive.ledge : revive.rush) = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "self_revive." + std::string(key.str()) + " must be true or false"));
+                }
+                else if (key == "seconds")
+                {
+                    const auto value = node.is_boolean() ? std::nullopt : number(node);
+                    if (!value || *value < 0.0 || *value > 30.0)
+                        rules.errors.push_back(at_line(node, "self_revive.seconds must be a number from 0 to 30"));
+                    else
+                        revive.seconds = static_cast<float>(*value);
+                }
+                else if (key == "items")
+                {
+                    static constexpr const char* k_known[] = {"weapon_adrenaline", "weapon_pain_pills", "weapon_first_aid_kit"};
+                    std::vector<std::string> items;
+                    if (const toml::array* list = node.as_array())
+                        for (const toml::node& entry : *list)
+                        {
+                            const auto name = entry.value_exact<std::string>();
+                            const std::string classname = name ? classname_of(*name) : std::string();
+                            if (std::find(std::begin(k_known), std::end(k_known), classname) == std::end(k_known))
+                                rules.errors.push_back(at_line(entry, "self_revive.items: adrenaline, pain_pills or first_aid_kit"));
+                            else if (std::find(items.begin(), items.end(), classname) == items.end())
+                                items.push_back(classname);
+                        }
+                    else
+                        rules.errors.push_back(at_line(node, "self_revive.items must be a list, like [\"adrenaline\"]"));
+                    revive.items = std::move(items);
+                }
+                else
+                    rules.errors.push_back(at_line(node, "unknown setting self_revive." + std::string(key.str())));
+            }
+            g_self_revive = revive;
+        }
+
+        ChainsawRules g_chainsaw;
+
+        // [chainsaw] (see rules.hpp)
+        void read_chainsaw(const toml::table& table, Rules& rules)
+        {
+            ChainsawRules saw;
+            saw.enabled = true; // a table at all switches it on, unless it says otherwise
+            for (const auto& [key, node] : table)
+            {
+                if (key == "enabled")
+                {
+                    if (const auto on = node.value_exact<bool>())
+                        saw.enabled = *on;
+                    else
+                        rules.errors.push_back(at_line(node, "chainsaw.enabled must be true or false"));
+                }
+                else if (key == "can_fuel")
+                {
+                    const auto n = node.value_exact<std::int64_t>();
+                    if (!n || *n < 1 || *n > 1000)
+                        rules.errors.push_back(at_line(node, "chainsaw.can_fuel must be a whole number from 1 to 1000"));
+                    else
+                        saw.can_fuel = static_cast<int>(*n);
+                }
+                else if (key == "seconds")
+                {
+                    const auto value = node.is_boolean() ? std::nullopt : number(node);
+                    if (!value || *value < 0.0 || *value > 30.0)
+                        rules.errors.push_back(at_line(node, "chainsaw.seconds must be a number from 0 to 30"));
+                    else
+                        saw.seconds = static_cast<float>(*value);
+                }
+                else
+                    rules.errors.push_back(at_line(node, "unknown setting chainsaw." + std::string(key.str())));
+            }
+            g_chainsaw = saw;
+        }
+
         MutatorRules g_mutators;
 
         // A list of mutator names (pool, a map's list); false (and an error) when it is not one.
@@ -606,6 +692,21 @@ namespace inv
                         }
                         read_mutator_numbers(numbers, "hunted", {{"limit", 0, 10, &m.hunted.limit}}, rules);
                     }
+                    else if (id == "crowd")
+                        read_mutator_numbers(settings, "crowd",
+                                             {{"commons", 10, 1000, &m.crowd.commons}, {"mobs", 10, 1000, &m.crowd.mobs}},
+                                             rules);
+                    else if (id == "witch")
+                        read_mutator_numbers(settings, "witch",
+                                             {{"health", 10, 1000, &m.witch.health},
+                                              {"anger", 10, 1000, &m.witch.anger},
+                                              {"space", 10, 1000, &m.witch.space},
+                                              {"damage", 1, 1000, &m.witch.damage}},
+                                             rules);
+                    else if (id == "tank")
+                        read_mutator_numbers(settings, "tank",
+                                             {{"health", 10, 1000, &m.tank.health}, {"speed", 10, 300, &m.tank.speed}},
+                                             rules);
                 }
                 else
                     rules.errors.push_back(at_line(node, "unknown setting mutators." + std::string(key.str())));
@@ -775,6 +876,22 @@ namespace inv
         return g_ping;
     }
 
+    const SelfReviveRules& self_revive_rules()
+    {
+        return g_self_revive;
+    }
+
+    bool revives(std::string_view classname)
+    {
+        return g_self_revive.enabled &&
+               std::find(g_self_revive.items.begin(), g_self_revive.items.end(), classname) != g_self_revive.items.end();
+    }
+
+    const ChainsawRules& chainsaw_rules()
+    {
+        return g_chainsaw;
+    }
+
     const InfectionRules& infection_rules()
     {
         return g_now_infection;
@@ -928,6 +1045,16 @@ namespace inv
         if (const toml::table* guns = root["map_guns"].as_table())
             read_map_guns(*guns, rules);
 
+        g_self_revive = SelfReviveRules{};
+        if (const toml::table* revive = root["self_revive"].as_table())
+            read_self_revive(*revive, rules);
+
+        // [chainsaw]: the gas can holds fuel (inv::Stack::spent counts what a box's cans lack); without it none
+        g_chainsaw = ChainsawRules{};
+        if (const toml::table* saw = root["chainsaw"].as_table())
+            read_chainsaw(*saw, rules);
+        set_item_fuel("weapon_gascan", g_chainsaw.enabled ? g_chainsaw.can_fuel : 0);
+
         g_mutators = MutatorRules{};
         if (const toml::table* mutators = root["mutators"].as_table())
             read_mutators(*mutators, rules);
@@ -935,7 +1062,7 @@ namespace inv
         for (const auto& [key, node] : root)
             if (key != "limits" && key != "weight" && key != "stack" && key != "ammo" && key != "infection" &&
                 key != "stamina" && key != "melee" && key != "round_weight" && key != "ammo_piles" &&
-                key != "map_guns" && key != "ping" && key != "mutators")
+                key != "map_guns" && key != "ping" && key != "mutators" && key != "self_revive" && key != "chainsaw")
                 rules.errors.push_back(at_line(node, "unknown table " + std::string(key.str())));
 
         // brittle wears [melee]'s weapons: without [melee] it would do nothing
