@@ -105,6 +105,9 @@ jobs:
           git init "$RUNNER_TEMP/hl2sdk-l4d2"
           git -C "$RUNNER_TEMP/hl2sdk-l4d2" fetch --depth 1 https://github.com/alliedmodders/hl2sdk.git "$SDK_REVISION"
           git -C "$RUNNER_TEMP/hl2sdk-l4d2" checkout --detach FETCH_HEAD
+          # GCC 11 rejects the template argument list on this constructor in C++20.
+          sed -i 's/CAutoLockT<MUTEX_TYPE>( const CAutoLockT/CAutoLockT( const CAutoLockT/' \
+            "$RUNNER_TEMP/hl2sdk-l4d2/public/tier0/threadtools.h"
 
       - name: Configure, build, and test Release
         shell: bash

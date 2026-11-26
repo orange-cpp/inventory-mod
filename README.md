@@ -381,6 +381,8 @@ SDK headers. The commands below fetch the tested SDK revision.
 git init ../hl2sdk-l4d2
 git -C ../hl2sdk-l4d2 fetch --depth 1 https://github.com/alliedmodders/hl2sdk.git ee978cde412bb8720453f1f89e5748ec1449a4b3
 git -C ../hl2sdk-l4d2 checkout --detach FETCH_HEAD
+# Fix the SDK's copy constructor declaration for GCC 11 in C++20 mode.
+sed -i 's/CAutoLockT<MUTEX_TYPE>( const CAutoLockT/CAutoLockT( const CAutoLockT/' ../hl2sdk-l4d2/public/tier0/threadtools.h
 cmake -S . -B build/linux-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-m32 \
   -DINVENTORY_LINUX_SERVER=ON -DINVENTORY_L4D2_SDK_DIR="$PWD/../hl2sdk-l4d2"
 cmake --build build/linux-x86
@@ -414,8 +416,7 @@ requests into `main` and pushes to `main`. The Windows CI package contains the b
 
 The **Release** workflow also generates both Windows add-ons using the dedicated server's SteamCMD download.
 Packaging changes trigger this check on pull requests. Run it manually from the Actions tab for an on-demand build.
-Push a version tag such
-as `v0.1.0` to publish both archives and `SHA256SUMS.txt` to GitHub Releases after both builds and tests pass.
+Push a version tag such as `v0.1.0` to publish both archives and `SHA256SUMS.txt` after both builds and tests pass.
 Tags with a suffix such as `v0.1.0-rc.1` publish as prereleases. The Linux tarball can be unpacked at the dedicated
 server root and loaded as described in [Linux dedicated server](#linux-dedicated-server).
 
