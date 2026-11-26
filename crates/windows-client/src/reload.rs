@@ -401,7 +401,12 @@ unsafe extern "C" fn item_boxes_empty() {
 
 unsafe extern "thiscall" fn should_draw(panel: *mut c_void) -> bool {
     let hidden = std::panic::catch_unwind(|| {
-        with_client(|client| client.settings.hud.replace_native_panel).unwrap_or(false)
+        with_client(|client| {
+            client.snapshot.is_some()
+                && client.playing()
+                && client.settings.hud.replace_native_panel
+        })
+        .unwrap_or(false)
     })
     .unwrap_or(false);
     if hidden {

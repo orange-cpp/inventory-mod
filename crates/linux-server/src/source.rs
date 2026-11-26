@@ -201,6 +201,30 @@ impl Source {
         NonNull::new(globals).map(|p| unsafe { p.as_ptr().add(12).cast::<f32>().read() })
     }
 
+    /// Source skips ServerActivate and LevelShutdown for paused plugins. Reacquire
+    /// the live edicts from the SDK's CGlobalVars before using any on resume.
+    pub fn current_level(&self) -> Option<(i32, String, Clients)> {
+        let globals = virtual_call!(globals, self.player_manager, 1, () -> *mut u8);
+        let globals = NonNull::new(globals)?.as_ptr();
+        // CGlobalVarsBase is 60 bytes on L4D2 Linux x86. mapname is a string_t
+        // (a string pointer here), followed by maxEntities, serverCount and pEdicts.
+        unsafe {
+            let clients = globals.add(20).cast::<i32>().read();
+            let name = globals.add(60).cast::<*const c_char>().read();
+            let total = globals.add(80).cast::<i32>().read();
+            let generation = globals.add(84).cast::<i32>().read();
+            let edicts = globals.add(88).cast::<*mut Edict>().read();
+            if clients < 1 || clients >= total || clients > 255 {
+                return None;
+            }
+            Some((
+                generation,
+                text(name)?.to_owned(),
+                Clients::new(edicts, total, clients)?,
+            ))
+        }
+    }
+
     pub fn find_cvar(&self, name: &CStr) -> Option<ConVar> {
         NonNull::new(virtual_call!(find_var, self.cvars?, 12, (
             *const c_char => name.as_ptr()

@@ -25,6 +25,8 @@ pub struct Movement {
 }
 
 struct Player {
+    handle: u32,
+    uses_stamina: bool,
     amount: f32,
     exhausted: bool,
     spent_at: f32,
@@ -41,10 +43,12 @@ struct Player {
 }
 
 impl Player {
-    fn new(player: usize) -> Self {
+    fn new(player: usize, handle: u32, uses_stamina: bool) -> Self {
         let speed = field_float(player + MOVEMENT_SCALE).unwrap_or(1.0);
         let grounded = field_int(player + PLAYER_FLAGS) & 1 != 0;
         Self {
+            handle,
+            uses_stamina,
             amount: 100.0,
             exhausted: false,
             spent_at: -1000.0,
@@ -62,7 +66,7 @@ impl Player {
     }
 
     fn spend(&mut self, cost: f32, now: f32) {
-        if cost > 0.0 {
+        if self.uses_stamina && cost > 0.0 {
             self.amount = (self.amount - cost).max(0.0);
             self.spent_at = now;
             self.exhausted |= self.amount <= 0.0;
@@ -93,7 +97,7 @@ impl Player {
             self.exhausted = false;
         }
         let before = self.exhausted;
-        if stamina.enabled && !adrenal {
+        if self.uses_stamina && !adrenal {
             if running && !self.exhausted {
                 self.spend(stamina.run * dt, now);
             }
@@ -117,7 +121,7 @@ impl Player {
         self.grounded = grounded;
 
         let penalty = field_int(actor + SHOVE_PENALTY);
-        if stamina.enabled && penalty != 0 {
+        if self.uses_stamina && penalty != 0 {
             native::store_word(actor + SHOVE_PENALTY, 0);
         }
         let buttons = field_int(actor + PLAYER_BUTTONS);
@@ -127,7 +131,7 @@ impl Player {
         if let Some(weapon) = weapon {
             let mut primary = field_float(weapon + NEXT_ATTACK).unwrap_or_default();
             let mut secondary = field_float(weapon + NEXT_SHOVE).unwrap_or_default();
-            if stamina.enabled && self.last_weapon == Some(weapon) {
+            if self.uses_stamina && self.last_weapon == Some(weapon) {
                 let primary_moved = primary > self.last_primary + 0.05 && primary > now;
                 let secondary_moved =
                     secondary > self.last_secondary + 0.05 && secondary > now + 0.4;
@@ -160,14 +164,14 @@ impl Player {
         }
         self.last_weapon = weapon;
 
-        let target = if stamina.enabled && self.exhausted {
+        let target = if self.uses_stamina && self.exhausted {
             stamina.slow / 100.0
         } else {
             1.0
         };
         let step = 1.5 * dt;
         self.eased_speed += (target - self.eased_speed).clamp(-step, step);
-        if stamina.enabled {
+        if self.uses_stamina {
             if now - self.spent_at >= stamina.regen_delay {
                 let multiplier = if running { 0.5 } else { 1.0 };
                 self.amount = (self.amount + stamina.regen * dt * multiplier).min(100.0);
@@ -187,7 +191,7 @@ impl Player {
                     let progress = ((now - since) / profile.heavy_hold.max(0.1)).clamp(0.0, 1.0);
                     battle_scale = 1.0 + progress * (melee_rules.wind_speed / 100.0 - 1.0);
                 }
-                if stamina.enabled && !adrenal {
+                if self.uses_stamina && !adrenal {
                     self.spend(melee_rules.wind_stamina * profile.stamina * dt / 100.0, now);
                 }
             } else {
@@ -300,16 +304,17 @@ impl Movement {
             }
         }
     }
-    fn reset(&mut self, hooks: &Hooks) {
+    fn reset(&mut self, game: &Game, hooks: &Hooks) {
         for (player, state) in std::mem::take(&mut self.players) {
-            restore(player, state, hooks);
+            restore(game, player, state, hooks);
         }
         self.last = None;
     }
 }
 
-fn restore(player: usize, state: Player, hooks: &Hooks) {
-    if state.original_speed != state.applied_speed
+fn restore(game: &Game, player: usize, state: Player, hooks: &Hooks) {
+    if game.resolve(state.handle) == Some(player)
+        && state.original_speed != state.applied_speed
         && field_float(player + MOVEMENT_SCALE) == Some(state.applied_speed)
     {
         native::store_word(player + MOVEMENT_SCALE, state.original_speed.to_bits());
@@ -327,7 +332,7 @@ impl Host {
         };
         let elapsed = now - self.movement.last.unwrap_or(now);
         if elapsed < 0.0 {
-            self.movement.reset(hooks);
+            self.movement.reset(&self.game, hooks);
         }
         if self.movement.last == Some(now) {
             return;
@@ -340,7 +345,7 @@ impl Host {
         };
         let rules = &self.effective;
         if !rules.stamina.enabled && !rules.melee.enabled {
-            self.movement.reset(hooks);
+            self.movement.reset(&self.game, hooks);
             return;
         }
         let local = if self.dedicated {
@@ -349,10 +354,11 @@ impl Host {
             self.game.host()
         };
         let mut seen = HashSet::new();
-        for actor in (1..65)
-            .map(|index| self.game.entity(index))
-            .filter(|&player| player != 0)
-        {
+        for index in 1..65 {
+            let actor = self.game.entity(index);
+            if actor == 0 {
+                continue;
+            }
             if self.game.classname(actor).as_deref() != Some("player") || !self.game.living(actor) {
                 continue;
             }
@@ -361,11 +367,19 @@ impl Host {
             if bot && !rules.stamina.bots && !rules.melee.enabled {
                 continue;
             }
+            let Some(serial) = native::word(self.game.entities + index * 16 + 8) else {
+                continue;
+            };
+            let handle = index as u32 | (serial << 12);
+            let stamina = rules.stamina.enabled && (!bot || rules.stamina.bots);
             let state = self
                 .movement
                 .players
                 .entry(actor)
-                .or_insert_with(|| Player::new(actor));
+                .or_insert_with(|| Player::new(actor, handle, stamina));
+            if state.handle != handle || state.uses_stamina != stamina {
+                *state = Player::new(actor, handle, stamina);
+            }
             state.update(&self.game, hooks, actor, rules, now, dt);
             seen.insert(actor);
             let guest = hooks
@@ -397,14 +411,14 @@ impl Host {
             .collect::<Vec<_>>();
         for missing in missing {
             if let Some(state) = self.movement.players.remove(&missing) {
-                restore(missing, state, hooks);
+                restore(&self.game, missing, state, hooks);
             }
         }
     }
 
     pub fn reset_movement(&mut self, restore_velocity: bool) {
         if restore_velocity && let Some(hooks) = &self.hooks {
-            self.movement.reset(hooks);
+            self.movement.reset(&self.game, hooks);
         } else {
             self.movement = Movement::default();
         }

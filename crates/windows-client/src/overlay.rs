@@ -449,10 +449,14 @@ fn draw_melee(canvas: &mut impl Canvas, client: &Client, width: i32, height: i32
 pub fn draw_indicators(canvas: &mut impl Canvas, client: &Client, width: i32, height: i32) {
     draw_stamina(canvas, client, width, height);
     draw_melee(canvas, client, width, height);
+    let now = Instant::now();
+    if client.can_ping() {
+        draw_pings(canvas, client, width, height, now);
+    }
     if !client.playing() {
         return;
     }
-    let now = Instant::now();
+
     let hud = &client.settings.hud;
     if !(hud.replace_native_panel && hud.show && hud.view.shows_slots())
         && let Some((line, _)) = client
@@ -467,8 +471,6 @@ pub fn draw_indicators(canvas: &mut impl Canvas, client: &Client, width: i32, he
             crate::hud::TEXT_SELECTED,
         );
     }
-
-    draw_pings(canvas, client, width, height, now);
 }
 
 fn draw_pings(canvas: &mut impl Canvas, client: &Client, width: i32, height: i32, now: Instant) {

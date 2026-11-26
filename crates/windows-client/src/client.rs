@@ -69,6 +69,7 @@ const STOP: u32 = WM_APP + 0x4d4;
 const REQUEST_UNLOAD: u32 = WM_APP + 0x4a;
 const TIMER: usize = 0x6016_2733;
 
+static CLIENT_MODULE: AtomicUsize = AtomicUsize::new(0);
 static WINDOW_PROC: AtomicUsize = AtomicUsize::new(0);
 static UNLOAD: AtomicBool = AtomicBool::new(false);
 static STARTUP: Mutex<Option<Startup>> = Mutex::new(None);
@@ -81,6 +82,7 @@ struct Startup {
 
 thread_local! {
     static CLIENT: RefCell<Option<Client>> = const { RefCell::new(None) };
+    static STOP_WAIT: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 pub struct Client {
@@ -127,6 +129,7 @@ pub struct Client {
     last_sync: Option<Instant>,
     retries: u8,
     next_host_probe: Option<Instant>,
+    next_renderer_probe: Instant,
     hotkeys: [bool; 256],
     swallowed_char: Option<(u8, Instant)>,
     was_in_game: bool,
@@ -148,8 +151,8 @@ impl Client {
         self.engine.link
     }
 
-    fn new(engine: Engine, startup: Startup, game: HWND) -> Self {
-        let renderer = Renderer::install(game)
+    fn new(engine: Engine, startup: Startup) -> Self {
+        let renderer = Renderer::install()
             .map_err(|error| log(&error.to_string()))
             .ok();
         let files = addons::files(&startup.directory);
@@ -254,6 +257,7 @@ impl Client {
             last_sync: None,
             retries: 0,
             next_host_probe: None,
+            next_renderer_probe: Instant::now() + Duration::from_secs(2),
             hotkeys: [false; 256],
             swallowed_char: None,
             was_in_game: false,
@@ -293,6 +297,13 @@ impl Client {
     }
 
     fn timer(&mut self) -> Option<CString> {
+        if self.renderer.is_none()
+            && !UNLOAD.load(Ordering::Acquire)
+            && Instant::now() >= self.next_renderer_probe
+        {
+            self.next_renderer_probe = Instant::now() + Duration::from_secs(2);
+            self.renderer = Renderer::install().ok();
+        }
         if self
             .icons_loader
             .as_ref()
@@ -307,8 +318,12 @@ impl Client {
         }
         if let Some(panel) = &self.panel {
             let hud = &self.settings.hud;
-            panel
-                .set_item_boxes(!hud.replace_native_panel && (!hud.view.shows_slots() || hud.show));
+            panel.set_item_boxes(
+                self.snapshot.is_some()
+                    && self.engine.link.in_game()
+                    && !hud.replace_native_panel
+                    && (!hud.view.shows_slots() || hud.show),
+            );
         }
         let link = self.engine.link;
         if self.host.is_none()
@@ -381,11 +396,12 @@ impl Client {
             self.wheel_order = order;
             self.wheel = Some(wheel);
         }
-        if self
-            .last_sync
-            .is_some_and(|last| now - last < Duration::from_millis(400))
-            || (self.snapshot.is_none() && self.retries >= 4)
-        {
+        let interval = if self.snapshot.is_none() && self.retries >= 4 {
+            Duration::from_secs(3)
+        } else {
+            Duration::from_millis(400)
+        };
+        if self.last_sync.is_some_and(|last| now - last < interval) {
             return None;
         }
         self.last_sync = Some(now);
@@ -526,6 +542,9 @@ impl Client {
             self.wheel = None;
             return (true, None);
         }
+        if key == keys.ping && self.can_ping() {
+            return (true, CString::new("inv_ping").ok());
+        }
         if !self.playing() {
             if inventory_key && self.engine.link.in_game() {
                 log(&format!(
@@ -545,8 +564,6 @@ impl Client {
             Some("inv_store".to_owned())
         } else if key == keys.pickup {
             Some("inv_pickup".to_owned())
-        } else if key == keys.ping {
-            Some("inv_ping".to_owned())
         } else if key == keys.unload {
             self.unload()
         } else if key == keys.take {
@@ -560,7 +577,9 @@ impl Client {
                 |weapon| format!("inv_select {}", weapon.classname),
             ))
         } else if key == keys.drop {
-            if !self.settings.hud.replace_native_panel {
+            if self.open {
+                Some(format!("inv_drop {} 1", self.selection))
+            } else if !self.settings.hud.replace_native_panel {
                 snapshot
                     .native
                     .iter()
@@ -670,6 +689,17 @@ impl Client {
         link.in_game()
             && !link.menu_visible()
             && self.view.map_or(self.snapshot.is_some(), View::playing)
+    }
+
+    pub fn can_ping(&self) -> bool {
+        self.snapshot.is_some()
+            && self.link().in_game()
+            && !self.link().menu_visible()
+            && self.view.is_none_or(View::can_ping)
+    }
+
+    pub fn can_edit_inventory(&self) -> bool {
+        !self.link().in_game() || self.host.as_ref().is_some_and(Host::active)
     }
 
     fn edit_inventory(&mut self, operation: impl FnOnce(&mut Inventory)) {
@@ -1213,7 +1243,7 @@ fn initialize(hwnd: HWND) -> LRESULT {
         log(&format!("{error}; using the local inventory editor"));
         Engine::offline()
     });
-    let client = Client::new(engine, startup, hwnd);
+    let client = Client::new(engine, startup);
     CLIENT.with(|state| state.replace(Some(client)));
     if unsafe { SetTimer(hwnd, TIMER, 16, None) } == 0 {
         log("could not start the inventory timer");
@@ -1227,25 +1257,47 @@ fn stop(hwnd: HWND) -> LRESULT {
     // A later subclass may still call us in its chain. Keep the DLL loaded
     // until our procedure can be removed safely.
     let replacement = window_proc as *const () as i32;
+    let waiting = |message: String| {
+        STOP_WAIT.with_borrow_mut(|last| {
+            if *last != message {
+                log(&message);
+                *last = message;
+            }
+        });
+        0
+    };
     if unsafe { GetWindowLongW(hwnd, GWL_WNDPROC) } != replacement {
-        log("waiting for the game's window procedure chain before unloading");
-        return 0;
+        return waiting("waiting for the game's window procedure chain before unloading".into());
     }
-    if let Some(Err(error)) = with_client(Client::stop) {
-        if error.kind() != io::ErrorKind::WouldBlock {
-            log(&format!("inventory hooks are still active ({error})"));
+    let stopped = CLIENT.with(|slot| {
+        let mut slot = slot
+            .try_borrow_mut()
+            .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "finishing game callback"))?;
+        if let Some(client) = slot.as_mut() {
+            client.stop()?;
         }
-        return 0;
+        Ok::<_, io::Error>(())
+    });
+    if let Err(error) = stopped {
+        return waiting(format!("Waiting for inventory shutdown ({error})"));
     }
-    CLIENT.with(|state| drop(state.take()));
-    unsafe {
-        KillTimer(hwnd, TIMER);
+    if unsafe {
         SetWindowLongW(
             hwnd,
             GWL_WNDPROC,
             WINDOW_PROC.load(Ordering::Acquire) as i32,
-        );
+        )
+    } == 0
+    {
+        return waiting(format!(
+            "Restoring the window procedure failed ({})",
+            io::Error::last_os_error()
+        ));
     }
+    unsafe {
+        KillTimer(hwnd, TIMER);
+    }
+    CLIENT.with(|state| drop(state.take()));
     1
 }
 
@@ -1253,6 +1305,7 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<
     match message {
         START => Some(initialize(hwnd)),
         STOP => Some(stop(hwnd)),
+        0x804b => Some(CLIENT_MODULE.load(Ordering::Acquire) as LRESULT),
         REQUEST_UNLOAD => {
             UNLOAD.store(true, Ordering::Release);
             Some(0)
@@ -1343,7 +1396,8 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<
                     return (true, None);
                 }
                 let hud = &client.settings.hud;
-                if !hud.view.shows_slots()
+                if client.snapshot.is_none()
+                    || !hud.view.shows_slots()
                     || !(hud.show || hud.replace_native_panel)
                     || !client.playing()
                     || client.vgui.as_ref().is_some_and(Vgui::typing)
@@ -1533,6 +1587,7 @@ unsafe extern "system" fn worker(parameter: *mut c_void) -> u32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, _: *mut c_void) -> i32 {
     if reason == DLL_PROCESS_ATTACH {
+        CLIENT_MODULE.store(module.addr(), Ordering::Release);
         if crate::dedicated::on_attach(module) {
             return 1;
         }

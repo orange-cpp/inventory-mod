@@ -77,9 +77,11 @@ impl Game {
 
     pub fn uninstall_pickups(&mut self) {
         self.pickups = Pickups::default();
-        BUMP.set(None);
-        WORLD_USE.set(None);
-        SPAWNER_USE.set(None);
+        if !super::vtable::retained() {
+            BUMP.set(None);
+            WORLD_USE.set(None);
+            SPAWNER_USE.set(None);
+        }
     }
 
     pub fn scan_pickups(&mut self, source: &Source) {
@@ -242,12 +244,21 @@ impl Game {
         rules: &MapGunRules,
     ) -> Option<Ent> {
         let mut state = WeaponState::default();
-        if melee(def) && self.classname(spawner) == "weapon_melee_spawn" {
+        if melee(def) {
+            if self.classname(spawner) != "weapon_melee_spawn" {
+                return None;
+            }
             let script = unsafe { (self.native.melee_spawn_name)(spawner.as_ptr()) };
-            state.melee = unsafe { source::text(script) }.unwrap_or("").to_owned();
+            state.melee =
+                inventory_mod::inventory::melee_script_name(unsafe { source::text(script) }?)?
+                    .to_owned();
         }
         let at = self.position(spawner)?.offset(0.0, 0.0, 16.0);
         let copy = self.spawn_at(source, def, &state, at)?;
+        if melee(def) && self.melee_script(copy) != state.melee {
+            self.remove(copy);
+            return None;
+        }
         self.seen.remove(&self.handle(copy));
         self.shorten_map_gun(copy, def, rules);
         Some(copy)
@@ -281,7 +292,7 @@ impl Game {
         def: &ItemDef,
         given: Option<Ent>,
         snapshot: &PickupSnapshot,
-        ctx: &PickupContext<'_>,
+        ctx: &mut PickupContext<'_>,
     ) {
         self.normalize_ammo(player, ctx.catalog);
         let mut after = self.reserve(player);
@@ -303,6 +314,31 @@ impl Game {
         }
         for (actual, before) in after.iter_mut().zip(snapshot.before) {
             *actual = (*actual).max(before);
+        }
+        if let Some(inventory) = ctx.inventory.as_deref_mut() {
+            // Account for the newly equipped gun before admitting the ammo it brings.
+            reconcile_native_inventory(
+                inventory,
+                &self.native_weapons(player),
+                ctx.catalog.ammo_weight(&snapshot.before),
+            );
+            let limit = inventory.limits().max_weight;
+            let mut room = (limit > 0.0).then(|| (limit - inventory.weight()).max(0.0));
+            for kind in super::AmmoKind::ALL {
+                let i = kind.definition().index;
+                let before = snapshot.before[i];
+                let gain = after[i].saturating_sub(before);
+                if gain > 0 {
+                    let fit = ctx
+                        .catalog
+                        .split_unload(Some(kind), gain, before, room)
+                        .to_reserve;
+                    after[i] = before + fit;
+                    if let Some(left) = &mut room {
+                        *left = (*left - fit as f32 * ctx.catalog.round_weight(kind)).max(0.0);
+                    }
+                }
+            }
         }
         self.restore_reserve(player, &after);
         if let Some(previous) = snapshot.previous.filter(|&previous| {

@@ -22,7 +22,10 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::native::{self, Detour};
+use crate::native::{
+    self,
+    resident::{CallbackSlots, Method},
+};
 
 mod fallback;
 mod queue;
@@ -55,7 +58,6 @@ static RETIRED: AtomicBool = AtomicBool::new(false);
 static READY: AtomicU8 = AtomicU8::new(0);
 static DEVICE: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicU8 = AtomicU8::new(0);
-static CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static CURRENT: Mutex<Frame> = Mutex::new(Frame::EMPTY);
 static FALLBACK: Mutex<Option<Arc<Drawing>>> = Mutex::new(None);
 static RENDER: Mutex<Option<Graphics>> = Mutex::new(None);
@@ -158,38 +160,33 @@ pub fn schedule(layer: Layer) {
 }
 
 pub struct Renderer {
-    present: Detour,
-    reset: Detour,
+    present: CallbackSlots,
+    reset: CallbackSlots,
     queue: queue::Queue,
 }
 
-struct Callback;
-
-impl Callback {
-    fn enter() -> Self {
-        CALLBACKS.fetch_add(1, Ordering::AcqRel);
-        Self
-    }
-}
-
-impl Drop for Callback {
-    fn drop(&mut self) {
-        CALLBACKS.fetch_sub(1, Ordering::Release);
-    }
-}
-
 impl Renderer {
-    pub fn install(window: windows_sys::Win32::Foundation::HWND) -> io::Result<Self> {
+    pub fn install() -> io::Result<Self> {
         let fail = || io::Error::other("could not bind Direct3D 9 for the original screen effects");
-        let (present, reset) = find_device(window).ok_or_else(fail)?;
-        let mut present = Detour::prepare(present, hooked_present as Present as usize)?;
-        let mut reset = Detour::prepare(reset, hooked_reset as Reset as usize)?;
-        PRESENT.store(present.trampoline(), Ordering::Release);
-        RESET.store(reset.trampoline(), Ordering::Release);
-        if let Err(error) = present.enable().and_then(|()| reset.enable()) {
-            let _ = present.disable();
-            return Err(error);
-        }
+        let table = game_device_table().ok_or_else(fail)?;
+        let present_slot = table + 17 * size_of::<usize>();
+        let reset_slot = table + 16 * size_of::<usize>();
+        let present = native::word(present_slot).ok_or_else(fail)? as usize;
+        let reset = native::word(reset_slot).ok_or_else(fail)? as usize;
+        PRESENT.store(present, Ordering::Release);
+        RESET.store(reset, Ordering::Release);
+        let present = CallbackSlots::install(
+            Method::Present,
+            &[present_slot],
+            present,
+            hooked_present as Present as usize,
+        )?;
+        let reset = CallbackSlots::install(
+            Method::Reset,
+            &[reset_slot],
+            reset,
+            hooked_reset as Reset as usize,
+        )?;
         RETIRING.store(false, Ordering::Release);
         RETIRED.store(false, Ordering::Release);
         LIVE.store(true, Ordering::Release);
@@ -204,16 +201,14 @@ impl Renderer {
         LIVE.store(false, Ordering::Release);
         self.queue.stop()?;
         RETIRING.store(true, Ordering::Release);
-        if (!RETIRED.load(Ordering::Acquire) && RENDER.lock().is_ok_and(|render| render.is_some()))
-            || !queue::idle()
-        {
-            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+        if !RETIRED.load(Ordering::Acquire) && RENDER.lock().is_ok_and(|render| render.is_some()) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "waiting for Direct3D to retire its resources on Present",
+            ));
         }
-        self.reset.disable()?;
-        self.present.disable()?;
-        if CALLBACKS.load(Ordering::Acquire) != 0 {
-            return Err(io::Error::from(io::ErrorKind::WouldBlock));
-        }
+        self.reset.stop()?;
+        self.present.stop()?;
         READY.store(0, Ordering::Release);
         DEVICE.store(false, Ordering::Release);
         DONE.store(0, Ordering::Release);
@@ -223,34 +218,29 @@ impl Renderer {
     }
 }
 
-fn find_device(window: windows_sys::Win32::Foundation::HWND) -> Option<(usize, usize)> {
-    let api = unsafe { Direct3DCreate9(D3D_SDK_VERSION) }?;
-    let window = HWND(window);
-    let mut parameters = D3DPRESENT_PARAMETERS {
-        BackBufferWidth: 2,
-        BackBufferHeight: 2,
-        BackBufferFormat: D3DFMT_UNKNOWN,
-        BackBufferCount: 1,
-        SwapEffect: D3DSWAPEFFECT_DISCARD,
-        hDeviceWindow: window,
-        Windowed: true.into(),
-        ..Default::default()
-    };
-    let mut device = None;
-    unsafe {
-        api.CreateDevice(
-            D3DADAPTER_DEFAULT,
-            D3DDEVTYPE_HAL,
-            window,
-            (D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_NOWINDOWCHANGES) as u32,
-            &mut parameters,
-            &mut device,
+/// The checked shader device's two Present branches read this same global
+/// immediately before the IDirect3DDevice9::Present call. An independently
+/// created dummy device can have a different (driver/overlay-owned) vtable.
+fn game_device_table() -> Option<usize> {
+    let image = native::PeImage::loaded(native::module("shaderapidx9.dll")?)?;
+    let at = image.base.checked_add(0x2c40c)?;
+    if image.timestamp != 0x6a440e0a
+        || !image.includes(at, 21)
+        || !native::matches_pattern(
+            at,
+            "A1 ?? ?? ?? ?? 8B 08 8B 51 44 6A 00 6A 00 6A 00 6A 00 50 FF D2",
         )
-        .ok()?;
+    {
+        return None;
     }
-    let device = device?;
-    let addr = device.as_raw().addr();
-    Some((native::vslot(addr, 17)?, native::vslot(addr, 16)?))
+    let variable = native::word(at + 1)? as usize;
+    if !image.includes(variable, 4) {
+        return None;
+    }
+    let device = native::word(variable)? as usize;
+    native::word(device)
+        .filter(|table| *table != 0)
+        .map(|table| table as usize)
 }
 
 struct Graphics {
@@ -300,10 +290,19 @@ impl Graphics {
         }
     }
 
-    fn games_frame(&mut self, frame: Frame, outside_scene: bool) {
-        if !frame.has_effect() || self.programs.is_none() {
-            return;
+    fn games_frame(&mut self, frame: Frame, outside_scene: bool) -> bool {
+        let requested = (u8::from(frame.infection.is_some()) * INFECTION)
+            | (u8::from(frame.stamina.is_some()) * STAMINA);
+        if !frame.has_effect()
+            || self.programs.is_none()
+            || READY.load(Ordering::Acquire) & requested == 0
+        {
+            return false;
         }
+        let frame = Frame {
+            infection: frame.infection.filter(|_| infection_ready()),
+            stamina: frame.stamina.filter(|_| stamina_ready()),
+        };
         let result = (|| -> windows::core::Result<()> {
             let device = &self.device;
             let target = unsafe {
@@ -338,7 +337,7 @@ impl Graphics {
                 self.frame_copy = texture.map(|texture| (w, h, format, texture));
             }
             let Some((_, _, _, texture)) = self.frame_copy.as_ref() else {
-                return Ok(());
+                return Err(windows::core::Error::empty());
             };
             if self.saved.is_none() {
                 self.saved = Some(unsafe { device.CreateStateBlock(D3DSBT_ALL) }?);
@@ -349,7 +348,7 @@ impl Graphics {
             unsafe { state.Capture() }?;
             let started = outside_scene && unsafe { device.BeginScene() }.is_ok();
             if outside_scene && !started {
-                return Ok(());
+                return Err(windows::core::Error::empty());
             }
             let work = (|| -> windows::core::Result<()> {
                 unsafe { configure_draw(device, w, h) }?;
@@ -391,11 +390,14 @@ impl Graphics {
             // A lost device or unsupported render target may reject a frame copy.
             // Invalidate the state on Reset and let the game continue presenting.
             self.saved = None;
+            READY.fetch_and(!requested, Ordering::AcqRel);
             if !self.warned {
                 self.warned = true;
                 crate::client::log(&format!("Direct3D screen-effects pass failed ({error})"));
             }
+            return false;
         }
+        true
     }
 }
 
@@ -592,8 +594,8 @@ fn run_at(layer: Layer) {
     let frame = current().for_layer(layer);
     if let Ok(mut render) = RENDER.lock()
         && let Some(graphics) = render.as_mut().filter(|_| frame.has_effect())
+        && graphics.games_frame(frame, false)
     {
-        graphics.games_frame(frame, false);
         DONE.fetch_or(layer.bit(), Ordering::Release);
     }
 }
@@ -605,7 +607,6 @@ unsafe extern "system" fn hooked_present(
     window: HWND,
     dirty: *const RGNDATA,
 ) -> i32 {
-    let _call = Callback::enter();
     let original = PRESENT.load(Ordering::Acquire);
     let _ = std::panic::catch_unwind(|| {
         if let Ok(mut render) = RENDER.lock() {
@@ -664,7 +665,6 @@ unsafe extern "system" fn hooked_reset(
     device: *mut c_void,
     parameters: *mut D3DPRESENT_PARAMETERS,
 ) -> i32 {
-    let _call = Callback::enter();
     if let Ok(mut render) = RENDER.lock()
         && render
             .as_ref()

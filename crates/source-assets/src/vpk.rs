@@ -41,11 +41,9 @@ fn cstring(input: &mut &[u8]) -> io::Result<String> {
         .iter()
         .position(|&b| b == 0)
         .ok_or_else(|| invalid("unterminated VPK path"))?;
-    Ok(take(input, end + 1)?[..end]
-        .iter()
-        .copied()
-        .map(char::from)
-        .collect())
+    std::str::from_utf8(&take(input, end + 1)?[..end])
+        .map(str::to_owned)
+        .map_err(|_| invalid("invalid UTF-8 in VPK path"))
 }
 
 fn u32_at(bytes: &[u8], index: usize) -> u32 {
@@ -199,7 +197,7 @@ pub fn pack(files: &BTreeMap<String, Vec<u8>>) -> io::Result<Vec<u8>> {
         let (stem, ext) = filename.rsplit_once('.').unwrap_or((filename, " "));
         if [dir, stem, ext]
             .into_iter()
-            .any(|part| part.is_empty() || !part.is_ascii() || part.contains('\0'))
+            .any(|part| part.is_empty() || part.contains('\0'))
         {
             return Err(invalid("invalid VPK pathname"));
         }

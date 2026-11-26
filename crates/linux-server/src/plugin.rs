@@ -1,10 +1,10 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{CStr, CString, c_char, c_int, c_void},
     fs,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::{Path, PathBuf},
+    path::PathBuf,
     ptr::{self, NonNull},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -37,7 +37,8 @@ struct Player {
     last_saved: u32,
     edict: Option<NonNull<Edict>>,
     transition_reserve: Option<Reserve>,
-    death_position: Option<Vector>,
+    condition: Vec<inventory_mod::remote_state::CarriedCondition>,
+    death_position: Option<(u32, Vector)>,
     next_mutators: Option<Instant>,
     pending_notice: String,
     actions: Actions,
@@ -69,11 +70,20 @@ impl Player {
             file,
             edict: None,
             transition_reserve: None,
+            condition: Vec::new(),
             death_position: None,
             next_mutators: None,
             pending_notice: String::new(),
             actions: Actions::default(),
             last_ping: None,
+        }
+    }
+
+    fn restore_equipment(&mut self, game: &mut Game, entity: NonNull<Entity>) {
+        if let Some(reserve) = self.transition_reserve.take() {
+            game.restore_reserve(entity, &reserve);
+            game.restore_condition(entity, &self.condition);
+            self.condition.clear();
         }
     }
 
@@ -98,24 +108,6 @@ impl Player {
     }
 }
 
-fn player_file(directory: &Path, network_id: &str) -> Option<PathBuf> {
-    let id = network_id.strip_prefix("STEAM_")?;
-    let mut parts = id.split(':');
-    let universe = parts.next()?;
-    let account_type = parts.next()?;
-    let account_id = parts.next()?;
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|byte| byte.is_ascii_digit());
-    if parts.next().is_some()
-        || account_type.len() != 1
-        || ![universe, account_type, account_id].into_iter().all(digits)
-    {
-        return None;
-    }
-    Some(directory.join(format!(
-        "inventory_STEAM_{universe}_{account_type}_{account_id}.inventory"
-    )))
-}
-
 struct Server {
     source: Source,
     game: Game,
@@ -133,11 +125,14 @@ struct Server {
     limits: Limits,
     directory: PathBuf,
     players: HashMap<i32, Player>,
+    away: HashMap<PathBuf, Player>,
     map: String,
     round_map: String,
+    transitioned_players: HashSet<i32>,
     transition: bool,
     campaign_start: Option<SystemTime>,
     paused: bool,
+    paused_level: Option<i32>,
 }
 
 impl Server {
@@ -218,11 +213,14 @@ impl Server {
             pings: Pings::default(),
             next_pickup_scan: None,
             players: HashMap::new(),
+            away: HashMap::new(),
             map: String::new(),
             round_map: String::new(),
+            transitioned_players: HashSet::new(),
             transition: false,
             campaign_start: None,
             paused: false,
+            paused_level: None,
         };
         server.listen();
         Some(server)
@@ -231,6 +229,7 @@ impl Server {
     fn listen(&mut self) {
         for name in [
             c"map_transition",
+            c"player_transitioned",
             c"round_start",
             c"player_death",
             c"player_spawn",
@@ -249,6 +248,75 @@ impl Server {
             c"pills_used",
         ] {
             self.source.add_listener(listener(), name);
+        }
+    }
+
+    fn pause(&mut self) {
+        if self.paused {
+            return;
+        }
+        self.paused = true;
+        self.paused_level = self.source.current_level().map(|(number, _, _)| number);
+        self.source.remove_listener(listener());
+        self.pings.clear(&self.game, true);
+        self.game.clear_melee(true);
+        self.game
+            .clear_stamina(&self.source, true, |id| self.players.contains_key(&id));
+        self.game
+            .clear_infection(&self.source, true, |id| self.players.contains_key(&id));
+        self.restore_cvars();
+        self.horde_at = None;
+        self.mutator_generation = self.mutator_generation.wrapping_add(1);
+        let clear = CString::new(format!("@mut@ {} 0|\n", self.mutator_generation)).unwrap();
+        for (id, mut player) in std::mem::take(&mut self.players) {
+            let edict = player
+                .edict
+                .take()
+                .filter(|&e| self.source.user_id(e) == Some(id));
+            self.game.cancel_actions(
+                edict.and_then(|e| self.source.entity(e)),
+                &mut player.actions,
+            );
+            if let Some(edict) = edict {
+                self.source.client_print(edict, c"@mel@ 0 0 0\n");
+                self.source.client_print(edict, &clear);
+            }
+            player.pending_notice.clear();
+            player.next_mutators = None;
+            player.death_position = None;
+            player.last_ping = None;
+            player.save();
+            if let Some(file) = &player.file {
+                self.away.insert(file.clone(), player);
+            } else {
+                // LAN-only clients may keep their existing connection and user ID.
+                self.players.insert(id, player);
+            }
+        }
+        self.clients = None;
+    }
+
+    fn unpause(&mut self) {
+        if !self.paused {
+            return;
+        }
+        self.paused = false;
+        self.listen();
+        let before = self.paused_level.take();
+        if let Some((number, map, clients)) = self.source.current_level() {
+            self.clients = Some(clients);
+            self.map = map;
+            if before != Some(number) {
+                // The plugin manager skips its level callbacks while disabled.
+                self.game.reset();
+                self.game.clear_piles(&self.source, false);
+                self.transition = false;
+                self.next_pickup_scan = None;
+                self.start_round();
+            } else {
+                self.apply_cvars();
+                self.mutator_generation = self.mutator_generation.wrapping_add(1);
+            }
         }
     }
 
@@ -273,6 +341,9 @@ impl Server {
     }
 
     fn start_round(&mut self) {
+        if !self.transition {
+            self.transitioned_players.clear();
+        }
         let restart = !self.transition && !self.map.is_empty() && self.round_map == self.map;
         let new_campaign = !restart && !self.transition && !self.round_map.is_empty();
         self.game
@@ -309,11 +380,16 @@ impl Server {
             self.campaign_start = Some(SystemTime::now());
         }
 
-        for (&id, player) in &mut self.players {
+        for (id, player) in self
+            .players
+            .iter_mut()
+            .map(|(&id, p)| (Some(id), p))
+            .chain(self.away.values_mut().map(|p| (None, p)))
+        {
             player.death_position = None;
             let entity = player
                 .edict
-                .filter(|&edict| self.source.user_id(edict) == Some(id))
+                .filter(|&edict| id.is_some() && self.source.user_id(edict) == id)
                 .and_then(|edict| self.source.entity(edict));
             self.game.cancel_actions(entity, &mut player.actions);
             if restart {
@@ -327,6 +403,7 @@ impl Server {
             player.next_mutators = None;
             if !self.transition {
                 player.transition_reserve = None;
+                player.condition.clear();
             }
             player.chapter_start = player.inventory.to_text();
             player.save();
@@ -359,7 +436,11 @@ impl Server {
                         .map(|now| now + self.rules.mutators.horde_tide.first as f32);
                 }
             }
+            Event::PlayerTransitioned(user) => {
+                self.transitioned_players.insert(user);
+            }
             Event::Transition => {
+                self.transitioned_players.clear();
                 self.game
                     .clear_infection(&self.source, true, |user| self.players.contains_key(&user));
                 self.transition = true;
@@ -372,6 +453,7 @@ impl Server {
                         && let Some(entity) = self.source.entity(edict)
                     {
                         player.transition_reserve = Some(self.game.reserve(entity));
+                        player.condition = self.game.carried_condition(entity);
                     }
                 }
             }
@@ -385,7 +467,7 @@ impl Server {
                         .player_info(edict)
                         .is_some_and(|info| info.team == 2)
                 {
-                    player.death_position = self.game.player_position(&self.source, edict);
+                    player.death_position = self.game.death_position(&self.source, edict);
                 }
             }
             Event::Spawn(user) => {
@@ -466,6 +548,9 @@ impl Server {
             };
             if let Some(entity) = self.source.entity(edict) {
                 if info.team == 2 && !info.dead {
+                    if !self.transition && self.transitioned_players.remove(&id) {
+                        player.restore_equipment(&mut self.game, entity);
+                    }
                     let mut context = ActionContext {
                         source: &self.source,
                         rules: &self.rules,
@@ -481,15 +566,18 @@ impl Server {
                 }
             }
             if info.dead
-                && let Some(position) = player.death_position.take()
+                && let Some((handle, position)) = player.death_position.take()
+                && info.team == 2
+                && let Some(entity) = self
+                    .source
+                    .entity(edict)
+                    .filter(|&actor| self.game.handle(actor) == handle)
             {
                 let offset = self
                     .game
                     .drop_on_death(&self.source, position, &mut player.inventory);
-                if let Some(entity) = self.source.entity(edict) {
-                    self.game
-                        .drop_reserve(&self.source, entity, position, offset);
-                }
+                self.game
+                    .drop_reserve(&self.source, entity, position, offset);
                 player.save();
             }
             if let Some(msg) = &msg
@@ -503,24 +591,7 @@ impl Server {
 
     fn client_command(&mut self, edict: NonNull<Edict>, command: &Command) -> c_int {
         let name = command.arg(0);
-        if self.paused
-            || !matches!(
-                name,
-                "inv_sync"
-                    | "inv_move"
-                    | "inv_select"
-                    | "inv_pickup"
-                    | "inv_store"
-                    | "inv_use"
-                    | "inv_drop"
-                    | "inv_dropweapon"
-                    | "inv_unload"
-                    | "inv_dropammo"
-                    | "inv_ping"
-                    | "inv_infect"
-                    | "inv_spawn"
-            )
-        {
+        if self.paused || !inventory_mod::protocol::is_inventory_command(name) {
             return CONTINUE;
         }
         let Some(info) = self
@@ -542,21 +613,17 @@ impl Server {
                 max_weight: self.chapter.max_weight(self.limits.max_weight),
                 ..self.limits
             };
-            Player::new(
-                &self.rules,
-                limits,
-                player_file(&self.directory, network_id),
-                self.campaign_start,
-            )
+            let file = inventory_mod::inventory::player_file(&self.directory, network_id);
+            file.as_ref()
+                .and_then(|path| self.away.remove(path))
+                .unwrap_or_else(|| Player::new(&self.rules, limits, file, self.campaign_start))
         });
         player.edict = Some(edict);
         let entity = self.source.entity(edict);
         let survivor = entity.filter(|_| info.team == 2 && !info.dead);
         if let Some(entity) = survivor {
-            if !self.transition
-                && let Some(reserve) = player.transition_reserve.take()
-            {
-                self.game.restore_reserve(entity, &reserve);
+            if !self.transition && self.transitioned_players.remove(&user) {
+                player.restore_equipment(&mut self.game, entity);
             }
             self.game.normalize_ammo(entity, &self.rules.catalog);
         }
@@ -674,6 +741,9 @@ impl Server {
                     })
                     .unwrap_or_default(),
                 "inv_dropweapon" => self.game.drop_weapon(entity, class, inventory.catalog()),
+                "inv_spawn" if !self.rules.debug_spawn => {
+                    "Item spawning is disabled on this server".into()
+                }
                 "inv_spawn" => {
                     self.game
                         .spawn_item(&self.source, entity, inventory.catalog(), class)
@@ -820,6 +890,7 @@ impl Server {
 #[derive(Clone, Copy)]
 enum Event {
     Transition,
+    PlayerTransitioned(i32),
     RoundStart,
     Death(i32),
     Spawn(i32),
@@ -835,6 +906,13 @@ thread_local! {
     static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
 }
 
+fn with_gameplay<T: Copy>(fallback: T, f: impl FnOnce(&mut Server) -> T) -> T {
+    with_server(
+        fallback,
+        |server| if server.paused { fallback } else { f(server) },
+    )
+}
+
 fn with_server<T: Copy>(fallback: T, f: impl FnOnce(&mut Server) -> T) -> T {
     ffi(fallback, || {
         SERVER.with(|server| {
@@ -847,7 +925,7 @@ fn with_server<T: Copy>(fallback: T, f: impl FnOnce(&mut Server) -> T) -> T {
             let result = f(server);
             loop {
                 let events = EVENTS.with(|events| events.take());
-                if events.is_empty() {
+                if server.paused || events.is_empty() {
                     break;
                 }
                 for event in events {
@@ -860,7 +938,7 @@ fn with_server<T: Copy>(fallback: T, f: impl FnOnce(&mut Server) -> T) -> T {
 }
 
 pub fn ammo_use(pile: *mut Entity, player: *mut Entity) -> bool {
-    with_server(false, |server| {
+    with_gameplay(false, |server| {
         let (Some(pile), Some(player)) = (NonNull::new(pile), NonNull::new(player)) else {
             return false;
         };
@@ -883,7 +961,7 @@ pub fn ammo_use(pile: *mut Entity, player: *mut Entity) -> bool {
 
 pub fn pickup(player: *mut Entity, item: *mut Entity, call: PickupCall) -> Option<bool> {
     let (player, item) = (NonNull::new(player)?, NonNull::new(item)?);
-    with_server(None, |server| {
+    with_gameplay(None, |server| {
         let player_state = server
             .source
             .as_edict(player)
@@ -909,15 +987,19 @@ pub fn pickup(player: *mut Entity, item: *mut Entity, call: PickupCall) -> Optio
 }
 
 pub fn block_reload(weapon: NonNull<Entity>) -> bool {
-    with_server(false, |server| server.game.block_reload(weapon))
+    with_gameplay(false, |server| server.game.block_reload(weapon))
+}
+
+pub fn keep_empty_chainsaw() -> bool {
+    with_gameplay(false, |_| true)
 }
 
 pub fn reload_on_empty(weapon: NonNull<Entity>) {
-    with_server((), |server| server.game.reload_on_empty(weapon));
+    with_gameplay((), |server| server.game.reload_on_empty(weapon));
 }
 
 pub fn combat_damage(victim: NonNull<Entity>, damage: DamageInput, original: f32) -> f32 {
-    with_server(original, |server| {
+    with_gameplay(original, |server| {
         server
             .game
             .combat_damage(&server.source, victim, damage, &server.chapter, |user| {
@@ -927,7 +1009,7 @@ pub fn combat_damage(victim: NonNull<Entity>, damage: DamageInput, original: f32
 }
 
 pub fn prepare_attack(weapon: NonNull<Entity>, shove: bool) -> Option<AttackContext> {
-    with_server(None, |server| {
+    with_gameplay(None, |server| {
         server
             .game
             .prepare_attack(&server.source, weapon, shove, &server.chapter.melee)
@@ -935,7 +1017,7 @@ pub fn prepare_attack(weapon: NonNull<Entity>, shove: bool) -> Option<AttackCont
 }
 
 pub fn finish_attack(attack: AttackContext) {
-    with_server((), |server| {
+    with_gameplay((), |server| {
         server
             .game
             .finish_attack(&server.source, attack, &server.chapter)
@@ -943,7 +1025,7 @@ pub fn finish_attack(attack: AttackContext) {
 }
 
 pub fn wall_hit(weapon: NonNull<Entity>) {
-    with_server((), |server| {
+    with_gameplay((), |server| {
         server
             .game
             .wall_hit(&server.source, weapon, &server.chapter.melee, |user| {
@@ -953,7 +1035,7 @@ pub fn wall_hit(weapon: NonNull<Entity>) {
 }
 
 pub fn can_rescue(player: NonNull<Entity>) -> bool {
-    with_server(true, |server| {
+    with_gameplay(true, |server| {
         server.game.can_rescue(&server.source, player)
     })
 }
@@ -1139,11 +1221,11 @@ extern "C" fn unload(_: *mut c_void) {
 }
 
 extern "C" fn pause(_: *mut c_void) {
-    with_server((), |server| server.paused = true);
+    with_server((), Server::pause);
 }
 
 extern "C" fn unpause(_: *mut c_void) {
-    with_server((), |server| server.paused = false);
+    with_server((), Server::unpause);
 }
 
 extern "C" fn description(_: *mut c_void) -> *const c_char {
@@ -1180,7 +1262,19 @@ extern "C" fn client_disconnect(_: *mut c_void, edict: *mut Edict) {
         {
             server.pings.remove(&server.game, user);
             server.game.forget_infection(&server.source, user, false);
+            server.game.cancel_actions(
+                player.edict.and_then(|e| server.source.entity(e)),
+                &mut player.actions,
+            );
+            player.edict = None;
+            player.death_position = None;
+            player.pending_notice.clear();
+            player.last_ping = None;
+            player.next_mutators = None;
             player.save();
+            if let Some(file) = &player.file {
+                server.away.insert(file.clone(), player);
+            }
         }
     });
 }
@@ -1204,6 +1298,9 @@ extern "C" fn fire_game_event(_: *mut c_void, event: *mut c_void) {
             Some("round_start") => Event::RoundStart,
             Some("player_left_start_area") => Event::LeftStartArea,
             Some("map_transition") => Event::Transition,
+            Some("player_transitioned") => {
+                Event::PlayerTransitioned(unsafe { source::event_int(event, c"userid") })
+            }
             Some("player_death") => Event::Death(unsafe { source::event_int(event, c"userid") }),
             Some("player_spawn") => Event::Spawn(unsafe { source::event_int(event, c"userid") }),
             Some("round_end" | "mission_lost" | "finale_vehicle_leaving" | "finale_win") => {

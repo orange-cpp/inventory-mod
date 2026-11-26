@@ -237,15 +237,14 @@ impl NativeActions {
             ItemSource::Stored(index) => {
                 session.inventory.remove_from_slot(index, 1);
             }
-            ItemSource::Held(entity) => {
-                if ctx
-                    .game
-                    .release(actor, entity, &name, session.inventory.catalog(), true)
-                {
+            ItemSource::Held(handle) => {
+                if let Some(entity) = ctx.game.resolve(handle) {
+                    ctx.game
+                        .release(actor, entity, &name, session.inventory.catalog(), true);
                     ctx.game.remove(entity);
-                    if let Some(home) = session.inventory.held_slot(item) {
-                        session.inventory.clear_held(home);
-                    }
+                }
+                if let Some(home) = session.inventory.held_slot(item) {
+                    session.inventory.clear_held(home);
                 }
             }
         }
@@ -253,7 +252,11 @@ impl NativeActions {
             && name.classname == "weapon_adrenaline"
             && let Some(rush) = self.rush
         {
-            unsafe { rush(address(actor), 15.0) };
+            let duration = crate::cvars::ConVar::find(c"adrenaline_duration")
+                .and_then(|var| var.scalar())
+                .filter(|seconds| (0.0..600.0).contains(seconds) && *seconds > 0.0)
+                .unwrap_or(15.0);
+            unsafe { rush(address(actor), duration) };
         }
         ctx.hooks.changed(actor);
         format!("Got up with your {}", name.name)
@@ -263,8 +266,8 @@ impl NativeActions {
         let now = ctx.hooks.time()?;
         let buttons = native::word(actor + BUTTONS).unwrap_or_default() as i32;
         let holding_reload = buttons & BUTTON_RELOAD != 0;
-        let pressed =
-            holding_reload && !std::mem::replace(&mut session.actions.reload, holding_reload);
+        let was_down = std::mem::replace(&mut session.actions.reload, holding_reload);
+        let pressed = holding_reload && !was_down;
         if let Some(progress) = session.actions.progress {
             let eligible = progress.actor == actor && ctx.game.living(actor) && !self.pinned(actor);
             let valid = eligible
@@ -342,7 +345,7 @@ impl Progress {
 }
 
 enum ItemSource {
-    Held(usize),
+    Held(u32),
     Stored(usize),
 }
 
@@ -357,7 +360,8 @@ fn item_source(
     let held = || {
         game.weapons(actor, inventory.catalog())[slot_index(def.game_slot)]
             .filter(|&(_, current)| current == item)
-            .map(|(entity, _)| ItemSource::Held(entity))
+            .and_then(|(entity, _)| handle(game, entity))
+            .map(ItemSource::Held)
     };
     if slot.is_none()
         && let Some(held) = held()

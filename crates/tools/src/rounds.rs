@@ -47,14 +47,10 @@ pub fn files(
     let mut files = BTreeMap::new();
     for (file, kind) in KINDS {
         let path = textures.join(file);
-        let image = match ImageReader::open(&path) {
-            Ok(reader) => reader.decode()?.into_rgb8(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                eprintln!("{} is missing. Skipping {kind}.", path.display());
-                continue;
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let image = ImageReader::open(&path)
+            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?
+            .decode()?
+            .into_rgb8();
         let image = imageops::resize(&image, SIZE.0, SIZE.1, FilterType::Lanczos3);
         let rgba = image::RgbaImage::from_fn(SIZE.0, SIZE.1, |x, y| {
             let [r, g, b] = image.get_pixel(x, y).0;

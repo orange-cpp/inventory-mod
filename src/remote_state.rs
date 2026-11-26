@@ -16,6 +16,16 @@ pub struct NativeWeapon {
     pub wear: Option<i32>,
 }
 
+/// Condition carried by a native weapon across a level change, when entity handles change.
+#[derive(Clone, Debug)]
+pub struct CarriedCondition {
+    pub slot: usize,
+    pub classname: String,
+    pub melee: String,
+    pub wear: i32,
+    pub spent: i32,
+}
+
 pub fn reconcile_native_inventory(
     inventory: &mut Inventory,
     native: &[NativeWeapon],
@@ -39,10 +49,12 @@ pub fn reconcile_native_inventory(
             let def = catalog.item(id);
             if def.is_weapon() {
                 weight += def.weight;
-            } else if inventory.held_slot(id).is_none()
-                && let Some(index) = inventory.home_for(id)
-            {
-                inventory.set_held(index, id);
+            } else if inventory.held_slot(id).is_none() {
+                if let Some(index) = inventory.home_for(id) {
+                    inventory.set_held(index, id);
+                } else {
+                    weight += def.weight;
+                }
             }
         }
     }

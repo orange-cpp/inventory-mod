@@ -47,6 +47,10 @@ impl Rules {
                 continue;
             };
             match name {
+                "debug" => read_fields(text, name, table, diagnostics, |key, entry| match key {
+                    "allow_spawn" => entry.set_bool(&mut rules.debug_spawn),
+                    _ => entry.unknown(),
+                }),
                 "limits" => read_limits(text, table, &mut rules.limits, diagnostics),
                 "weight" => read_fields(text, name, table, diagnostics, |key, entry| {
                     if let Some(weight) = entry.number(0.0..=f64::from(f32::MAX)) {

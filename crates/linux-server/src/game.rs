@@ -178,8 +178,9 @@ impl Game {
         (!origin.is_null()).then(|| unsafe { origin.read_unaligned() })
     }
 
-    pub fn player_position(&self, source: &Source, edict: NonNull<Edict>) -> Option<Vector> {
-        self.position(source.entity(edict)?)
+    pub fn death_position(&self, source: &Source, edict: NonNull<Edict>) -> Option<(u32, Vector)> {
+        let actor = source.entity(edict)?;
+        Some((self.handle(actor), self.position(actor)?))
     }
 
     fn eyes(&self, player: Ent) -> (Vector, Vector) {
@@ -197,7 +198,7 @@ impl Game {
         (eye, forward)
     }
 
-    fn handle(&self, entity: Ent) -> u32 {
+    pub fn handle(&self, entity: Ent) -> u32 {
         unsafe { field(entity, ENTITY_HANDLE) }
     }
 
@@ -259,6 +260,53 @@ impl Game {
         let handle = self.handle(entity);
         if spent > 0 || self.condition.contains_key(&handle) {
             self.condition.entry(handle).or_default().spent = spent;
+        }
+    }
+
+    pub fn carried_condition(
+        &self,
+        player: Ent,
+    ) -> Vec<inventory_mod::remote_state::CarriedCondition> {
+        (0..NATIVE_SLOTS)
+            .filter_map(|slot| {
+                let weapon = self.weapon_at(player, slot as i32)?;
+                let state = self.condition.get(&self.handle(weapon))?;
+                if state.wear == 0 && state.spent == 0 {
+                    return None;
+                }
+                let classname = self.classname(weapon);
+                Some(inventory_mod::remote_state::CarriedCondition {
+                    slot,
+                    classname: classname.into(),
+                    melee: if classname == "weapon_melee" {
+                        self.melee_script(weapon).into()
+                    } else {
+                        String::new()
+                    },
+                    wear: state.wear,
+                    spent: state.spent,
+                })
+            })
+            .collect()
+    }
+
+    pub fn restore_condition(
+        &mut self,
+        player: Ent,
+        saved: &[inventory_mod::remote_state::CarriedCondition],
+    ) {
+        for item in saved {
+            let Some(weapon) = self.weapon_at(player, item.slot as i32) else {
+                continue;
+            };
+            if self.classname(weapon) == item.classname
+                && (item.classname != "weapon_melee" || self.melee_script(weapon) == item.melee)
+            {
+                let handle = self.handle(weapon);
+                let state = self.condition.entry(handle).or_default();
+                state.wear = item.wear;
+                state.spent = item.spent;
+            }
         }
     }
 
@@ -465,6 +513,9 @@ impl Game {
         id: ItemId,
         inventory: &mut Inventory,
     ) -> bool {
+        if self.pending_removal(weapon) {
+            return false;
+        }
         let def = inventory.catalog().item(id);
         let mut next = inventory.clone();
         if def.is_weapon() {
@@ -638,7 +689,12 @@ impl Game {
                     return None;
                 }
                 let facing = relative.dot(forward) / distance;
-                (facing >= 0.6).then_some((distance * (2.0 - facing), entity, id))
+                if facing < 0.6 {
+                    return None;
+                }
+                let hit = source.trace(eye, relative, source.as_edict(player), 0x4600_4003)?;
+                (!hit.start_solid && (hit.fraction >= 1.0 || hit.entity == Some(entity)))
+                    .then_some((distance * (2.0 - facing), entity, id))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
         let Some((_, entity, id)) = closest else {
@@ -678,7 +734,15 @@ impl Game {
         if inventory.add_weapon(id, state, None).is_none() {
             return false;
         }
-        self.add_rounds(player, entity, &def, spare, inventory.catalog());
+        if let Some(kind) = def.ammo.filter(|_| spare > 0) {
+            let room = (inventory.limits().max_weight > 0.0)
+                .then(|| (inventory.limits().max_weight - inventory.weight()).max(0.0));
+            let before = self.reserve(player)[kind.definition().index];
+            let split = inventory
+                .catalog()
+                .split_unload(Some(kind), spare, before, room);
+            self.add_rounds(player, entity, &def, split.to_reserve, inventory.catalog());
+        }
         true
     }
 
@@ -806,26 +870,28 @@ impl Game {
         inventory: &mut Inventory,
     ) -> i32 {
         let mut count = 0;
-        for stack in inventory.slots() {
+        for index in 0..inventory.slots().len() {
+            let stack = inventory.slots()[index].clone();
             let Some(id) = stack.item else {
                 continue;
             };
-            for n in 0..stack.count {
+            for _ in 0..stack.count {
                 let angle = count as f32 * 2.39996;
                 let radius = (4.0 + count as f32 * 3.0).min(18.0);
-                if let Some(entity) = self.spawn_at(
+                let Some(entity) = self.spawn_at(
                     source,
                     inventory.catalog().item(id),
                     &stack.weapon,
                     position.offset(angle.cos() * radius, angle.sin() * radius, 16.0),
-                ) {
-                    let spent = if n == stack.count - 1 { stack.spent } else { 0 };
-                    self.set_spent(entity, spent);
-                }
+                ) else {
+                    break;
+                };
+                self.set_spent(entity, inventory.next_spent(index));
+                inventory.remove_from_slot(index, 1);
                 count += 1;
             }
+            inventory.clear_held(index);
         }
-        inventory.clear();
         count
     }
 

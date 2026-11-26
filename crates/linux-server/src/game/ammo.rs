@@ -71,8 +71,10 @@ impl Game {
         self.clear_piles(source, true);
         self.ammo.reload_patches.clear();
         self.ammo.pile_patch = None;
-        ORIGINAL_PILE.set(None);
-        RELOAD_TABLES.with_borrow_mut(HashMap::clear);
+        if !super::vtable::retained() {
+            ORIGINAL_PILE.set(None);
+            RELOAD_TABLES.with_borrow_mut(HashMap::clear);
+        }
     }
 
     pub fn clear_piles(&mut self, source: &Source, remove_spawned: bool) {
@@ -357,7 +359,7 @@ impl Game {
         }
         let def = kind.definition();
         let before = self.reserve(player)[def.index];
-        let rounds = before.min(if amount > 0 { amount } else { def.magazine });
+        let rounds = before.min(if amount > 0 { amount } else { before });
         if rounds <= 0 {
             return format!("No {} to drop", def.title);
         }

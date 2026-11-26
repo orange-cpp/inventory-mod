@@ -127,6 +127,38 @@ pub fn linux(repo: &Path, plugin: &Path, output: &Path) -> Result<()> {
     })
 }
 
+fn check_windows_binary(file: &mut File, name: &str, dll: bool) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name}: expected an executable x86 PE32 {}",
+                if dll { "DLL" } else { "program" }
+            ),
+        )
+    };
+    let mut dos = [0; 64];
+    file.read_exact(&mut dos)?;
+    if &dos[..2] != b"MZ" {
+        return Err(invalid());
+    }
+    let offset = u32::from_le_bytes(dos[60..].try_into().unwrap());
+    file.seek(SeekFrom::Start(u64::from(offset)))?;
+    let mut pe = [0; 26];
+    file.read_exact(&mut pe)?;
+    let flags = u16::from_le_bytes([pe[22], pe[23]]);
+    if &pe[..4] != b"PE\0\0"
+        || pe[4..6] != [0x4c, 1]
+        || pe[24..26] != [0x0b, 1]
+        || flags & 2 == 0
+        || (flags & 0x2000 != 0) != dll
+    {
+        return Err(invalid());
+    }
+    file.rewind()
+}
+
 fn write_zip(file: File, repo: &Path, release: &Path, game: Option<&Path>) -> Result<()> {
     let mut zip = ZipWriter::new(file);
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -150,6 +182,9 @@ fn write_zip(file: File, repo: &Path, release: &Path, game: Option<&Path>) -> Re
         let mut source = File::open(&source).map_err(|error| {
             io::Error::new(error.kind(), format!("{}: {error}", source.display()))
         })?;
+        if name.ends_with(".dll") || name.ends_with(".exe") {
+            check_windows_binary(&mut source, name, name.ends_with(".dll"))?;
+        }
         zip.start_file(format!("inventory-mod/{name}"), compressed)?;
         io::copy(&mut source, &mut zip)?;
     }

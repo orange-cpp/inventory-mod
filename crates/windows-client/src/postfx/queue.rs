@@ -1,12 +1,18 @@
 use std::{
     ffi::{c_char, c_void},
     io, ptr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
 
-use crate::native::{self, PeImage, VtablePatch};
+use crate::native::{
+    self, PeImage,
+    resident::{self, CallbackSlots, Method},
+};
 
 use super::{LIVE, Layer, run_at};
 
@@ -14,76 +20,62 @@ type Factory = unsafe extern "C" fn(*const c_char, *mut i32) -> *mut c_void;
 type GetContext = unsafe extern "thiscall" fn(*mut c_void) -> *mut c_void;
 type GetCallQueue = unsafe extern "thiscall" fn(*mut c_void) -> *mut c_void;
 type Release = unsafe extern "thiscall" fn(*mut c_void) -> i32;
-type QueueFunctor = unsafe extern "thiscall" fn(*mut c_void, *const Functor);
+type QueueFunctor = unsafe extern "thiscall" fn(*mut c_void, *const c_void);
 type PreHud = unsafe extern "thiscall" fn(*mut c_void, *const c_void);
 
 static MATERIALS: AtomicUsize = AtomicUsize::new(0);
 static PRE_HUD: AtomicUsize = AtomicUsize::new(0);
-static QUEUED: AtomicUsize = AtomicUsize::new(0);
+static TASKS: Mutex<[usize; 3]> = Mutex::new([0; 3]);
 
-#[repr(C)]
-struct Vtable {
-    add_ref: unsafe extern "thiscall" fn(*const Functor) -> i32,
-    release: unsafe extern "thiscall" fn(*const Functor) -> i32,
-    destructor: unsafe extern "thiscall" fn(*const Functor, i32) -> *const Functor,
-    invoke: unsafe extern "thiscall" fn(*const Functor),
+extern "system" fn draw_layer(layer: u32) {
+    let layer = match layer {
+        0 => Layer::BeforeGameHud,
+        1 => Layer::BeforeInventory,
+        2 => Layer::AfterInventory,
+        _ => return,
+    };
+    let _ = std::panic::catch_unwind(|| run_at(layer));
 }
 
-#[repr(C)]
-struct Functor {
-    vtable: &'static Vtable,
-    layer: Layer,
-}
-
-unsafe extern "thiscall" fn retain(_: *const Functor) -> i32 {
-    1
-}
-unsafe extern "thiscall" fn no_destroy(this: *const Functor, _: i32) -> *const Functor {
-    this
-}
-unsafe extern "thiscall" fn invoke(this: *const Functor) {
-    let _ = std::panic::catch_unwind(|| run_at(unsafe { (*this).layer }));
-    QUEUED.fetch_sub(1, Ordering::Release);
-}
-
-static TABLE: Vtable = Vtable {
-    add_ref: retain,
-    release: retain,
-    destructor: no_destroy,
-    invoke,
-};
-static BEFORE_GAME_HUD: Functor = Functor {
-    vtable: &TABLE,
-    layer: Layer::BeforeGameHud,
-};
-static BEFORE_INVENTORY: Functor = Functor {
-    vtable: &TABLE,
-    layer: Layer::BeforeInventory,
-};
-static AFTER_INVENTORY: Functor = Functor {
-    vtable: &TABLE,
-    layer: Layer::AfterInventory,
-};
-
-pub struct Queue(Option<VtablePatch>);
+pub struct Queue(Option<CallbackSlots>);
 
 impl Queue {
     pub fn install() -> Self {
-        if let Some(materials) = bind_materials() {
-            MATERIALS.store(materials, Ordering::Release);
+        let Some(materials) = bind_materials() else {
+            return Self(None);
+        };
+        let Ok(api) = resident::api() else {
+            return Self(None);
+        };
+        let Ok(mut tasks) = TASKS.lock() else {
+            return Self(None);
+        };
+        for (layer, task) in tasks.iter_mut().enumerate() {
+            *task = (api.new_task)(layer as u32, draw_layer).addr();
         }
+        drop(tasks);
+        MATERIALS.store(materials, Ordering::Release);
         let patch = bind_pre_hud();
         if patch.is_some() {
             crate::client::log("bound the original screen-effects pass before the game's HUD");
         }
         Self(patch)
     }
-
     pub fn stop(&mut self) -> io::Result<()> {
         if let Some(patch) = &mut self.0 {
-            patch.restore()?;
+            patch.stop()?;
         }
         MATERIALS.store(0, Ordering::Release);
+        let mut tasks = TASKS.lock().unwrap_or_else(|error| error.into_inner());
+        for task in tasks.iter_mut().filter(|task| **task != 0) {
+            if !unsafe { (resident::api()?.retire_task)(ptr::with_exposed_provenance(*task)) } {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "waiting for a queued Source material draw to return",
+                ));
+            }
+            *task = 0;
+        }
         Ok(())
     }
 }
@@ -102,7 +94,7 @@ fn bind_materials() -> Option<usize> {
     Some(material)
 }
 
-fn bind_pre_hud() -> Option<VtablePatch> {
+fn bind_pre_hud() -> Option<CallbackSlots> {
     if MATERIALS.load(Ordering::Acquire) == 0 {
         return None;
     }
@@ -118,7 +110,13 @@ fn bind_pre_hud() -> Option<VtablePatch> {
         return None;
     }
     PRE_HUD.store(original, Ordering::Release);
-    VtablePatch::install(slot, original, pre_hud as PreHud as usize).ok()
+    CallbackSlots::install(
+        Method::BeforeHud,
+        &[slot],
+        original,
+        pre_hud as PreHud as usize,
+    )
+    .ok()
 }
 
 unsafe extern "thiscall" fn pre_hud(this: *mut c_void, view: *const c_void) {
@@ -126,10 +124,6 @@ unsafe extern "thiscall" fn pre_hud(this: *mut c_void, view: *const c_void) {
     let original = unsafe { std::mem::transmute::<usize, PreHud>(address) };
     unsafe { original(this, view) };
     let _ = std::panic::catch_unwind(|| super::schedule(Layer::BeforeGameHud));
-}
-
-pub fn idle() -> bool {
-    QUEUED.load(Ordering::Acquire) == 0
 }
 
 pub fn schedule(layer: Layer) {
@@ -158,13 +152,14 @@ pub fn schedule(layer: Layer) {
             });
             if let Some(method) = method {
                 let enqueue = unsafe { std::mem::transmute::<usize, QueueFunctor>(method) };
-                let functor = match layer {
-                    Layer::BeforeGameHud => &BEFORE_GAME_HUD,
-                    Layer::BeforeInventory => &BEFORE_INVENTORY,
-                    Layer::AfterInventory => &AFTER_INVENTORY,
-                };
-                QUEUED.fetch_add(1, Ordering::Release);
-                unsafe { enqueue(queue, functor) };
+                // The queue takes its own reference inside enqueue. Keep the owner
+                // until that handoff completes, including during shutdown.
+                if let Ok(tasks) = TASKS.lock() {
+                    let task = tasks[layer as usize];
+                    if task != 0 {
+                        unsafe { enqueue(queue, ptr::with_exposed_provenance(task)) };
+                    }
+                }
             }
         } else if native::matches_pattern(address, "33 C0 C3") {
             run_at(layer);

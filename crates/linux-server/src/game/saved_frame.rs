@@ -1,3 +1,4 @@
+use super::vtable::ModuleLease;
 use std::{
     ffi::{c_int, c_void},
     ptr::NonNull,
@@ -29,6 +30,8 @@ unsafe extern "C" {
 pub struct SavedFrame {
     target: NonNull<u8>,
     trampoline: NonNull<u8>,
+    replacement: [u8; 6],
+    lease: ModuleLease,
 }
 
 impl SavedFrame {
@@ -36,6 +39,7 @@ impl SavedFrame {
     /// ABI. The six saved bytes contain complete, position-independent instructions.
     pub unsafe fn install(target: usize, replacement: usize) -> Option<Self> {
         let target = NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(target))?;
+        let lease = ModuleLease::acquire()?;
         if unsafe { target.as_ptr().cast::<[u8; SAVED.len()]>().read_unaligned() } != SAVED {
             return None;
         }
@@ -70,7 +74,12 @@ impl SavedFrame {
             unsafe { munmap(map, TRAMPOLINE_SIZE) };
             return None;
         }
-        Some(Self { target, trampoline })
+        Some(Self {
+            target,
+            trampoline,
+            replacement: code,
+            lease,
+        })
     }
 
     pub fn original(&self) -> usize {
@@ -80,10 +89,14 @@ impl SavedFrame {
 
 impl Drop for SavedFrame {
     fn drop(&mut self) {
-        if unsafe { write_code(self.target, SAVED) } {
+        let current = unsafe { self.target.cast::<[u8; 6]>().read_unaligned() };
+        if current == self.replacement && unsafe { write_code(self.target, SAVED) } {
             unsafe { munmap(self.trampoline.as_ptr().cast(), TRAMPOLINE_SIZE) };
         } else {
-            eprintln!("inventory_mod: could not restore the rescue closet handler");
+            self.lease.keep();
+            eprintln!(
+                "inventory_mod: retaining the chained rescue closet callback and its original trampoline"
+            );
         }
     }
 }

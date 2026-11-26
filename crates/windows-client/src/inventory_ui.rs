@@ -623,33 +623,37 @@ impl InventoryUi {
         ui: &Self,
         y: &mut i32,
     ) {
-        paint.heading(y, "Add items");
-        let name = client
-            .catalog
-            .items()
-            .nth(item)
-            .map_or("Item", |(_, def)| def.name);
-        paint.text(4, *y + 2, "Item:", TEXT);
-        paint.combo(72, *y, name, Choices::Item);
-        *y += 21;
-        paint.text(4, *y + 2, "Count:", TEXT);
-        paint.stepper(
-            72,
-            *y,
-            &ui.number_label(Number::Count, count.to_string()),
-            Hit::DebugCount(-1),
-            Hit::DebugCount(1),
-            Hit::Number(Number::Count),
-        );
-        *y += 23;
-        for (label, hit, x, w) in [
-            ("Add", Hit::DebugAdd, 4, 40),
-            ("Add one of each", Hit::DebugAddEach, 49, 110),
-            ("Clear", Hit::DebugClear, 164, 52),
-        ] {
-            paint.button(rect(x, *y, w, 18), label, hit, false);
+        if client.can_edit_inventory() {
+            paint.heading(y, "Add items");
+            let name = client
+                .catalog
+                .items()
+                .nth(item)
+                .map_or("Item", |(_, def)| def.name);
+            paint.text(4, *y + 2, "Item:", TEXT);
+            paint.combo(72, *y, name, Choices::Item);
+            *y += 21;
+            paint.text(4, *y + 2, "Count:", TEXT);
+            paint.stepper(
+                72,
+                *y,
+                &ui.number_label(Number::Count, count.to_string()),
+                Hit::DebugCount(-1),
+                Hit::DebugCount(1),
+                Hit::Number(Number::Count),
+            );
+            *y += 23;
+            for (label, hit, x, w) in [
+                ("Add", Hit::DebugAdd, 4, 40),
+                ("Add one of each", Hit::DebugAddEach, 49, 110),
+                ("Clear", Hit::DebugClear, 164, 52),
+            ] {
+                paint.button(rect(x, *y, w, 18), label, hit, false);
+            }
+            *y += 23;
+        } else {
+            paint.heading(y, "Only the host can edit inventory");
         }
-        *y += 23;
         paint.button(rect(4, *y, 109, 18), "Infect me (test)", Hit::Infect, false);
         paint.button(
             rect(118, *y, 121, 18),

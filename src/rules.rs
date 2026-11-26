@@ -13,6 +13,7 @@ pub use parser::RuleReport;
 
 #[derive(Clone, Debug, Default)]
 pub struct Rules {
+    pub debug_spawn: bool,
     pub limits: LimitOverrides,
     pub catalog: Arc<Catalog>,
     pub infection: InfectionRules,

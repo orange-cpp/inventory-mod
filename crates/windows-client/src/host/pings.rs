@@ -20,7 +20,7 @@ const MASK_SHOT: u32 = 0x4600_4003;
 
 type TraceRay = unsafe extern "thiscall" fn(*mut c_void, *const Ray, u32, *mut Filter, *mut RawHit);
 
-struct Trace {
+pub(super) struct Trace {
     object: usize,
     trace: TraceRay,
 }
@@ -75,7 +75,7 @@ struct Hit {
 }
 
 impl Trace {
-    fn bind() -> Option<Self> {
+    pub(super) fn bind() -> Option<Self> {
         let factory = hooks::factory("engine.dll")?;
         let object = unsafe { factory(c"EngineTraceServer003".as_ptr(), ptr::null_mut()) }.addr();
         let slot = native::vslot(object, 5)?;
@@ -89,6 +89,10 @@ impl Trace {
         })
     }
 
+    pub(super) fn visible(&self, eye: Vector, delta: Vector, player: usize, target: usize) -> bool {
+        let hit = self.ray(eye, delta, 1.0, player, false);
+        !hit.start_solid && (hit.fraction >= 1.0 || hit.entity == target)
+    }
     fn ray(&self, origin: Vector, forward: Vector, reach: f32, player: usize, world: bool) -> Hit {
         let ray = Ray {
             start: [origin.x, origin.y, origin.z, 0.0],

@@ -345,7 +345,9 @@ impl Game {
     pub fn uninstall_stamina(&mut self, source: &Source, receives: impl Fn(i32) -> bool) {
         self.clear_stamina(source, true, receives);
         self.stamina.patches.clear();
-        ORIGINALS.with_borrow_mut(HashMap::clear);
+        if !super::vtable::retained() {
+            ORIGINALS.with_borrow_mut(HashMap::clear);
+        }
     }
 
     pub(super) fn scan_damage(&mut self, source: &Source) {

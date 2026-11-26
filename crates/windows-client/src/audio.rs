@@ -11,7 +11,10 @@ use std::{
 
 use crate::{
     cvars::ConVar,
-    native::{self, PeImage, VtablePatch},
+    native::{
+        self, PeImage,
+        resident::{CallbackSlots, Method},
+    },
 };
 
 const DELAY: usize = 2048;
@@ -23,11 +26,10 @@ type Format = unsafe extern "system" fn(*mut c_void, *mut u8, u32, *mut u32) -> 
 
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static ENGINE_BUFFER: AtomicUsize = AtomicUsize::new(0);
-static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static MIX: Mutex<Option<Mixer>> = Mutex::new(None);
 
 pub struct Audio {
-    patch: Option<VtablePatch>,
+    patch: Option<CallbackSlots>,
     global: Option<usize>,
     next_try: Option<Instant>,
     checked: bool,
@@ -131,7 +133,9 @@ impl Audio {
         };
         ORIGINAL.store(original, Ordering::Release);
         ENGINE_BUFFER.store(global, Ordering::Release);
-        self.patch = VtablePatch::install(slot, original, unlock as Unlock as usize).ok();
+        self.patch =
+            CallbackSlots::install(Method::Unlock, &[slot], original, unlock as Unlock as usize)
+                .ok();
         self.patch.is_some()
     }
 
@@ -185,15 +189,9 @@ impl Audio {
 
     pub fn stop(&mut self) -> io::Result<()> {
         if let Some(patch) = &mut self.patch {
-            patch.restore()?;
+            patch.stop()?;
         }
         ENGINE_BUFFER.store(0, Ordering::Release);
-        if IN_FLIGHT.load(Ordering::Acquire) != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "waiting for game audio",
-            ));
-        }
         if let Ok(mut mix) = MIX.lock() {
             *mix = None;
         }
@@ -441,19 +439,6 @@ fn parse_wav(data: &[u8]) -> Option<Scream> {
     None
 }
 
-struct Mixing;
-impl Mixing {
-    fn enter() -> Self {
-        IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-        Self
-    }
-}
-impl Drop for Mixing {
-    fn drop(&mut self) {
-        IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 unsafe extern "system" fn unlock(
     buffer: *mut c_void,
     p1: *mut c_void,
@@ -461,7 +446,6 @@ unsafe extern "system" fn unlock(
     p2: *mut c_void,
     b2: u32,
 ) -> i32 {
-    let _active = Mixing::enter();
     let global = ENGINE_BUFFER.load(Ordering::Acquire);
     let _ = std::panic::catch_unwind(|| {
         if global != 0

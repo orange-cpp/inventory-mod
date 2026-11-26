@@ -10,10 +10,13 @@ use iced_x86::{
     BlockEncoder, BlockEncoderOptions, Code, Decoder, DecoderOptions, Instruction, InstructionBlock,
 };
 use windows_sys::Win32::{
-    Foundation::HMODULE,
+    Foundation::{FreeLibrary, HMODULE},
     System::{
         Diagnostics::Debug::{FlushInstructionCache, ReadProcessMemory, WriteProcessMemory},
-        LibraryLoader::{GetModuleFileNameW, GetModuleHandleW},
+        LibraryLoader::{
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleFileNameW, GetModuleHandleExW,
+            GetModuleHandleW,
+        },
         Memory::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
             PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
@@ -198,6 +201,7 @@ pub struct Detour {
     original: Vec<u8>,
     replacement: Vec<u8>,
     enabled: bool,
+    lease: ModuleLease,
 }
 
 pub struct VtablePatch {
@@ -205,6 +209,43 @@ pub struct VtablePatch {
     expected: u32,
     replacement: u32,
     enabled: bool,
+    lease: ModuleLease,
+}
+
+pub mod resident;
+
+/// The client worker can defer unload on an ownership conflict. Source's
+/// dedicated-plugin Unload callback cannot. Secure a strong loader reference
+/// before patching, so forced destruction can preserve a chained predecessor.
+struct ModuleLease(Option<NonNull<c_void>>);
+
+impl ModuleLease {
+    fn acquire() -> io::Result<Self> {
+        let mut module = ptr::null_mut();
+        if unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                Self::acquire as *const () as *const u16,
+                &mut module,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(NonNull::new(module)))
+    }
+
+    fn keep(&mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for ModuleLease {
+    fn drop(&mut self) {
+        if let Some(module) = self.0 {
+            unsafe { FreeLibrary(module.as_ptr()) };
+        }
+    }
 }
 
 impl VtablePatch {
@@ -212,16 +253,18 @@ impl VtablePatch {
         if !slot.is_multiple_of(align_of::<u32>()) || word(slot) != Some(expected as u32) {
             return Err(io::Error::other("unsupported game vtable"));
         }
-        Self::write(slot, replacement as u32)?;
+        let lease = ModuleLease::acquire()?;
+        Self::exchange(slot, expected as u32, replacement as u32)?;
         Ok(Self {
             slot,
             expected: expected as u32,
             replacement: replacement as u32,
             enabled: true,
+            lease,
         })
     }
 
-    fn write(slot: usize, value: u32) -> io::Result<()> {
+    fn exchange(slot: usize, expected: u32, value: u32) -> io::Result<()> {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         let addr = address(slot);
@@ -230,28 +273,54 @@ impl VtablePatch {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: The checked slot is an aligned x86 function pointer.
-        unsafe { AtomicU32::from_ptr(addr.cast_mut().cast()).store(value, Ordering::Release) };
+        let changed = unsafe { AtomicU32::from_ptr(addr.cast_mut().cast()) }.compare_exchange(
+            expected,
+            value,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         unsafe { VirtualProtect(addr, 4, previous, &mut previous) };
-        Ok(())
+        changed.map(|_| ()).map_err(|current| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "Source slot {slot:#x} now points at {current:#x} (expected {expected:#x})"
+                ),
+            )
+        })
     }
 
     pub fn restore(&mut self) -> io::Result<()> {
-        if self.enabled && word(self.slot) == Some(self.replacement) {
-            Self::write(self.slot, self.expected)?;
+        if self.enabled {
+            Self::exchange(self.slot, self.replacement, self.expected)?;
         }
         self.enabled = false;
+        Ok(())
+    }
+
+    fn retire_forwarder(&mut self) -> io::Result<()> {
+        if let Err(error) = self.restore() {
+            if error.kind() != io::ErrorKind::WouldBlock {
+                return Err(error);
+            }
+            // A later owner's saved predecessor is a permanent pass-through.
+            self.enabled = false;
+        }
         Ok(())
     }
 }
 
 impl Drop for VtablePatch {
     fn drop(&mut self) {
-        let _ = self.restore();
+        if self.restore().is_err() {
+            self.lease.keep();
+        }
     }
 }
 
 impl Detour {
     pub fn prepare(entry: usize, hook: usize) -> io::Result<Self> {
+        let lease = ModuleLease::acquire()?;
         let rejected = || io::Error::other("could not decode the Source function");
         let mut source = [0; 32];
         if !read(entry, &mut source) {
@@ -283,6 +352,7 @@ impl Detour {
             original: source[..stolen].to_vec(),
             replacement: vec![0x90; stolen],
             enabled: false,
+            lease,
         };
         let block = InstructionBlock::new(&instructions, result.trampoline() as u64);
         let bytes = BlockEncoder::encode(32, block, BlockEncoderOptions::NONE)
@@ -330,6 +400,13 @@ impl Detour {
 
     pub fn disable(&mut self) -> io::Result<()> {
         if self.enabled {
+            let mut current = vec![0; self.replacement.len()];
+            if !read(self.entry, &mut current) || current != self.replacement {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("game hook at {:#x} changed after installation", self.entry),
+                ));
+            }
             write_code(self.entry, &self.original)?;
             self.enabled = false;
         }
@@ -341,6 +418,10 @@ impl Drop for Detour {
     fn drop(&mut self) {
         if self.disable().is_ok() {
             unsafe { VirtualFree(self.allocation.as_ptr(), 0, MEM_RELEASE) };
+        } else {
+            // The later owner can invoke our handler, which still calls its
+            // original trampoline. Both allocations must stay valid.
+            self.lease.keep();
         }
     }
 }

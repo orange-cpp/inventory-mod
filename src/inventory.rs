@@ -101,6 +101,10 @@ impl Stack {
         self.item.is_none() || (self.count == 0 && !self.held)
     }
 
+    fn remaining_capacity(&self, max_stack: i32) -> i32 {
+        (max_stack - self.count - i32::from(self.held)).max(0)
+    }
+
     pub fn fuel(&self, catalog: &Catalog) -> i64 {
         self.item.map_or(0, |id| {
             i64::from(self.count) * i64::from(catalog.item(id).fuel) - i64::from(self.spent)
@@ -250,10 +254,10 @@ impl Inventory {
                         continue;
                     }
                     *stack = Stack::new(id, 0);
-                } else if stack.item != Some(id) || stack.count >= def.max_stack {
+                } else if stack.item != Some(id) || stack.remaining_capacity(def.max_stack) == 0 {
                     continue;
                 }
-                let take = (def.max_stack - stack.count).min(count - added);
+                let take = stack.remaining_capacity(def.max_stack).min(count - added);
                 stack.count += take;
                 added += take;
                 first.get_or_insert(index);
@@ -282,7 +286,7 @@ impl Inventory {
         if !stack.is_empty() && stack.item != Some(id) {
             return 0;
         }
-        let take = count.min(room).min(def.max_stack - stack.count);
+        let take = count.min(room).min(stack.remaining_capacity(def.max_stack));
         if take <= 0 {
             return 0;
         }
@@ -318,7 +322,9 @@ impl Inventory {
         let def = self.catalog.item(id);
         self.slots[self.boxes_for(id)].iter().any(|stack| {
             stack.is_empty()
-                || (!def.is_weapon() && stack.item == Some(id) && stack.count < def.max_stack)
+                || (!def.is_weapon()
+                    && stack.item == Some(id)
+                    && stack.remaining_capacity(def.max_stack) > 0)
         })
     }
 
@@ -365,7 +371,7 @@ impl Inventory {
             return false;
         };
         let def = self.catalog.item(id);
-        let moved = (def.max_stack - target.count).min(source.count);
+        let moved = target.remaining_capacity(def.max_stack).min(source.count);
         if target.item != Some(id) || moved <= 0 {
             std::mem::swap(source, target);
         } else {
@@ -392,7 +398,11 @@ impl Inventory {
         let boxes = self.item_boxes();
         boxes
             .iter()
-            .position(|stack| stack.item == Some(id) && !stack.held)
+            .position(|stack| {
+                stack.item == Some(id)
+                    && !stack.held
+                    && stack.remaining_capacity(self.catalog.item(id).max_stack) > 0
+            })
             .or_else(|| boxes.iter().position(Stack::is_empty))
     }
 
@@ -401,7 +411,11 @@ impl Inventory {
             return false;
         }
         let stack = &mut self.slots[index];
-        if !stack.is_empty() && (stack.item != Some(id) || stack.held) {
+        if !stack.is_empty()
+            && (stack.item != Some(id)
+                || stack.held
+                || stack.remaining_capacity(self.catalog.item(id).max_stack) == 0)
+        {
             return false;
         }
         stack.item = Some(id);
@@ -594,7 +608,15 @@ impl Inventory {
                 continue;
             };
             let def = self.catalog.item(id);
-            let mut stack = Stack::new(id, count.min(def.max_stack));
+            // Older saves can contain the held item on top of a full stack.
+            // Preserve that one item while preventing further additions.
+            let saved_limit = def.max_stack.saturating_add(i32::from(!def.is_weapon()));
+            let stored = if count == saved_limit {
+                count
+            } else {
+                count.min(def.max_stack)
+            };
+            let mut stack = Stack::new(id, stored);
             if def.is_weapon() {
                 stack.weapon = WeaponState::read_fields(&mut fields);
             } else if let Some(spent) = fields.next().and_then(parse_int).filter(|&spent| spent > 0)
@@ -632,4 +654,23 @@ fn parse_int(text: &str) -> Option<i32> {
     } else {
         text.parse().ok()
     }
+}
+
+/// Only stable Steam account IDs get disk-backed inventories.
+pub fn player_file(directory: &std::path::Path, network_id: &str) -> Option<std::path::PathBuf> {
+    let id = network_id.strip_prefix("STEAM_")?;
+    let mut parts = id.split(':');
+    let universe = parts.next()?;
+    let account_type = parts.next()?;
+    let account_id = parts.next()?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|byte| byte.is_ascii_digit());
+    if parts.next().is_some()
+        || account_type.len() != 1
+        || ![universe, account_type, account_id].into_iter().all(digits)
+    {
+        return None;
+    }
+    Some(directory.join(format!(
+        "inventory_STEAM_{universe}_{account_type}_{account_id}.inventory"
+    )))
 }

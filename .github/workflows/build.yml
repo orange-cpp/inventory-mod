@@ -67,7 +67,7 @@ jobs:
         env:
           INCLUDE_ADDONS: ${{ inputs.include_addons }}
         run: |
-          $options = if ($env:INCLUDE_ADDONS -eq 'true') { @('--game', $env:L4D2_GAME_DIR) } else { @('--skip-addons') }
+          [string[]]$options = if ($env:INCLUDE_ADDONS -eq 'true') { @('--game', $env:L4D2_GAME_DIR) } else { @('--skip-addons') }
           cargo run --locked --release -p inventory-tools -- package-windows @options
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

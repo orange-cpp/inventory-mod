@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{CStr, CString, c_char, c_void},
     fs, io,
     path::{Path, PathBuf},
@@ -31,7 +31,7 @@ type GetKey =
 type SetKey =
     unsafe extern "thiscall" fn(*mut c_void, *mut c_void, *const c_char, *const c_char) -> bool;
 type CreateEntity = unsafe extern "thiscall" fn(*mut c_void, *const c_char) -> *mut c_void;
-type Spawn = unsafe extern "thiscall" fn(*mut c_void, *mut c_void);
+type Spawn = unsafe extern "C" fn(*mut c_void, bool) -> i32;
 type Remove = unsafe extern "C" fn(*mut c_void);
 type Give = unsafe extern "thiscall" fn(*mut c_void, *const c_char, i32, i32, i32) -> *mut c_void;
 type DropWeapon =
@@ -123,6 +123,7 @@ struct Game {
     eye_position: EyePosition,
     eye_angles: EyeAngles,
     wear: combat::Wear,
+    pickup_trace: Option<pings::Trace>,
 }
 
 impl Game {
@@ -162,6 +163,21 @@ impl Game {
         ) {
             return None;
         }
+        // VSERVERTOOLS001::DispatchSpawn discards the native success code.
+        // Validate its short wrapper and bind the underlying DispatchSpawn(entity, true).
+        let wrapper = slot(15)?;
+        if !native::matches_pattern(
+            wrapper,
+            "55 8B EC 8B 45 08 6A 01 50 E8 ?? ?? ?? ?? 83 C4 08 5D C2 04 00",
+        ) {
+            return None;
+        }
+        let spawn = relative(wrapper + 9)?;
+        if !image.includes(spawn, 12)
+            || !native::matches_pattern(spawn, "55 8B EC 51 53 56 8B 75 08 57 85 F6")
+        {
+            return None;
+        }
         let call = native::find_pattern(slot(16)?, 0x60, "50 E8 ?? ?? ?? ?? 83 C4 04 B0 01")?;
         let remove = relative(call + 1)?;
         if !image.includes(remove, 1) || !native::matches_pattern(remove, "55") {
@@ -185,7 +201,7 @@ impl Game {
             get_key: unsafe { std::mem::transmute::<usize, GetKey>(slot(10)?) },
             set_key: unsafe { std::mem::transmute::<usize, SetKey>(set_key) },
             create: unsafe { std::mem::transmute::<usize, CreateEntity>(slot(14)?) },
-            spawn: unsafe { std::mem::transmute::<usize, Spawn>(slot(15)?) },
+            spawn: unsafe { std::mem::transmute::<usize, Spawn>(spawn) },
             remove: unsafe { std::mem::transmute::<usize, Remove>(remove) },
             give: unsafe { std::mem::transmute::<usize, Give>(player(431)?) },
             select: unsafe { std::mem::transmute::<usize, Select>(player(429)?) },
@@ -196,6 +212,7 @@ impl Game {
             eye_position: unsafe { std::mem::transmute::<usize, EyePosition>(player(140)?) },
             eye_angles: unsafe { std::mem::transmute::<usize, EyeAngles>(player(141)?) },
             wear: combat::Wear::default(),
+            pickup_trace: pings::Trace::bind(),
             image,
         })
     }
@@ -221,6 +238,10 @@ impl Game {
     }
 
     fn item(&self, entity: usize, catalog: &Catalog) -> Option<ItemId> {
+        // UTIL_Remove sets EFL_KILLME before deleting the entity at frame end.
+        if native::word(entity + 0x138)? & 1 != 0 {
+            return None;
+        }
         catalog.find_item(&self.classname(entity)?)
     }
 
@@ -516,9 +537,17 @@ impl Game {
                 if alignment < facing {
                     return None;
                 }
-                Some((distance * (2.0 - alignment), entity, identify(entity)?))
+                let item = identify(entity)?;
+                self.pickup_trace
+                    .as_ref()?
+                    .visible(eye, delta, player, entity)
+                    .then_some((distance * (2.0 - alignment), entity, item))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    fn dispatch_spawn(&self, entity: usize) -> bool {
+        unsafe { (self.spawn)(address(entity), true) >= 0 }
     }
 
     fn create(&self, def: &ItemDef, state: &WeaponState, position: Vector) -> Option<usize> {
@@ -570,7 +599,9 @@ impl Game {
             let precache = unsafe { std::mem::transmute::<usize, Precache>(precache) };
             unsafe { precache(address(entity)) };
         }
-        unsafe { (self.spawn)(address(self.tools), address(entity)) };
+        if !self.dispatch_spawn(entity) {
+            return None;
+        }
         if let Some(state) = state.filter(|_| def.is_weapon()) {
             self.apply(entity, def, state, true);
         }
@@ -635,6 +666,7 @@ pub struct Host {
     director: director::Director,
     actions: actions::NativeActions,
     chapter: String,
+    transitioned_players: HashSet<i32>,
     transition: bool,
     dedicated: bool,
 }
@@ -645,10 +677,27 @@ pub(crate) struct Session {
     revision: u32,
     chapter_start: String,
     carry_ammo: Option<[i32; 32]>,
-    death: Option<Vector>,
+    condition: Vec<inventory_mod::remote_state::CarriedCondition>,
+    death: Option<Death>,
     reserve: Option<(usize, [i32; 32])>,
     actions: actions::Actions,
     notice: String,
+}
+
+#[derive(Clone, Copy)]
+struct Death {
+    actor: u32,
+    origin: Vector,
+}
+
+impl Death {
+    fn capture(game: &Game, player: usize) -> Option<Self> {
+        (native::word(player + PLAYER_TEAM)? == 2).then_some(())?;
+        Some(Self {
+            actor: ammo::handle(game, player)?,
+            origin: Vector::read(player + ENTITY_ORIGIN)?,
+        })
+    }
 }
 
 struct Guest {
@@ -703,6 +752,7 @@ impl Session {
             revision,
             chapter_start,
             carry_ammo: None,
+            condition: Vec::new(),
             death: None,
             reserve: None,
             actions: actions::Actions::default(),
@@ -728,6 +778,88 @@ impl Session {
         Ok(())
     }
 
+    fn capture_equipment(&mut self, game: &Game, player: usize, cans: &actions::Cans) {
+        self.carry_ammo = Some(game.ammo(player));
+        self.condition.clear();
+        for (slot, weapon) in game
+            .weapons(player, self.inventory.catalog())
+            .into_iter()
+            .enumerate()
+        {
+            let Some((entity, id)) = weapon else {
+                continue;
+            };
+            let def = self.inventory.catalog().item(id);
+            if !Game::matches_melee(def) && def.fuel <= 0 {
+                continue;
+            }
+            let state = game.state(entity, def, false);
+            let spent = cans.spent(game, entity);
+            if state.wear > 0 || spent > 0 {
+                self.condition
+                    .push(inventory_mod::remote_state::CarriedCondition {
+                        slot,
+                        classname: def.classname.into(),
+                        melee: state.melee,
+                        wear: state.wear,
+                        spent,
+                    });
+            }
+        }
+    }
+
+    fn restore_condition(&mut self, game: &Game, player: usize, cans: &mut actions::Cans) {
+        let weapons = game.weapons(player, self.inventory.catalog());
+        for saved in self.condition.drain(..) {
+            let Some((entity, id)) = weapons[saved.slot] else {
+                continue;
+            };
+            let def = self.inventory.catalog().item(id);
+            if def.classname != saved.classname {
+                continue;
+            }
+            if saved.wear > 0
+                && Game::melee_script(entity) == saved.melee
+                && let Some(handle) = ammo::handle(game, entity)
+            {
+                game.wear.numbers.borrow_mut().insert(handle, saved.wear);
+            }
+            if saved.spent > 0 {
+                cans.set(game, entity, saved.spent);
+            }
+        }
+    }
+
+    fn restore_equipment(
+        &mut self,
+        game: &Game,
+        player: usize,
+        cans: &mut actions::Cans,
+        hooks: &Hooks,
+    ) {
+        let Some(previous) = self.carry_ammo.take() else {
+            return;
+        };
+        self.restore_condition(game, player, cans);
+        let catalog = self.inventory.catalog();
+        let mut carried = [false; 32];
+        for (_, id) in game.weapons(player, catalog).into_iter().flatten() {
+            if let Some(kind) = catalog.item(id).reserve_kind() {
+                carried[kind.definition().index] = true;
+            }
+        }
+        let mut merged = game.ammo(player);
+        for kind in AmmoKind::ALL {
+            let index = kind.definition().index;
+            if !carried[index] {
+                merged[index] = merged[index].max(previous[index].min(catalog.ammo_max(kind)));
+            }
+        }
+        game.restore(player, merged);
+        hooks.changed(player);
+        self.reserve = None;
+    }
+
     fn start_round(&mut self, same_map: bool, transition: bool) {
         if same_map {
             self.inventory.load_text(&self.chapter_start);
@@ -736,6 +868,7 @@ impl Session {
         }
         if !transition {
             self.carry_ammo = None;
+            self.condition.clear();
         }
         self.death = None;
         self.reserve = None;
@@ -746,10 +879,32 @@ impl Session {
 }
 
 fn read_rules(directory: &Path) -> Rules {
-    let config = fs::read_to_string(directory.join("inventory_mod.toml")).unwrap_or_default();
-    Rules::parse(&config)
-        .map(|(rules, _)| rules)
-        .unwrap_or_default()
+    let path = directory.join("inventory_mod.toml");
+    let report = |message: &str| {
+        let message = format!("{}: {message}", path.display());
+        eprintln!("{message}");
+        crate::client::log(&message);
+    };
+    match fs::read_to_string(&path) {
+        Ok(config) => match Rules::parse(&config) {
+            Ok((rules, result)) => {
+                for diagnostic in result.diagnostics {
+                    report(&diagnostic);
+                }
+                rules
+            }
+            Err(error) => {
+                report(&error);
+                Rules::default()
+            }
+        },
+        Err(error) => {
+            if error.kind() != io::ErrorKind::NotFound {
+                report(&error.to_string());
+            }
+            Rules::default()
+        }
+    }
 }
 
 impl Host {
@@ -757,7 +912,11 @@ impl Host {
         let game = Game::bind()?;
         let rules = read_rules(directory);
         let limits = rules.limits.apply(settings.limits);
-        let local = Session::local(directory, &rules, settings);
+        let local = if dedicated {
+            Session::load(None, limits, Arc::clone(&rules.catalog))
+        } else {
+            Session::local(directory, &rules, settings)
+        };
         let hooks = Hooks::install(&game.image, dedicated);
         if dedicated && hooks.is_none() {
             return None;
@@ -804,6 +963,7 @@ impl Host {
             director: director::Director::default(),
             actions,
             chapter: String::new(),
+            transitioned_players: HashSet::new(),
             transition: false,
             dedicated,
         };
@@ -885,6 +1045,32 @@ impl Host {
         rounds > 0 && native::store_bytes(weapon + 0x144e, &[1])
     }
 
+    fn debug_spawn(&self, player: usize, name: &str) -> String {
+        if !self.rules.debug_spawn {
+            return "Item spawning is disabled on this server".into();
+        }
+        if !self.game.available(player) {
+            return "You cannot spawn items now".into();
+        }
+        let catalog = &self.rules.catalog;
+        let Some(id) = catalog.find_item(name) else {
+            return "Unknown inventory item".into();
+        };
+        let Some((eye, forward)) = self.game.eyes(player) else {
+            return "No spawn position".into();
+        };
+        let def = catalog.item(id);
+        if self
+            .game
+            .create(def, &WeaponState::default(), eye.ahead(forward, 56.0))
+            .is_some()
+        {
+            format!("Spawned {}", def.name)
+        } else {
+            format!("Could not spawn {}", def.name)
+        }
+    }
+
     pub fn dedicated_command(&mut self, edict: usize, args: usize) -> bool {
         let Some(command) = hooks::read_command(args) else {
             return false;
@@ -897,15 +1083,21 @@ impl Host {
 
     pub fn command(&mut self, request: &CStr) -> Option<RemoteState> {
         self.events();
+        self.restore_transitioned_players();
         let player = self.game.host()?;
         finish_death(
             &self.game,
             &mut self.local,
             &mut self.cans,
+            &mut self.pickups,
             self.ammo.as_mut().zip(self.hooks.as_ref()),
             player,
         );
         let mut request = request.to_str().ok()?;
+        if let Some(name) = request.strip_prefix("inv_spawn ") {
+            self.local.notice = self.debug_spawn(player, name);
+            request = "inv_sync";
+        }
         if request == "inv_infect" {
             self.infect(player);
             request = "inv_sync";
@@ -952,10 +1144,13 @@ impl Host {
             return false;
         }
         let ping = (command == "inv_ping").then(|| self.ping(player));
+        let spawn = command
+            .strip_prefix("inv_spawn ")
+            .map(|name| self.debug_spawn(player, name));
         let command = if command == "inv_infect" {
             self.infect(player);
             "inv_sync"
-        } else if ping.is_some() {
+        } else if ping.is_some() || spawn.is_some() {
             "inv_sync"
         } else {
             command
@@ -979,9 +1174,14 @@ impl Host {
         if identity.as_deref() == Some("BOT") {
             return false;
         }
+        let limits = Limits {
+            max_weight: self.effective.max_weight(self.limits.max_weight),
+            ..self.limits
+        };
         let table = &mut self.guests;
         let guest = table.entry(user).or_insert_with(|| {
-            let file = identity.and_then(|id| player_file(&self.directory, &id));
+            let file =
+                identity.and_then(|id| inventory_mod::inventory::player_file(&self.directory, &id));
             let previous = file.as_ref().and_then(|file| self.away.remove(file));
             let stale = self
                 .campaign_since
@@ -994,11 +1194,11 @@ impl Host {
             let session = if let Some(previous) = previous {
                 previous
             } else if stale {
-                let mut session = Session::load(None, self.limits, Arc::clone(&self.rules.catalog));
+                let mut session = Session::load(None, limits, Arc::clone(&self.rules.catalog));
                 session.file = file;
                 session
             } else {
-                Session::load(file, self.limits, Arc::clone(&self.rules.catalog))
+                Session::load(file, limits, Arc::clone(&self.rules.catalog))
             };
             Guest {
                 player,
@@ -1008,13 +1208,19 @@ impl Host {
         });
         guest.player = player;
         guest.edict = edict;
-        if let Some(notice) = ping {
+        if !self.transition && self.game.living(player) && self.transitioned_players.remove(&user) {
+            guest
+                .session
+                .restore_equipment(&self.game, player, &mut self.cans, hooks);
+        }
+        if let Some(notice) = ping.or(spawn) {
             guest.session.notice = notice;
         }
         finish_death(
             &self.game,
             &mut guest.session,
             &mut self.cans,
+            &mut self.pickups,
             self.ammo.as_mut().map(|ammo| (ammo, hooks)),
             player,
         );
@@ -1060,17 +1266,27 @@ impl Host {
             match event {
                 Event::Transition => {
                     self.transition = true;
-                    if !self.dedicated {
-                        self.local.carry_ammo =
-                            self.game.host().map(|player| self.game.ammo(player));
+                    self.transitioned_players.clear();
+                    if !self.dedicated
+                        && let Some(player) = self.game.host().filter(|&p| self.game.living(p))
+                    {
+                        self.local.capture_equipment(&self.game, player, &self.cans);
                     }
                     for (&user, guest) in &mut self.guests {
-                        if hooks.user(guest.edict) == Some(user) {
-                            guest.session.carry_ammo = Some(self.game.ammo(guest.player));
+                        if hooks.user(guest.edict) == Some(user) && self.game.living(guest.player) {
+                            guest
+                                .session
+                                .capture_equipment(&self.game, guest.player, &self.cans);
                         }
                     }
                 }
+                Event::PlayerTransitioned(user) => {
+                    self.transitioned_players.insert(user);
+                }
                 Event::RoundStart => {
+                    if !self.transition {
+                        self.transitioned_players.clear();
+                    }
                     self.combat.reset();
                     self.game.wear.numbers.borrow_mut().clear();
                     self.pickups.reset();
@@ -1124,11 +1340,11 @@ impl Host {
                             == Some(user)
                     });
                     if let Some(player) = player {
-                        self.local.death = Vector::read(player + ENTITY_ORIGIN);
+                        self.local.death = Death::capture(&self.game, player);
                     } else if let Some(guest) = self.guests.get_mut(&user)
                         && hooks.user(guest.edict) == Some(user)
                     {
-                        guest.session.death = Vector::read(guest.player + ENTITY_ORIGIN);
+                        guest.session.death = Death::capture(&self.game, guest.player);
                     }
                 }
                 Event::LeftStart => self.left_start(),
@@ -1153,8 +1369,37 @@ impl Host {
         }
     }
 
+    // The engine raises player_transitioned after it has installed that user's
+    // replacement weapon entities. On reconnect the event can precede inv_sync.
+    fn restore_transitioned_players(&mut self) {
+        let Some(hooks) = &self.hooks else { return };
+        if self.transition || self.transitioned_players.is_empty() {
+            return;
+        }
+        if !self.dedicated
+            && let Some(actor) = self.game.host().filter(|&p| self.game.living(p))
+            && let Some(user) = native::word(actor + 0x28).and_then(|e| hooks.user(e as usize))
+            && self.transitioned_players.remove(&user)
+        {
+            self.local
+                .restore_equipment(&self.game, actor, &mut self.cans, hooks);
+        }
+        for (&user, guest) in &mut self.guests {
+            if self.transitioned_players.contains(&user)
+                && hooks.user(guest.edict) == Some(user)
+                && self.game.living(guest.player)
+            {
+                guest
+                    .session
+                    .restore_equipment(&self.game, guest.player, &mut self.cans, hooks);
+                self.transitioned_players.remove(&user);
+            }
+        }
+    }
+
     pub fn tick(&mut self) {
         self.events();
+        self.restore_transitioned_players();
         self.cans.prune(&self.game);
         self.reserve_frame();
         self.infection_frame();
@@ -1170,6 +1415,7 @@ impl Host {
                 &self.game,
                 &mut self.local,
                 &mut self.cans,
+                &mut self.pickups,
                 self.ammo.as_mut().zip(self.hooks.as_ref()),
                 player,
             );
@@ -1187,6 +1433,7 @@ impl Host {
                     &self.game,
                     &mut guest.session,
                     &mut self.cans,
+                    &mut self.pickups,
                     self.ammo.as_mut().map(|ammo| (ammo, hooks)),
                     guest.player,
                 );
@@ -1307,42 +1554,34 @@ impl Host {
     }
 }
 
-fn player_file(directory: &Path, id: &str) -> Option<PathBuf> {
-    if id.is_empty() || id.len() > 63 || matches!(id, "BOT" | "STEAM_ID_PENDING") {
-        return None;
-    }
-    let safe: String = id
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() {
-                char::from(byte)
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    Some(directory.join(format!("inventory_{safe}.inventory")))
-}
-
 fn finish_death(
     game: &Game,
     session: &mut Session,
     cans: &mut actions::Cans,
+    pickups: &mut pickups::Pickups,
     ammo: Option<(&mut Ammo, &Hooks)>,
     player: usize,
 ) {
-    if game.living(player) {
-        return;
-    }
-    let Some(origin) = session.death.take() else {
+    let Some(death) = session.death else {
         return;
     };
+    if game.resolve(death.actor) != Some(player) || native::word(player + PLAYER_TEAM) != Some(2) {
+        session.death = None;
+        return;
+    }
+    let mut life = [0];
+    if !native::read(player + LIFE_STATE, &mut life) || life[0] == 0 {
+        return;
+    }
+    let origin = death.origin;
+    session.death = None;
     let mut scattered = 0;
-    for stack in session.inventory.slots() {
+    for index in 0..session.inventory.slots().len() {
+        let stack = session.inventory.slots()[index].clone();
         let Some(id) = stack.item else {
             continue;
         };
-        for number in 0..stack.count {
+        for _ in 0..stack.count {
             let angle = scattered as f32 * 2.39996;
             let radius = (4.0 + scattered as f32 * 3.0).min(18.0);
             let position = Vector {
@@ -1350,17 +1589,20 @@ fn finish_death(
                 y: origin.y + angle.sin() * radius,
                 z: origin.z + 16.0,
             };
-            if let Some(entity) = game.create(
-                session.inventory.catalog().item(id),
-                &stack.weapon,
-                position,
-            ) && number == stack.count - 1
-                && stack.spent > 0
-            {
-                cans.set(game, entity, stack.spent);
+            let def = session.inventory.catalog().item(id);
+            let Some(entity) = game.create(def, &stack.weapon, position) else {
+                break;
+            };
+            if def.is_weapon() {
+                pickups.remember(game, entity);
             }
+            if def.fuel > 0 {
+                cans.set(game, entity, session.inventory.next_spent(index));
+            }
+            session.inventory.remove_from_slot(index, 1);
             scattered += 1;
         }
+        session.inventory.clear_held(index);
     }
     if let Some((ammo, hooks)) = ammo {
         let mut reserve = game.ammo(player);
@@ -1393,7 +1635,9 @@ fn finish_death(
             hooks.changed(player);
         }
     }
-    session.inventory.clear();
+    if let Err(error) = session.save() {
+        crate::client::log(&format!("Could not save death drops ({error})"));
+    }
 }
 
 fn reserve_capacity(game: &Game, player: usize, session: &mut Session, hooks: Option<&Hooks>) {
@@ -1447,25 +1691,6 @@ fn run_session(
     player: usize,
     command: &str,
 ) -> Option<String> {
-    if game.living(player)
-        && let Some(previous) = session.carry_ammo.take()
-    {
-        let catalog = session.inventory.catalog();
-        let mut carried = [false; 32];
-        for (_, id) in game.weapons(player, catalog).into_iter().flatten() {
-            if let Some(kind) = catalog.item(id).reserve_kind() {
-                carried[kind.definition().index] = true;
-            }
-        }
-        let mut merged = game.ammo(player);
-        for kind in AmmoKind::ALL {
-            let index = kind.definition().index;
-            if !carried[index] {
-                merged[index] = previous[index].min(catalog.ammo_max(kind));
-            }
-        }
-        game.restore(player, merged);
-    }
     let mut runner = Run {
         game,
         inventory: &mut session.inventory,
@@ -1500,7 +1725,7 @@ impl Run<'_> {
     ) -> Option<([NativeWeapon; NATIVE_SLOTS], String)> {
         let mut fields = request.split_ascii_whitespace();
         let name = fields.next()?;
-        if !name.starts_with("inv_") {
+        if !inventory_mod::protocol::is_inventory_command(name) {
             return None;
         }
         let argument = fields.next();

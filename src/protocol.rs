@@ -178,3 +178,23 @@ fn parse_mutators(text: &str) -> Option<ServerMessage> {
         active,
     })
 }
+
+/// Inventory Mod commands handled by both server implementations.
+pub fn is_inventory_command(name: &str) -> bool {
+    matches!(
+        name,
+        "inv_sync"
+            | "inv_move"
+            | "inv_select"
+            | "inv_pickup"
+            | "inv_store"
+            | "inv_use"
+            | "inv_drop"
+            | "inv_dropweapon"
+            | "inv_unload"
+            | "inv_dropammo"
+            | "inv_ping"
+            | "inv_infect"
+            | "inv_spawn"
+    )
+}

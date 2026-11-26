@@ -120,13 +120,17 @@ impl MeleeInput {
         let pressed_shove = pressed & BUTTON_ATTACK2 != 0;
         let pressed_reload = pressed & BUTTON_RELOAD != 0;
 
-        if frame.hold <= 0.0 || !frame.melee {
+        if !frame.melee || (frame.hold <= 0.0 && frame.shove_hold <= 0.0) {
             self.swing = Swing::Idle;
             self.shove = Shove::Idle;
             self.throw_until = None;
             return buttons;
         }
 
+        if frame.hold <= 0.0 {
+            self.swing = Swing::Idle;
+            self.throw_until = None;
+        }
         if let Swing::Releasing(release) = &mut self.swing {
             if pressed_attack {
                 release.pressed_again_at = Some(frame.now);
@@ -162,7 +166,7 @@ impl MeleeInput {
                 self.swing = Swing::Releasing(Release::new(heavy, frame.now, frame.next_attack));
             }
         }
-        if self.swing == Swing::Idle && attack {
+        if frame.hold > 0.0 && self.swing == Swing::Idle && attack {
             self.swing = Swing::Winding {
                 since: frame.now,
                 can_heavy: frame.can_heavy,

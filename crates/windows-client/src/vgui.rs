@@ -43,6 +43,7 @@ type TextSize = unsafe extern "thiscall" fn(*mut c_void, u32, *const u16, *mut i
 type Size = unsafe extern "thiscall" fn(*mut c_void, *mut i32, *mut i32);
 type SetTexture = unsafe extern "thiscall" fn(*mut c_void, i32);
 type CreateTexture = unsafe extern "thiscall" fn(*mut c_void, bool) -> i32;
+type DeleteTexture = unsafe extern "thiscall" fn(*mut c_void, i32) -> bool;
 type TextureFile = unsafe extern "thiscall" fn(*mut c_void, i32, *const c_char, i32, bool);
 type Polygon = unsafe extern "thiscall" fn(*mut c_void, i32, *mut Vertex, bool);
 type Play = unsafe extern "thiscall" fn(*mut c_void, *const c_char);
@@ -93,6 +94,7 @@ struct Surface {
     layout: Size,
     set_texture: SetTexture,
     create_texture: CreateTexture,
+    delete_texture: DeleteTexture,
     texture_file: TextureFile,
     textured_polygon: Polygon,
     play: Play,
@@ -255,6 +257,12 @@ impl Vgui {
                 34,
                 "55 8B EC E8 ?? ?? ?? ?? 8B 10 8B C8 8B 12 5D FF"
             ),
+            delete_texture: method!(
+                DeleteTexture,
+                instance,
+                33,
+                "55 8B EC E8 ?? ?? ?? ?? 8B 4D 08 8B 10 8B 52 04 51 8B C8 FF D2 32 C0"
+            ),
             texture_file: method!(
                 TextureFile,
                 instance,
@@ -308,6 +316,22 @@ impl Vgui {
     pub fn stop(&mut self) -> io::Result<()> {
         self.detour.disable()?;
         ORIGINAL_PAINT.store(0, Ordering::Release);
+        let bound = native::word(self.surface.instance + 0x2a0).map(|id| id as i32);
+        let owned = std::mem::take(&mut self.sheets)
+            .into_values()
+            .chain(self.white.take())
+            .chain(self.screamer.texture.take());
+        for id in owned.filter(|&id| id > 0) {
+            // Paint and teardown run on the game thread. Flush pending drawing
+            // before releasing an ID which the surface still has selected.
+            unsafe {
+                if bound == Some(id) {
+                    (self.surface.set_texture)(self.surface.object(), -1);
+                }
+                // This build returns false even after recycling the dictionary entry.
+                (self.surface.delete_texture)(self.surface.object(), id);
+            }
+        }
         Ok(())
     }
 

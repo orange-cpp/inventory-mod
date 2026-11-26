@@ -176,8 +176,10 @@ impl Game {
         self.clear_melee(true);
         self.combat.attacks = None;
         self.combat.sound = None;
-        ORIGINAL_ATTACKS.set(None);
-        ORIGINAL_SOUND.set(None);
+        if !super::vtable::retained() {
+            ORIGINAL_ATTACKS.set(None);
+            ORIGINAL_SOUND.set(None);
+        }
     }
 
     fn restore_melee_speed(&self, handle: u32, state: &Survivor) {

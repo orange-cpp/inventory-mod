@@ -468,3 +468,76 @@ fn remote_state_matches_legacy_client_and_keeps_host_stack_sizes() {
     reconcile_native_inventory(&mut inventory, &native[..2], 0.25);
     assert_eq!(inventory.held_slot(pills), None);
 }
+
+#[test]
+fn held_item_reserves_stack_capacity_and_survives_reloading() {
+    let mut pack = Inventory::default();
+    let pills = pack.catalog().find_item("weapon_pain_pills").unwrap();
+    assert!(pack.set_held(0, pills));
+    assert_eq!(pack.add_to_slot(0, pills, 4, 0), 3);
+    assert_eq!(pack.add(pills, 1, 0), 1);
+    pack.release_held(0, 0);
+    let save = pack.to_text();
+    assert!(pack.load_text(&save));
+    assert_eq!(pack.count_of(pills), 5);
+    assert!(pack.load_text("inventory 1\n0 weapon_pain_pills 5\n"));
+    assert_eq!(pack.count_of(pills), 5);
+    assert_eq!(pack.add_to_slot(0, pills, 1, 0), 0);
+}
+
+#[test]
+fn unboxed_native_consumables_still_count_toward_capacity() {
+    let mut pack = Inventory::new(Limits {
+        slots: 1,
+        ..Limits::default()
+    });
+    let kit = pack.catalog().find_item("weapon_first_aid_kit").unwrap();
+    let pills = pack.catalog().find_item("weapon_pain_pills").unwrap();
+    pack.add(kit, 1, 0);
+    let total = pack.weight() + pack.catalog().item(pills).weight;
+    let held = NativeWeapon {
+        classname: "weapon_pain_pills".into(),
+        ..Default::default()
+    };
+    reconcile_native_inventory(&mut pack, &[held], 0.0);
+    assert_eq!(pack.weight(), total);
+}
+
+#[test]
+fn charged_shove_works_with_ordinary_swings() {
+    let mut input = MeleeInput::default();
+    let mut frame = MeleeFrame {
+        melee: true,
+        can_heavy: true,
+        hold: 0.0,
+        shove_hold: 0.5,
+        buttons: BUTTON_ATTACK | BUTTON_ATTACK2,
+        ..Default::default()
+    };
+    assert_eq!(input.command(frame), BUTTON_ATTACK);
+    frame.now = 1.0;
+    frame.buttons = 0;
+    assert_eq!(input.command(frame), BUTTON_ATTACK2 | BUTTON_HEAVY_SHOVE);
+}
+
+#[test]
+fn only_stable_accounts_and_supported_commands_are_accepted() {
+    use inventory_mod::{inventory::player_file, protocol::is_inventory_command};
+    let dir = std::path::Path::new("saves");
+    for anonymous in ["STEAM_ID_LAN", "STEAM_ID_PENDING", "BOT", ""] {
+        assert!(player_file(dir, anonymous).is_none());
+    }
+    assert_eq!(
+        player_file(dir, "STEAM_1:0:123"),
+        Some(dir.join("inventory_STEAM_1_0_123.inventory"))
+    );
+    assert!(!is_inventory_command("inv_other_plugin"));
+    assert!(is_inventory_command("inv_spawn"));
+    assert!(!Rules::default().debug_spawn);
+    assert!(
+        Rules::parse("[debug]\nallow_spawn = true")
+            .unwrap()
+            .0
+            .debug_spawn
+    );
+}

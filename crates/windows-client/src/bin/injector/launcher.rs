@@ -9,7 +9,8 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     System::{
         Console::GetConsoleProcessList,
@@ -29,9 +30,10 @@ use windows_sys::Win32::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
         },
         Threading::{
-            CreateRemoteThread, GetExitCodeThread, IsWow64Process2, LPTHREAD_START_ROUTINE,
-            OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
-            PROCESS_VM_READ, PROCESS_VM_WRITE, QueryFullProcessImageNameW, WaitForSingleObject,
+            CreateMutexW, CreateRemoteThread, GetExitCodeThread, IsWow64Process2,
+            LPTHREAD_START_ROUTINE, OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
+            PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, QueryFullProcessImageNameW,
+            WaitForSingleObject,
         },
     },
     UI::Shell::CommandLineToArgvW,
@@ -216,20 +218,16 @@ fn validate_game(process: &Handle) -> io::Result<()> {
         .ok_or_else(|| {
             io::Error::other("the launcher only loads Inventory Mod into a Left 4 Dead 2 process")
         })?;
+    if game == Game::Server {
+        return Err(io::Error::other(
+            "use start-server or Source plugin_load to initialize the dedicated server plugin",
+        ));
+    }
     let args = process_arguments(process)?;
     let is = |arg: &OsStr, name: &str| arg.to_string_lossy().eq_ignore_ascii_case(name);
     if !args.iter().any(|arg| is(arg, "-insecure")) {
         return Err(io::Error::other(
             "start Left 4 Dead 2 with -insecure before loading Inventory Mod",
-        ));
-    }
-    if game == Game::Server
-        && !args
-            .windows(2)
-            .any(|args| is(&args[0], "-game") && is(&args[1], "left4dead2"))
-    {
-        return Err(io::Error::other(
-            "the dedicated server must use -game left4dead2",
         ));
     }
     let mut machine = 0;
@@ -309,6 +307,46 @@ impl Drop for Argument<'_> {
     }
 }
 
+/// Find an existing copy, including either of the standard Cargo/release names.
+fn inventory_module(pid: u32, dll: &Path) -> io::Result<Option<usize>> {
+    find_module(pid, |module| {
+        let name = wide_string(&module.szModule);
+        ["inventory_mod.dll", "inventory_mod_client.dll"]
+            .iter()
+            .any(|candidate| name.eq_ignore_ascii_case(candidate))
+            || dll
+                .file_name()
+                .is_some_and(|candidate| name.eq_ignore_ascii_case(candidate))
+    })
+}
+
+fn module_present(pid: u32, address: usize) -> io::Result<bool> {
+    Ok(find_module(pid, |module| module.modBaseAddr.addr() == address)?.is_some())
+}
+
+fn find_module(pid: u32, matches: impl Fn(&MODULEENTRY32W) -> bool) -> io::Result<Option<usize>> {
+    let list = Handle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid) })?;
+    let mut module = MODULEENTRY32W {
+        dwSize: size_of::<MODULEENTRY32W>() as u32,
+        ..Default::default()
+    };
+    if unsafe { Module32FirstW(list.raw(), &mut module) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    loop {
+        if matches(&module) {
+            return Ok(Some(module.modBaseAddr.addr()));
+        }
+        if unsafe { Module32NextW(list.raw(), &mut module) } == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(18) {
+                return Ok(None);
+            } // ERROR_NO_MORE_FILES
+            return Err(error);
+        }
+    }
+}
+
 fn attach(pid: u32, dll: &Path) -> io::Result<()> {
     let process = Handle::new(unsafe {
         OpenProcess(
@@ -322,6 +360,16 @@ fn attach(pid: u32, dll: &Path) -> io::Result<()> {
         )
     })?;
     validate_game(&process)?;
+    let name = wide(OsStr::new(&format!("Local\\InventoryMod.Attach.{pid}")));
+    let lock = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let _lock = Handle::new(lock)?;
+    if already_exists || inventory_module(pid, dll)?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Inventory Mod is already loaded or is being loaded",
+        ));
+    }
     let load = loader(pid)?;
     let path = wide(dll.as_os_str());
     let size = path.len() * size_of::<u16>();
@@ -415,7 +463,7 @@ pub fn run() -> io::Result<()> {
     let target = args.next().unwrap_or_else(|| "left4dead2.exe".into());
     if args.next().is_some() {
         return Err(io::Error::other(
-            "Usage: injector [inventory DLL] [left4dead2.exe|srcds.exe|game PID]",
+            "Usage: injector [inventory DLL] [left4dead2.exe|game PID]",
         ));
     }
     // Keep the ordinary Win32 path for older game loaders and validate it before allocating remotely.

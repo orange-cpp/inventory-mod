@@ -48,7 +48,8 @@ struct Case {
 }
 
 struct Turn {
-    who: Patient,
+    case: Case,
+    receives: bool,
     position: Vector,
     model: i32,
     deadline: Instant,
@@ -96,7 +97,9 @@ impl Game {
     pub fn uninstall_infection(&mut self, source: &Source, receives: impl Fn(i32) -> bool) {
         self.clear_infection(source, true, receives);
         self.infection.hook = None;
-        ORIGINAL.set(None);
+        if !super::vtable::retained() {
+            ORIGINAL.set(None);
+        }
     }
 
     fn patient(&self, source: &Source, user: i32, patient: Patient) -> Option<Ent> {
@@ -317,23 +320,25 @@ impl Game {
         self.infection.turning.insert(
             user,
             Turn {
-                who: case.who,
+                case,
+                receives,
                 position,
                 model,
                 deadline: now + Duration::from_secs(1),
             },
         );
         self.infection.no_rescue.insert(user);
-        if receives {
-            self.tell(source, user, case, now, true, true);
-        }
+
         unsafe { (self.native.commit_suicide)(player.as_ptr(), false, true) };
     }
 
     fn finish_turns(&mut self, source: &Source, rules: &InfectionRules, now: Instant) {
         for (user, turn) in std::mem::take(&mut self.infection.turning) {
-            let player = self.patient(source, user, turn.who);
+            let player = self.patient(source, user, turn.case.who);
             if player.is_some_and(|player| unsafe { field::<u8>(player, LIFE_STATE) != 0 }) {
+                if turn.receives {
+                    self.tell(source, user, turn.case, now, true, true);
+                }
                 self.infection.corpses.push(Corpse {
                     position: turn.position,
                     model: turn.model,
@@ -360,6 +365,9 @@ impl Game {
                 }
             } else if player.is_none() || now >= turn.deadline {
                 self.infection.no_rescue.remove(&user);
+                if turn.receives {
+                    self.tell(source, user, turn.case, now, false, true);
+                }
             } else {
                 self.infection.turning.insert(user, turn);
             }

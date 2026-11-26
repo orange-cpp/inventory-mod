@@ -5,7 +5,10 @@ use std::{
 
 use windows_sys::Win32::{Foundation::POINT, System::LibraryLoader::GetProcAddress};
 
-use crate::native::{self, Detour};
+use crate::native::{
+    self, PeImage,
+    resident::{CallbackSlots, Method},
+};
 
 type Set = unsafe extern "system" fn(i32, i32) -> i32;
 type Get = unsafe extern "system" fn(*mut POINT) -> i32;
@@ -16,8 +19,8 @@ static CENTER: AtomicU64 = AtomicU64::new(0);
 const FREE: u64 = u64::MAX;
 
 pub struct Cursor {
-    get: Detour,
-    set: Detour,
+    get: CallbackSlots,
+    set: CallbackSlots,
 }
 
 impl Cursor {
@@ -26,21 +29,40 @@ impl Cursor {
         let user = native::module("user32.dll")?;
         let get = unsafe { GetProcAddress(user.as_ptr(), c"GetCursorPos".as_ptr().cast()) }?;
         let set = unsafe { GetProcAddress(user.as_ptr(), c"SetCursorPos".as_ptr().cast()) }?;
-        let mut get = Detour::prepare(get as usize, get_position as Get as usize).ok()?;
-        let mut set = Detour::prepare(set as usize, set_position as Set as usize).ok()?;
-        GET.store(get.trampoline(), Ordering::Release);
-        SET.store(set.trampoline(), Ordering::Release);
-        if get.enable().and_then(|()| set.enable()).is_err() {
-            let _ = get.disable();
-            return None;
-        }
+        let (get, set) = (get as usize, set as usize);
+        GET.store(get, Ordering::Release);
+        SET.store(set, Ordering::Release);
+        // Only Source's input imports need interception. Other threads and
+        // overlays keep calling the original system functions.
+        let input_slot = |module, stamp, offset| {
+            let image = PeImage::loaded(native::module(module)?)?;
+            (image.timestamp == stamp && image.includes(image.base + offset, 4))
+                .then_some(image.base + offset)
+        };
+        let input = input_slot("inputsystem.dll", 0x6a440e51, 0x1411c)?;
+        let vgui = input_slot("vgui2.dll", 0x6a440da5, 0x43300)?;
+        let tier0 = input_slot("tier0.dll", 0x6a440d8a, 0x3021c)?;
+        let get = CallbackSlots::install(
+            Method::GetCursor,
+            &[tier0],
+            get,
+            get_position as Get as usize,
+        )
+        .ok()?;
+        let set = CallbackSlots::install(
+            Method::SetCursor,
+            &[input, vgui],
+            set,
+            set_position as Set as usize,
+        )
+        .ok()?;
         Some(Self { get, set })
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
         release();
-        self.set.disable()?;
-        self.get.disable()
+        self.set.stop()?;
+        self.get.stop()
     }
 }
 

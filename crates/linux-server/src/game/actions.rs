@@ -65,7 +65,9 @@ impl Game {
 
     pub fn uninstall_actions(&mut self) {
         self.chainsaw_patch = None;
-        ORIGINAL_CHAINSAW_FRAME.set(None);
+        if !super::vtable::retained() {
+            ORIGINAL_CHAINSAW_FRAME.set(None);
+        }
     }
 
     fn max_fuel(saw: Ent) -> i32 {
@@ -168,8 +170,8 @@ impl Game {
     pub fn action_frame(&mut self, player: Ent, ctx: &mut ActionContext<'_>) -> Option<String> {
         let now = ctx.source.current_time()?;
         let pressing_reload = unsafe { field::<i32>(player, BUTTONS) } & BUTTON_RELOAD != 0;
-        let pressed =
-            pressing_reload && !std::mem::replace(&mut ctx.actions.reload_down, pressing_reload);
+        let was_down = std::mem::replace(&mut ctx.actions.reload_down, pressing_reload);
+        let pressed = pressing_reload && !was_down;
         let pending = ctx.actions.progress;
         if let Some(progress) = pending {
             let valid = progress.handle == self.handle(player)
@@ -249,7 +251,7 @@ impl Game {
                 .filter(|&weapon| {
                     self.classname(weapon) == def.classname && !self.pending_removal(weapon)
                 })
-                .map(ReviveSource::Held)
+                .map(|weapon| ReviveSource::Held(self.handle(weapon)))
         };
         if index.is_none()
             && let Some(held) = held()
@@ -279,29 +281,26 @@ impl Game {
     ) -> String {
         let def = ctx.inventory.catalog().item(item);
         let title = def.name;
-        if self
-            .revive_source(player, item, index, ctx.inventory)
-            .is_none()
-        {
+        let Some(source) = self.revive_source(player, item, index, ctx.inventory) else {
             return format!("You have no {title} left to get up with");
-        }
+        };
         unsafe { (self.native.on_revived)(player.as_ptr()) };
         if self.down(player) {
             return "You could not get up".into();
         }
-        match self.revive_source(player, item, index, ctx.inventory) {
-            Some(ReviveSource::Held(weapon)) => {
-                if self.release(player, weapon, def, self.native.quiet_drop) {
+        match source {
+            ReviveSource::Held(handle) => {
+                if let Some(weapon) = self.find_entity(handle) {
+                    self.release(player, weapon, def, self.native.quiet_drop);
                     self.remove(weapon);
-                    if let Some(home) = ctx.inventory.held_slot(item) {
-                        ctx.inventory.clear_held(home);
-                    }
+                }
+                if let Some(home) = ctx.inventory.held_slot(item) {
+                    ctx.inventory.clear_held(home);
                 }
             }
-            Some(ReviveSource::Inventory(index)) => {
+            ReviveSource::Inventory(index) => {
                 ctx.inventory.remove_from_slot(index, 1);
             }
-            None => {}
         }
         if ctx.rules.self_revive.rush
             && ctx.inventory.catalog().item(item).classname == "weapon_adrenaline"
@@ -369,13 +368,13 @@ impl Game {
 }
 
 enum ReviveSource {
-    Held(Ent),
+    Held(u32),
     Inventory(usize),
 }
 
 unsafe extern "C" fn chainsaw_frame(saw: *mut Entity) {
     if let Some(entity) = NonNull::new(saw)
-        && unsafe { field::<i32>(entity, CLIP) } > 0
+        && (unsafe { field::<i32>(entity, CLIP) } > 0 || !crate::plugin::keep_empty_chainsaw())
         && let Some(original) = ORIGINAL_CHAINSAW_FRAME.get()
     {
         unsafe { original(saw) };

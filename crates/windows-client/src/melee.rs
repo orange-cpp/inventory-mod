@@ -95,11 +95,19 @@ impl View {
     }
 
     pub fn playing(self) -> bool {
+        self.alive_on_team(2)
+    }
+
+    pub fn can_ping(self) -> bool {
+        self.alive_on_team(2) || self.alive_on_team(3)
+    }
+
+    fn alive_on_team(self, team: u32) -> bool {
         let Some(player) = self.player() else {
             return false;
         };
         let mut life = [u8::MAX];
-        native::word(player + 0xe4) == Some(2)
+        native::word(player + 0xe4) == Some(team)
             && native::read(player + 0x147, &mut life)
             && life[0] == 0
             && native::word(player + 0x1450) == Some(0)
@@ -302,7 +310,7 @@ impl Melee {
             return self.input.peek(bits);
         }
         let now = self.seconds();
-        let weapon = if self.settings.hold > 0.0 {
+        let weapon = if self.settings.hold > 0.0 || self.settings.shove_hold > 0.0 {
             self.view
                 .player()
                 .and_then(|player| self.view.weapon(player))

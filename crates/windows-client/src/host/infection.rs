@@ -25,6 +25,11 @@ type Suicide = unsafe extern "thiscall" fn(*mut c_void, bool, bool);
 type Rescue = unsafe extern "thiscall" fn(*mut c_void, *mut c_void);
 type Script = unsafe extern "C" fn(*const Command);
 
+// CSurvivorDeathModel::SetPlayer copies the survivor-character field into the
+// death model's networked m_nCharacterType on the supported Windows builds.
+const SURVIVOR_CHARACTER: usize = 0x2bb4;
+const CORPSE_CHARACTER: usize = 0x17d8;
+
 static RESCUE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C)]
@@ -56,6 +61,8 @@ struct InfectionCase {
 }
 
 struct Body {
+    character: u32,
+    existing: HashSet<u32>,
     at: Vector,
     retry: Instant,
     end: Instant,
@@ -217,6 +224,9 @@ impl Infection {
                     let distance = delta.dot(delta);
                     if distance < 250.0 * 250.0
                         && game.classname(entity).as_deref() == Some("survivor_death_model")
+                        && native::word(entity + CORPSE_CHARACTER) == Some(body.character)
+                        && super::ammo::handle(game, entity)
+                            .is_some_and(|h| !body.existing.contains(&h))
                     {
                         Some((entity, distance))
                     } else {
@@ -394,7 +404,7 @@ impl Host {
             Event::RoundStart | Event::Transition | Event::RoundEnd => {
                 self.clear_infection(!matches!(event, Event::RoundEnd))
             }
-            Event::LeftStart => {}
+            Event::LeftStart | Event::PlayerTransitioned(_) => {}
         }
     }
 
@@ -432,15 +442,27 @@ impl Host {
                 continue;
             };
             if now >= case.end {
-                self.infection_message(id, actor, None, true);
                 let Some(at) = Vector::read(actor + ENTITY_ORIGIN) else {
                     continue;
                 };
+                let character = native::word(actor + SURVIVOR_CHARACTER);
+                let existing = (1..4096)
+                    .filter_map(|i| {
+                        let entity = self.game.entity(i);
+                        (entity != 0
+                            && self.game.classname(entity).as_deref()
+                                == Some("survivor_death_model"))
+                        .then(|| super::ammo::handle(&self.game, entity))
+                        .flatten()
+                    })
+                    .collect();
                 unsafe { (infection.suicide)(address(actor), false, true) };
                 if self.game.living(actor) {
+                    self.infection_message(id, actor, None, false);
                     crate::client::log("infection: the game refused CommitSuicide");
                     continue;
                 }
+                self.infection_message(id, actor, None, true);
                 infection.survivors.insert(id);
                 let specials = &self.effective.infection.specials;
                 let kind = if specials.is_empty() {
@@ -454,11 +476,15 @@ impl Host {
                     at.y,
                     at.z + 4.0
                 ));
-                infection.bodies.push(Body {
-                    at,
-                    retry: now + Duration::from_millis(200),
-                    end: now + Duration::from_secs(3),
-                });
+                if let Some(character) = character {
+                    infection.bodies.push(Body {
+                        character,
+                        existing,
+                        at,
+                        retry: now + Duration::from_millis(200),
+                        end: now + Duration::from_secs(3),
+                    });
+                }
                 continue;
             }
             if !case.told {

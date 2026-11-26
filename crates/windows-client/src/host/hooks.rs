@@ -38,6 +38,7 @@ thread_local! {
 #[derive(Clone, Copy)]
 pub enum Event {
     Transition,
+    PlayerTransitioned(i32),
     RoundStart,
     Death(i32),
     RoundEnd,
@@ -307,6 +308,7 @@ fn event(source: usize) -> Option<Event> {
     match native::string(name.addr(), 48)?.as_str() {
         "round_start" => Some(Event::RoundStart),
         "map_transition" => Some(Event::Transition),
+        "player_transitioned" => Some(Event::PlayerTransitioned(get_int(c"userid")?)),
         "player_death" => Some(Event::Death(get_int(c"userid")?)),
         "round_end" | "mission_lost" | "finale_vehicle_leaving" | "finale_win" => {
             Some(Event::RoundEnd)
@@ -366,7 +368,7 @@ pub(super) fn read_command(arguments: usize) -> Option<String> {
         if value.is_empty() || value.chars().any(char::is_whitespace) {
             return None;
         }
-        if index == 0 && !value.starts_with("inv_") {
+        if index == 0 && !inventory_mod::protocol::is_inventory_command(&value) {
             return None;
         }
         values.push(value);

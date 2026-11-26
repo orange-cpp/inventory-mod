@@ -281,3 +281,7 @@ damage = 45        # % of her hit on a standing survivor (100: an incap)
 [mutators.tank]
 health = 150       # % of its health (the difficulty scales it too)
 speed = 110        # % of its speed
+
+[debug]
+# Allow connected survivors to spawn catalog items for playtesting.
+allow_spawn = false

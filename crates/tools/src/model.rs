@@ -195,7 +195,33 @@ fn triangles(data: Bytes<'_>, mesh: usize, version: u32) -> io::Result<Vec<[usiz
                     .ok_or_else(|| invalid("VTX vertex index outside its strip group"))
             })
             .collect::<io::Result<Vec<_>>>()?;
-        triangles.extend_from_slice(index.as_chunks::<3>().0);
+        let strip_size = if version < 49 { 27 } else { 35 };
+        for strip in table(data, group, group + 16, strip_size)? {
+            let count = data.u32(strip)? as usize;
+            let first = data.u32(strip + 4)? as usize;
+            let indices = index
+                .get(first..)
+                .and_then(|tail| tail.get(..count))
+                .ok_or_else(|| invalid("VTX strip indices outside its group"))?;
+            match data.at(strip + 18, 1)?[0] & 3 {
+                1 => {
+                    let (list, tail) = indices.as_chunks::<3>();
+                    if !tail.is_empty() {
+                        return Err(invalid("incomplete VTX triangle"));
+                    }
+                    triangles.extend_from_slice(list);
+                }
+                2 => {
+                    for (i, window) in indices.windows(3).enumerate() {
+                        let (a, b, c) = (window[0], window[1], window[2]);
+                        if a != b && a != c && b != c {
+                            triangles.push(if i % 2 == 0 { [a, b, c] } else { [b, a, c] });
+                        }
+                    }
+                }
+                _ => return Err(invalid("unsupported VTX primitive type")),
+            }
+        }
     }
     Ok(triangles)
 }

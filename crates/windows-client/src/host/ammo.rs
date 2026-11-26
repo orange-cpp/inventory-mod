@@ -123,7 +123,9 @@ impl Ammo {
             return position;
         }
         key(game, probe, c"origin", &position_string(position));
-        unsafe { (game.spawn)(address(game.tools), address(probe)) };
+        if !game.dispatch_spawn(probe) {
+            return position;
+        }
         let landed = unsafe { floor(address(probe), 0x0200_400b, ptr::null_mut()) };
         let at = if landed == 1 {
             Vector::read(probe + ENTITY_ORIGIN).unwrap_or(position)
@@ -145,6 +147,8 @@ impl Ammo {
             let delta = a.difference(b);
             delta.z.abs() < 72.0 && delta.x * delta.x + delta.y * delta.y < distance * distance
         };
+        self.piles
+            .retain(|&handle, _| game.resolve(handle).is_some());
         if !pile.map
             && let Some(close_pack) = self.piles.values_mut().find(|existing| {
                 !existing.map
@@ -213,7 +217,9 @@ impl Ammo {
                 ..at
             }),
         );
-        unsafe { (game.spawn)(address(game.tools), address(probe)) };
+        if !game.dispatch_spawn(probe) {
+            return false;
+        }
         let Some(handle) = handle(game, probe) else {
             return false;
         };

@@ -21,16 +21,14 @@ use windows_sys::Win32::{
     },
 };
 
-use super::{Game, Handle, attach, default_dll, find_game, validate_game};
+use super::{Game, Handle, attach, default_dll, find_game, inventory_module, validate_game};
 
 const USAGE: &str = "Commands: start-client [map], start-server [map] [port], unload [game PID], reload [game PID], key <virtual-key> [game PID], click <x> <y> [game PID], console <text> [game PID], shot <image.png> [game PID]";
 
 pub fn dispatch(verb: &OsStr, args: &[OsString]) -> Option<io::Result<()>> {
     match verb.to_str()? {
         "help" | "--help" => {
-            println!(
-                "{USAGE}\nInjector: injector [inventory DLL] [left4dead2.exe|srcds.exe|game PID]"
-            );
+            println!("{USAGE}\nInjector: injector [inventory DLL] [left4dead2.exe|game PID]");
             Some(Ok(()))
         }
         "start-client" => Some(start_client(args)),
@@ -218,10 +216,28 @@ fn message(hwnd: HWND, code: u32, data: usize, extra: isize) -> io::Result<()> {
 fn unload(reload: bool, args: &[OsString]) -> io::Result<()> {
     let pid = target(args)?;
     let hwnd = check(pid)?;
+    let dll = default_dll()?;
+    let (mut module, mut reply) = (inventory_module(pid, &dll)?, 0usize);
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW};
+    if unsafe { SendMessageTimeoutW(hwnd, 0x804b, 0, 0, SMTO_ABORTIFHUNG, 3000, &mut reply) } != 0
+        && reply != 0
+    {
+        module = Some(reply);
+    }
+    let module = module.ok_or_else(|| io::Error::other("Inventory Mod is not loaded"))?;
     message(hwnd, 0x804a, 0, 0)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while super::module_present(pid, module)? {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Inventory Mod did not finish unloading",
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
     if reload {
-        thread::sleep(Duration::from_secs(1));
-        attach(pid, &default_dll()?)?;
+        attach(pid, &dll)?;
     }
     Ok(())
 }
