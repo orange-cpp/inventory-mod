@@ -1,6 +1,6 @@
 # Builds the mod and the release for players: dist\inventory-mod (the folder) and dist\inventory-mod-<date>.zip.
 #
-#   powershell -ExecutionPolicy Bypass -File tools\make_dist.ps1 [-SkipBuild] [-SkipTests]
+#   powershell -ExecutionPolicy Bypass -File tools\make_dist.ps1 [-SkipBuild] [-SkipTests] [-SkipAddons]
 #   (make_dist.bat in the repository's root runs it)
 #
 # 1. build.bat Release (the DLL, the injector, the tests); the game must not have this DLL loaded (Ctrl+End in the
@@ -14,12 +14,17 @@
 
 param(
     [switch]$SkipBuild,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$SkipAddons,
+    [string]$GameDir,
+    [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*\.zip$')]
+    [string]$ArchiveName = ("inventory-mod-{0}.zip" -f (Get-Date -Format 'yyyy-MM-dd'))
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Out = Join-Path $Root 'out\Release'
+$Build = Join-Path $Root 'build\x86-Release'
 $Dist = Join-Path $Root 'dist'
 $Folder = Join-Path $Dist 'inventory-mod'
 
@@ -51,23 +56,39 @@ foreach ($file in 'inventory_mod.dll', 'injector.exe') {
 }
 
 Step 'the release folder'
-if (Test-Path $Folder) { Remove-Item $Folder -Recurse -Force }
-New-Item -ItemType Directory -Force (Join-Path $Folder 'addons') | Out-Null
+if (Test-Path -LiteralPath $Folder) {
+    $resolved = (Resolve-Path -LiteralPath $Folder).ProviderPath
+    if ($resolved -ne $Folder -or (Get-Item -LiteralPath $Folder).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        Fail "expected a regular release folder at $Folder"
+    }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+$licenses = Join-Path $Folder 'licenses'
+New-Item -ItemType Directory -Force $licenses | Out-Null
 Copy-Item (Join-Path $Out 'inventory_mod.dll'), (Join-Path $Out 'injector.exe') $Folder
 Copy-Item (Join-Path $Root 'packaging\load-mod.bat'), (Join-Path $Root 'packaging\HOW-TO.txt') $Folder
 Copy-Item (Join-Path $Root 'inventory_mod.example.toml') $Folder
 Copy-Item (Join-Path $Root 'assets\inventory_mod_screamer.jpg') $Folder
+Copy-Item (Join-Path $Root 'third_party\imgui-nullcore\LICENSE') (Join-Path $licenses 'imgui-nullcore.txt')
+Copy-Item (Join-Path $Build '_deps\imgui-src\LICENSE.txt') (Join-Path $licenses 'imgui.txt')
+Copy-Item (Join-Path $Build 'vcpkg_installed\x86-windows-static\share\minhook\copyright') (Join-Path $licenses 'minhook.txt')
+Copy-Item (Join-Path $Build 'vcpkg_installed\x86-windows-static\share\tomlplusplus\copyright') (Join-Path $licenses 'tomlplusplus.txt')
 
-Step 'the ammo packs (tools\make_rounds_addon.py)'
-& python -I (Join-Path $Root 'tools\make_rounds_addon.py') --out (Join-Path $Folder 'addons\inventory_mod_rounds.vpk')
-if ($LASTEXITCODE -ne 0) { Fail 'the ammo pack addon was not made (Python with Pillow, and the game installed?)' }
+if (-not $SkipAddons) {
+    $gameArgs = @()
+    if ($GameDir) { $gameArgs = @('--game', $GameDir) }
 
-Step 'the menus (tools\make_menu_addon.py)'
-& python -I (Join-Path $Root 'tools\make_menu_addon.py') --out (Join-Path $Folder 'addons\inventory_mod_menu.vpk')
-if ($LASTEXITCODE -ne 0) { Fail 'the menu addon was not made (the game installed?)' }
+    Step 'the ammo packs (tools\make_rounds_addon.py)'
+    & python -I (Join-Path $Root 'tools\make_rounds_addon.py') --out (Join-Path $Folder 'addons\inventory_mod_rounds.vpk') @gameArgs
+    if ($LASTEXITCODE -ne 0) { Fail 'the ammo pack addon was not made (Python with Pillow, and the game installed?)' }
+
+    Step 'the menus (tools\make_menu_addon.py)'
+    & python -I (Join-Path $Root 'tools\make_menu_addon.py') --out (Join-Path $Folder 'addons\inventory_mod_menu.vpk') @gameArgs
+    if ($LASTEXITCODE -ne 0) { Fail 'the menu addon was not made (the game installed?)' }
+}
 
 Step 'the zip'
-$zip = Join-Path $Dist ("inventory-mod-{0}.zip" -f (Get-Date -Format 'yyyy-MM-dd'))
+$zip = Join-Path $Dist $ArchiveName
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $Folder -DestinationPath $zip
 Add-Type -AssemblyName System.IO.Compression.FileSystem

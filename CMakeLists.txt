@@ -115,7 +115,7 @@ if(NOT WIN32)
     return()
 endif()
 
-set(INVENTORY_NULLCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../imgui-nullcore" CACHE PATH "Checkout of imgui-nullcore")
+set(INVENTORY_NULLCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui-nullcore" CACHE PATH "Checkout of imgui-nullcore")
 if(NOT EXISTS "${INVENTORY_NULLCORE_DIR}/include/imgui_nullcore/imgui_nullcore.hpp")
     message(FATAL_ERROR "imgui-nullcore not found at ${INVENTORY_NULLCORE_DIR} (set INVENTORY_NULLCORE_DIR)")
 endif()
