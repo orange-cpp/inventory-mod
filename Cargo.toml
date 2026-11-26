@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/linux-server", "crates/source-assets", "crates/tools", "crates/windows-client"]
+resolver = "3"
+
+[package]
+name = "inventory-mod"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
+
+[lints.rust]
+unsafe_code = "forbid"

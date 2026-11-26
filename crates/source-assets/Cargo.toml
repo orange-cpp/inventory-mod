@@ -1,0 +1,14 @@
+[package]
+name = "inventory-source-assets"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+crc32fast = "1.5"
+image = { version = "0.25.9", default-features = false }
+texpresso = "2.0.2"
+
+[lints.rust]
+unsafe_code = "forbid"

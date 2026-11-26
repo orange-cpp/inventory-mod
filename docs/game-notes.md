@@ -1,17 +1,22 @@
 # L4D2 internals used by the mod
 
-The Windows addresses were read out of the game's DLLs with `tools/re/pe_tools.py` (capstone + pefile) and then checked in
-the running game. It is for **one build**: game 2.2.4.3, `server.dll` PE timestamp `0x6A440E53`
-(sha256 `a93ec916...`). `game::init()` refuses to run on any other `server.dll`, so a game update fails closed.
-Addresses are RVAs from the preferred base `0x10000000`; the mod itself finds them at run time (see "how it is found").
-In the code they are declared in `src/game/sdk.hpp`.
+The Rust plugins validate their Source interfaces and private engine bindings at runtime. Windows binding code lives in
+[`crates/windows-client/src/`](../crates/windows-client/src/). Linux binding code lives in
+[`crates/linux-server/src/`](../crates/linux-server/src/). The Windows addresses shown as virtual addresses use the
+DLL's preferred base `0x10000000`.
+
+The original Windows 2.2.4.3 server has PE timestamp `0x6A440E53` (SHA-256 starts with `a93ec916`).
+Its primary `CTerrorPlayer` vtable is at RVA `0x6973B4`. The installed newer server has PE timestamp
+`0x6AFCCCA0` with the corresponding vtable at RVA `0x69740C`. Its client-command handler at VA
+`0x10090D10` references the `CCommand` arguments at offset `0x408`. That layout was checked against
+the newer binary in REA evidence `ev_fff763f79e03c7557be26c4d14de010f5eeb5d761eba26c923dbd2f23721012e`.
 
 ## Linux dedicated server
 
 Steam depot 222863, manifest 868244163643826330, ships the 32-bit `left4dead2/bin/server_srv.so` used by SRCDS.
 Its GNU build ID is `c9b0cd3d1800cb19083026f349a9de15933c05ac`. `nm -Cn` names the local symbols and
 `objdump -d -M intel` shows their x86 calling conventions and prologues. The plugin checks the in-memory build ID and
-each function's bytes at the offsets in [linux_sdk.hpp](../src/server/linux_sdk.hpp) before calling them.
+each function's bytes at the offsets in [native.rs](../crates/linux-server/src/game/native.rs) before calling them.
 
 The plugin loaded and the server opened `c1m1_hotel` in WSL. The loader used the SDK's
 `ISERVERPLUGINCALLBACKS002`, `VEngineServer022`, `PlayerInfoManager002`, `ServerGameEnts001`, and `VSERVERTOOLS001`
@@ -99,18 +104,44 @@ production server logged a 1.05-second recovery for a heavy shove from the Windo
 ## Tool
 
 ```
-python -m pip install --target %TEMP%\relibs capstone pefile
-python -I tools/re/pe_tools.py <dll> strings <text>      # ASCII strings
-python -I tools/re/pe_tools.py <dll> xrefs <va|string:text>
-python -I tools/re/pe_tools.py <dll> rtti <class>        # MSVC RTTI -> vtable addresses
-python -I tools/re/pe_tools.py <dll> vtable <va> [n]
-python -I tools/re/pe_tools.py <dll> func <va>           # disassembly of one function
+cargo run -p inventory-tools -- pe <dll> strings <text>
+cargo run -p inventory-tools -- pe <dll> xrefs <va|string:text>
+cargo run -p inventory-tools -- pe <dll> rtti <class>
+cargo run -p inventory-tools -- pe <dll> vtable <va> [n]
+cargo run -p inventory-tools -- pe <dll> func <va>
 ```
 
 Cross references come from the base relocation table (every absolute address in the image is relocated), so they are
 exact. Class vtables come from MSVC RTTI (`.?AVCTerrorPlayer@@` -> type descriptor -> complete object locator -> vtable).
 
-## engine.dll
+## Windows engine and historical bindings
+
+The Rust remote client accepts the legacy engine stamp `0x6A440ED6` and the installed engine stamp
+`0x6AFCB59C`. In the installed build, the print handler stays at RVA `0x52100`, loads the message string at
+offset `0x54`, calls `ConMsg`, and returns with `ret 4`. This was checked against the installed binary
+with SHA-256 starting `d4518007` in REA evidence `ev_d5e16df5d45ef1c2445952c0d7b2a16b3b63edffc75d5dc15b161bd2f17f57ca`.
+The same build passed a live Rust client sync and unload test.
+
+The remaining Windows notes preserve observations from the original implementation on 2.2.4.3,
+including its source paths and rendering internals. The Rust client uses the VGUI surface for the HUD and
+inventory grid. It loads and trims the original icon sheets from the installed VPKs and uses the original
+Direct3D 9 infection and stamina shaders.
+
+On the newer Windows client, `CHudWeaponSelection` has vtables at RVAs `0x5D5744` and `0x5D5A94` for
+the paint and visibility bindings. `CTerrorViewRender`'s primary vtable is at RVA `0x5C142C`. The Rust
+client validates the item-box branches and the pre-HUD render slot before applying either hook.
+
+Live tests compared the 300 × 360 inventory window and the native HUD positions against the original
+Windows DLL. The Rust Direct3D fallback also drew the grid, weapon HUD, and wheel with VGUI disabled
+in a test build. The infection shader rendered in all three layer configurations. The passes below
+the game's HUD and below the inventory kept the inventory's pixels unchanged in captures.
+
+On `c1m1_hotel`, a single-use rifle spawner yielded a gun with a zero-round magazine and sent its
+50 rounds to the player's reserve. The Rust Windows client stored and re-equipped a 15-round pistol
+through the native inventory commands and the client hotkey on both Windows and Linux SRCDS.
+On `c1m2_streets`, the live HUD showed a team ping, the stamina bar, and a charged fire-axe wind-up.
+Refuelling an empty chainsaw filled its 30-unit fuel capacity and changed the stored gas can's spent
+fuel from 15 to 45.
 
 | What | Where |
 |---|---|
@@ -412,7 +443,7 @@ ImGui's foreground draw list only without the device.
 ## Options > Inventory Mod (a page of the game's menu)
 
 The game's menus are `bin/GameUI.dll` (namespace `L4D360UI`, the Alien Swarm SDK's BaseModUI). The mod's addon
-`inventory_mod_menu.vpk` (`tools/make_menu_addon.py`) is mounted at the head of the VPK list (AddVPKFile with 0), so
+`inventory_mod_menu.vpk` (`inventory-tools menu-addon`) is mounted at the head of the VPK list (AddVPKFile with 0), so
 its files win over the game's; a layout file is read when its page is built, so the in-game menu shows it at once.
 The main menu is usually built before the mod is injected, so its Options flyout was the game's own (no "Inventory
 Mod") until the menu was built again after a game: the mod runs GameUI's `ui_reloadscheme` once, at the main menu (not
@@ -568,7 +599,7 @@ and sent to remote clients inside the total weight. The Items tab lists each typ
 | what it holds | its targetname, `inv_rounds_<kind>_<rounds>`, read from `CBaseEntity::m_iName` +0x140 (datamap "m_iName", a pooled string) |
 | picking it up | `CWeaponAmmoSpawn::Use` hooked (prologue `55 8B EC 51 53 8B 5D 08 85 DB 0F 84`, checked against the vtable): a pile of the mod's gives its rounds to a survivor (not a bot), as many as fit by the type's most and the weight limit; the rest stays in it. Any other pile is the game's refill. Seen: 50 rifle rounds and 10 auto shotgun shells dropped and taken back |
 | its model | `models/w_models/weapons/w_eq_incendiary_ammopack.mdl` (the closed incendiary pack; loaded with the map, seen in c1m3 with `VEngineServer022` slot 9 `IsModelPrecached`), tinted the type's colour with the "rendercolor" keyvalue as "r g b 255" (three numbers leave the alpha 0: the pack was invisible); `ammo_stack.mdl` when it cannot be precached (`CBaseEntity::PrecacheModel` `0x1006B690`, cdecl; engine slot 5 `PrecacheModel(name, true)`) |
-| its own pack | `models/inv_mod/rounds_<kind>.mdl` when the game finds it (`filesystem_stdio.dll` "VBaseFileSystem012", the IBaseFileSystem of its one `CFileSystem_Stdio` at `0x1005260C`, vtable `0x10047DFC`; slot 10 `FileExists(name, pathID)` `0x1000E340`, thiscall, `ret 8`, path "GAME"), untinted. The addon (`tools/make_rounds_addon.py`) holds, per type, a copy of `w_eq_incendiary_ammopack` (from `update/pak01_dir.vpk`: MDL v49, one bone, 736 triangles) with two strings changed in place, its name (`studiohdr_t` +12, 64 bytes) and its one texture's path (`models/props/terror/incendiary_ammopack`, 39 characters, made `models/inv_mod/rounds_<kind>`), so the `.vvd` / `.vtx` checksums still match; and a VTF 7.2 (DXT5 1024x512, 11 mips, a 16x8 DXT1 thumbnail, flag 0x2000) of `assets/textures` with the game pack's alpha (the envmap mask). A single-file VPK v1 (archive index 0x7FFF). The game lists a new addon in `addonlist.txt` as "1" when it starts. Seen: `rounds_autoshotgun.mdl` dropped and precached |
+| its own pack | `models/inv_mod/rounds_<kind>.mdl` when the game finds it (`filesystem_stdio.dll` "VBaseFileSystem012", the IBaseFileSystem of its one `CFileSystem_Stdio` at `0x1005260C`, vtable `0x10047DFC`; slot 10 `FileExists(name, pathID)` `0x1000E340`, thiscall, `ret 8`, path "GAME"), untinted. The addon (`inventory-tools rounds-addon`) holds, per type, a copy of `w_eq_incendiary_ammopack` (from `update/pak01_dir.vpk`: MDL v49, one bone, 736 triangles) with two strings changed in place, its name (`studiohdr_t` +12, 64 bytes) and its one texture's path (`models/props/terror/incendiary_ammopack`, 39 characters, made `models/inv_mod/rounds_<kind>`), so the `.vvd` / `.vtx` checksums still match; and a VTF 7.2 (DXT5 1024x512, 11 mips, a 16x8 DXT1 thumbnail, flag 0x2000) of `assets/textures` with the game pack's alpha (the envmap mask). A single-file VPK v1 (archive index 0x7FFF). The game lists a new addon in `addonlist.txt` as "1" when it starts. Seen: `rounds_autoshotgun.mdl` dropped and precached |
 | mounting the addons | every `.vpk` in the `addons` folder next to the DLL (`inventory_mod_rounds.vpk`), when the mod loads (`game::init`): `filesystem_stdio.dll` "VFileSystem018" (its one `CFileSystem_Stdio`, `0x10052608`, vtable `0x10047E44`) slot 107 `AddVPKFile(name, addType)` `0x1000A110` (thiscall, `ret 8`; prologue `55 8B EC 81 EC 0C 01 00 00 A1`): the name made absolute, one already in its VPK list (`+0x1CC`, count `+0x1D8`) left alone, else a `CPackedStore` (0x2AC4 bytes) opened for it, dropped when empty, put at the tail (1) or the head (0). `AddSearchPath`'s internal function (`0x1000C630`, slot 7 `AddSearchPath` `0x1000C950` calls it) calls slot 107 for a folder's `pakNN_dir.vpk`. Slot 108 `RemoveVPKFile(name)` `0x100068B0` (`ret 4`) takes one out; the mod does not (models read from it stay in use when it unloads) |
 | its keyvalues | what a map's own pile has (c2m1_highway's entity lump): `"solid" "6"`, `"spawnflags" "2"` (1 lets it be knocked about), `"disableshadows" "1"`, `"angles"`, and `"origin"` set before it spawns. The crash in vphysics.dll +0xF3B1C (an IVP function, `0x100F3B00`, given a null compact edge; its caller is lost, the crash handler writes over the stack) came five times: 03:42 (a spawner from `ent_create`), 15:23 and 16:23 (dropped piles), and 2026-10-17 05:59 two seconds after five packs were put on the map, with "solid" set. The cause: the piles were spawned at the map's origin and moved afterwards (Teleport, then DropToFloor), as `ent_create` moves what it spawns. Their physics object is a static one made at spawn, and a static IVP object is not meant to move. So the floor is found first with a throwaway `info_target` (no physics: DropToFloor, read `m_vecOrigin`, removed; `on_floor`) and the pile is made there ("origin" before `DispatchSpawn`, never moved; the pack model's origin is at its bottom, hull z -0.25 .. 8.56). Rounds dropped within 40 units of a pile of their type are added to it; a new pile is put 24 units aside of the others, not into them |
 | finite map piles | `[ammo_piles]`: the same Use hook, for a pile that is not the mod's. Its first +use by a survivor rolls a type of `kinds` and `min..max` magazines (`inv::ammo_magazine`) and tints it ("rendercolor"); each +use adds to `m_iAmmo` as much as fits (the type's most, the weight limit for the player whose inventory it is), the rest stays, empty is `UTIL_Remove`. A bot takes only when one of its weapons has that `m_iPrimaryAmmoType` (+0x140C). What is left is kept per pile pointer with its EHANDLE (`gEntList` index \| serial << 12, found by a scan of the list: an entity made again at the same address is a new pile); `game_time()` going back (a new map) clears it |
@@ -644,7 +675,7 @@ player's own file, not a material. Built and tested by the model's tests; not ye
 
 ## The VGUI surface (client side)
 
-Found 2026-10-17 with `tools/re/pe_tools.py` (the DLLs carry no RTTI names for these classes); not yet seen in game.
+Found 2026-10-17 with the original PE inspection tool. The DLLs carry no RTTI names for these classes. The addresses had not been tested in game at the time.
 
 - **The objects.** Each `CreateInterface` registration is `push "<name>"; push <create fn>; mov ecx, <InterfaceReg>;
   call`, and the create function is `mov eax, <global>; ret`. vgui2.dll: `VGUI_Panel009` (registered at `0x100425B0`)
@@ -763,7 +794,7 @@ height } }`, and decodes `materials/<file>.vtf` (7.4, DXT5 here; DXT1/3/5 and 88
 the last). The `update` scripts use one texture per weapon (`vgui/hud/icon_smg`, 256x64; `icon_first_aid_kit`,
 128x64 with the icon in the left 64x64); the base game's use the sheets `iconsheet`, `iconsheet2`. Each rectangle is
 trimmed to its visible pixels (alpha > 24). The carryables (gas can, tanks, fireworks, gnome, cola) have no icon there
-and keep their two-letter tag. `tools/re/vpk.py` lists and extracts VPK files for checking.
+and keep their two-letter tag. `inventory-tools vpk` lists and extracts VPK files for checking.
 
 Melee weapons: `scripts/melee/<kind>.txt` (13 of them: baseball_bat, cricket_bat, crowbar, electric_guitar, fireaxe,
 frying_pan, golfclub, katana, knife, machete, pitchfork, shovel, tonfa). The update archive's say `TextureData {

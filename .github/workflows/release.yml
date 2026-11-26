@@ -8,11 +8,10 @@ on:
       - '.github/workflows/release.yml'
       - 'assets/**'
       - 'packaging/**'
-      - 'tools/make_dist.ps1'
-      - 'tools/make_menu_addon.py'
-      - 'tools/make_rounds_addon.py'
-      - 'tools/re/vpk.py'
-      - 'tools/re/vtf_to_png.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'src/**'
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
