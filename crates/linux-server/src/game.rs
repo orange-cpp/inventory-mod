@@ -244,6 +244,14 @@ impl Game {
         unsafe { (self.native.remove)(entity.as_ptr()) };
     }
 
+    fn dispatch_spawn(&self, entity: Ent, activate: bool) -> Option<Ent> {
+        let handle = self.handle(entity);
+        if unsafe { (self.native.dispatch_spawn)(entity.as_ptr(), activate) } < 0 {
+            return None;
+        }
+        self.find_entity(handle)
+    }
+
     fn spent(&self, entity: Ent) -> i32 {
         self.condition
             .get(&self.handle(entity))
@@ -299,9 +307,13 @@ impl Game {
             let Some(weapon) = self.weapon_at(player, item.slot as i32) else {
                 continue;
             };
-            if self.classname(weapon) == item.classname
-                && (item.classname != "weapon_melee" || self.melee_script(weapon) == item.melee)
-            {
+            let classname = self.classname(weapon);
+            let melee = if classname == "weapon_melee" {
+                self.melee_script(weapon)
+            } else {
+                ""
+            };
+            if item.matches_weapon(classname, melee) {
                 let handle = self.handle(weapon);
                 let state = self.condition.entry(handle).or_default();
                 state.wear = item.wear;
@@ -381,22 +393,19 @@ impl Game {
         }
     }
 
-    fn add_rounds(&self, player: Ent, weapon: Ent, def: &ItemDef, rounds: i32, catalog: &Catalog) {
+    fn add_rounds(&self, player: Ent, def: &ItemDef, rounds: i32, catalog: &Catalog) {
         if rounds <= 0 {
             return;
         }
-        let index = unsafe { field::<i32>(weapon, PRIMARY_AMMO_TYPE) };
-        let index = if index == 8 { 7 } else { index };
-        let Some(count) = self.reserve(player).get(index as usize).copied() else {
+        let Some(kind) = def.reserve_kind() else {
             return;
         };
-        let cap = def
-            .ammo
-            .map(|kind| catalog.ammo_max(kind))
-            .unwrap_or(i32::MAX);
+        let index = kind.definition().index;
+        let count = self.reserve(player)[index];
+        let cap = catalog.ammo_max(kind);
         let added = rounds.min(cap.saturating_sub(count).max(0));
         if added > 0 {
-            unsafe { (self.native.set_ammo_count)(player.as_ptr(), count + added, index) };
+            unsafe { (self.native.set_ammo_count)(player.as_ptr(), count + added, index as i32) };
         }
     }
 
@@ -614,7 +623,7 @@ impl Game {
             self.remove(carried);
         }
         self.apply_state(given, def, &state, false);
-        self.add_rounds(player, given, def, state.ammo, catalog);
+        self.add_rounds(player, def, state.ammo, catalog);
         self.select_item(player, def.classname);
         *inventory = next;
         String::new()
@@ -734,14 +743,14 @@ impl Game {
         if inventory.add_weapon(id, state, None).is_none() {
             return false;
         }
-        if let Some(kind) = def.ammo.filter(|_| spare > 0) {
+        if let Some(kind) = def.reserve_kind().filter(|_| spare > 0) {
             let room = (inventory.limits().max_weight > 0.0)
                 .then(|| (inventory.limits().max_weight - inventory.weight()).max(0.0));
             let before = self.reserve(player)[kind.definition().index];
             let split = inventory
                 .catalog()
                 .split_unload(Some(kind), spare, before, room);
-            self.add_rounds(player, entity, &def, split.to_reserve, inventory.catalog());
+            self.add_rounds(player, &def, split.to_reserve, inventory.catalog());
         }
         true
     }
@@ -783,9 +792,7 @@ impl Game {
         {
             source.set_key(entity, c"melee_script_name", &melee_name);
         }
-        if unsafe { (self.native.dispatch_spawn)(entity.as_ptr(), true) } < 0 {
-            return None;
-        }
+        let entity = self.dispatch_spawn(entity, true)?;
         if def.is_weapon() {
             self.apply_state(entity, def, state, true);
         }

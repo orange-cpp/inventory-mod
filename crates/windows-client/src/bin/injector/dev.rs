@@ -16,8 +16,9 @@ use windows_sys::Win32::{
     Storage::Xps::PrintWindow,
     System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION},
     UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetWindowRect, GetWindowThreadProcessId, PostMessageW, WM_CHAR,
-        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        EnumWindows, GetClassNameW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
+        PostMessageW, SW_RESTORE, SW_SHOWMINNOACTIVE, ShowWindowAsync, WM_CHAR, WM_KEYDOWN,
+        WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     },
 };
 
@@ -213,6 +214,14 @@ fn message(hwnd: HWND, code: u32, data: usize, extra: isize) -> io::Result<()> {
     }
 }
 
+struct RestoreMinimized(HWND);
+
+impl Drop for RestoreMinimized {
+    fn drop(&mut self) {
+        unsafe { ShowWindowAsync(self.0, SW_SHOWMINNOACTIVE) };
+    }
+}
+
 fn unload(reload: bool, args: &[OsString]) -> io::Result<()> {
     let pid = target(args)?;
     let hwnd = check(pid)?;
@@ -226,13 +235,23 @@ fn unload(reload: bool, args: &[OsString]) -> io::Result<()> {
     }
     let module = module.ok_or_else(|| io::Error::other("Inventory Mod is not loaded"))?;
     message(hwnd, 0x804a, 0, 0)?;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let start = Instant::now();
+    let mut restore_minimized = None;
     while super::module_present(pid, module)? {
-        if Instant::now() >= deadline {
+        let elapsed = start.elapsed();
+        if elapsed >= Duration::from_secs(30) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Inventory Mod did not finish unloading",
             ));
+        }
+        // A separate render thread may suspend Present while minimized.
+        // Give it a frame to retire its resources, then restore the show state.
+        if elapsed >= Duration::from_millis(500)
+            && restore_minimized.is_none()
+            && unsafe { IsIconic(hwnd) != 0 && ShowWindowAsync(hwnd, SW_RESTORE) != 0 }
+        {
+            restore_minimized = Some(RestoreMinimized(hwnd));
         }
         thread::sleep(Duration::from_millis(100));
     }

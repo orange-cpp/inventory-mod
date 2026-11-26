@@ -375,6 +375,12 @@ impl Game {
         }
     }
 
+    pub(super) fn has_damage_hook(&self, entity: Ent) -> bool {
+        self.stamina
+            .patches
+            .contains_key(&unsafe { damage_slot(entity) })
+    }
+
     pub fn stamina_damage(&self, victim: Ent, info: DamageInput, rules: &StaminaRules) -> f32 {
         let damage = info.damage();
         if !rules.enabled

@@ -12,7 +12,7 @@ use inventory_mod::{
 };
 
 use super::{
-    ENTITY_ORIGIN, Game, Host, Vector, address,
+    ENTITY_ORIGIN, Game, Host, LIFE_STATE, Vector, address,
     hooks::{Event, Hooks},
 };
 use crate::{
@@ -404,7 +404,7 @@ impl Host {
             Event::RoundStart | Event::Transition | Event::RoundEnd => {
                 self.clear_infection(!matches!(event, Event::RoundEnd))
             }
-            Event::LeftStart | Event::PlayerTransitioned(_) => {}
+            Event::LeftStart | Event::PlayerTransitioned(_) | Event::PlayerActivated(_) => {}
         }
     }
 
@@ -442,7 +442,10 @@ impl Host {
                 continue;
             };
             if now >= case.end {
-                let Some(at) = Vector::read(actor + ENTITY_ORIGIN) else {
+                let (Some(at), Some(actor_handle)) = (
+                    Vector::read(actor + ENTITY_ORIGIN),
+                    super::ammo::handle(&self.game, actor),
+                ) else {
                     continue;
                 };
                 let character = native::word(actor + SURVIVOR_CHARACTER);
@@ -457,7 +460,11 @@ impl Host {
                     })
                     .collect();
                 unsafe { (infection.suicide)(address(actor), false, true) };
-                if self.game.living(actor) {
+                if self.game.resolve(actor_handle) != Some(actor) {
+                    continue;
+                }
+                let mut life = [0];
+                if !native::read(actor + LIFE_STATE, &mut life) || life[0] == 0 {
                     self.infection_message(id, actor, None, false);
                     crate::client::log("infection: the game refused CommitSuicide");
                     continue;

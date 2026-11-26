@@ -52,12 +52,14 @@ struct Turn {
     receives: bool,
     position: Vector,
     model: i32,
+    existing: HashSet<u32>,
     deadline: Instant,
 }
 
 struct Corpse {
     position: Vector,
     model: i32,
+    existing: HashSet<u32>,
     deadline: Instant,
 }
 
@@ -317,6 +319,14 @@ impl Game {
             return;
         };
         let model = unsafe { field(player, SURVIVOR_CHARACTER) };
+        let existing = source
+            .entities()
+            .filter(|&entity| {
+                self.classname(entity) == "survivor_death_model"
+                    && unsafe { field::<i32>(entity, CORPSE_CHARACTER) } == model
+            })
+            .map(|entity| self.handle(entity))
+            .collect();
         self.infection.turning.insert(
             user,
             Turn {
@@ -324,6 +334,7 @@ impl Game {
                 receives,
                 position,
                 model,
+                existing,
                 deadline: now + Duration::from_secs(1),
             },
         );
@@ -342,6 +353,7 @@ impl Game {
                 self.infection.corpses.push(Corpse {
                     position: turn.position,
                     model: turn.model,
+                    existing: turn.existing,
                     deadline: now + Duration::from_secs(3),
                 });
                 let manager =
@@ -379,6 +391,7 @@ impl Game {
                     if self.classname(entity) != "survivor_death_model"
                         || self.pending_removal(entity)
                         || unsafe { field::<i32>(entity, CORPSE_CHARACTER) } != corpse.model
+                        || corpse.existing.contains(&self.handle(entity))
                     {
                         return None;
                     }
@@ -469,7 +482,8 @@ impl Game {
     }
 
     pub fn can_rescue(&self, source: &Source, player: Ent) -> bool {
-        self.infection.no_rescue.is_empty()
+        self.infection.hook.is_none()
+            || self.infection.no_rescue.is_empty()
             || source
                 .as_edict(player)
                 .and_then(|edict| source.user_id(edict))

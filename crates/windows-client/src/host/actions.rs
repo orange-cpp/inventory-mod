@@ -238,10 +238,22 @@ impl NativeActions {
                 session.inventory.remove_from_slot(index, 1);
             }
             ItemSource::Held(handle) => {
-                if let Some(entity) = ctx.game.resolve(handle) {
+                let live_item = || {
+                    ctx.game
+                        .resolve(handle)
+                        .filter(|&entity| ctx.game.is_live_entity(entity))
+                };
+                if let Some(entity) = live_item() {
                     ctx.game
                         .release(actor, entity, &name, session.inventory.catalog(), true);
+                }
+                // The release can itself remove the item. Resolve the handle
+                // again before the forced removal fallback.
+                if let Some(entity) = live_item() {
                     ctx.game.remove(entity);
+                }
+                if live_item().is_some() {
+                    return format!("Got up, but the game could not consume your {}", name.name);
                 }
                 if let Some(home) = session.inventory.held_slot(item) {
                     session.inventory.clear_held(home);

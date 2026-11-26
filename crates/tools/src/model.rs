@@ -357,3 +357,47 @@ pub fn export(model: &Path, out: &Path) -> io::Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triangle_strips_restart_at_their_own_index_offsets() {
+        const GROUP: usize = 8;
+        const VERTICES: usize = 48;
+        const INDICES: usize = 84;
+        const STRIPS: usize = 102;
+        for (version, strip_size) in [(48, 27), (49, 35)] {
+            let mut bytes = [0_u8; 172];
+            for (offset, value) in [
+                (0, 1),
+                (4, GROUP),
+                (GROUP, 4),
+                (GROUP + 4, VERTICES - GROUP),
+                (GROUP + 8, 9),
+                (GROUP + 12, INDICES - GROUP),
+                (GROUP + 16, 2),
+                (GROUP + 20, STRIPS - GROUP),
+                (STRIPS, 5),
+                (STRIPS + strip_size, 4),
+                (STRIPS + strip_size + 4, 5),
+            ] {
+                bytes[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+            }
+            for vertex in 0..4 {
+                bytes[VERTICES + vertex * 9 + 4] = vertex as u8;
+            }
+            for (i, index) in [0, 1, 2, 3, 3, 3, 2, 1, 0].into_iter().enumerate() {
+                bytes[INDICES + i * 2] = index;
+            }
+            bytes[STRIPS + 18] = 2;
+            bytes[STRIPS + strip_size + 18] = 2;
+
+            assert_eq!(
+                triangles(Bytes(&bytes), 0, version).unwrap(),
+                [[0, 1, 2], [2, 1, 3], [3, 2, 1], [1, 2, 0]],
+            );
+        }
+    }
+}

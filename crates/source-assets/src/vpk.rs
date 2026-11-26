@@ -244,3 +244,16 @@ pub fn pack(files: &BTreeMap<String, Vec<u8>>) -> io::Result<Vec<u8>> {
     vpk.extend(data);
     Ok(vpk)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vpk_directory_names_decode_as_utf8() {
+        let mut entry = "café\0map\0".as_bytes();
+        assert_eq!(cstring(&mut entry).unwrap(), "café");
+        assert_eq!(cstring(&mut entry).unwrap(), "map");
+        assert!(entry.is_empty());
+    }
+}

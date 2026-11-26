@@ -32,13 +32,14 @@ static COMMAND_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static FRAME_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
-    static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
+    static EVENTS: RefCell<Option<Vec<Event>>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy)]
 pub enum Event {
     Transition,
     PlayerTransitioned(i32),
+    PlayerActivated(i32),
     RoundStart,
     Death(i32),
     RoundEnd,
@@ -53,7 +54,7 @@ pub enum Event {
 }
 
 pub fn take_events() -> Vec<Event> {
-    EVENTS.with(RefCell::take)
+    EVENTS.with_borrow_mut(|queue| queue.as_mut().map_or_else(Vec::new, std::mem::take))
 }
 
 pub struct Hooks {
@@ -156,6 +157,9 @@ impl Hooks {
         if dedicated && entities.is_none() {
             return None;
         }
+        if fire.is_some() {
+            EVENTS.with_borrow_mut(|queue| *queue = Some(Vec::new()));
+        }
         Some(Self {
             engine,
             user_id,
@@ -179,20 +183,19 @@ impl Hooks {
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
-        if let Some(patch) = &mut self.frame {
-            patch.disable()?;
-            FRAME_ORIGINAL.store(0, Ordering::Release);
-        }
-        if let Some(detour) = &mut self.commands {
-            detour.disable()?;
-            COMMAND_ORIGINAL.store(0, Ordering::Release);
-        }
-        if let Some(detour) = &mut self.fire {
-            detour.disable()?;
-            FIRE_ORIGINAL.store(0, Ordering::Release);
-        }
-        let _ = take_events();
-        Ok(())
+        // A later hook can keep calling our entry after the host goes away.
+        // Stop collecting events even when we cannot restore the game code.
+        EVENTS.with_borrow_mut(|queue| *queue = None);
+        let stop = |detour: &mut Option<Detour>, original: &AtomicUsize| {
+            if let Some(detour) = detour {
+                detour.disable()?;
+                original.store(0, Ordering::Release);
+            }
+            Ok(())
+        };
+        stop(&mut self.frame, &FRAME_ORIGINAL)
+            .and(stop(&mut self.commands, &COMMAND_ORIGINAL))
+            .and(stop(&mut self.fire, &FIRE_ORIGINAL))
     }
 
     pub fn user(&self, edict: usize) -> Option<i32> {
@@ -309,6 +312,7 @@ fn event(source: usize) -> Option<Event> {
         "round_start" => Some(Event::RoundStart),
         "map_transition" => Some(Event::Transition),
         "player_transitioned" => Some(Event::PlayerTransitioned(get_int(c"userid")?)),
+        "player_activate" => Some(Event::PlayerActivated(get_int(c"userid")?)),
         "player_death" => Some(Event::Death(get_int(c"userid")?)),
         "round_end" | "mission_lost" | "finale_vehicle_leaving" | "finale_win" => {
             Some(Event::RoundEnd)
@@ -346,9 +350,13 @@ unsafe extern "thiscall" fn fire_event(
 ) -> bool {
     if !source.is_null() {
         let _ = std::panic::catch_unwind(|| {
-            if let Some(event) = event(source.addr()) {
-                EVENTS.with_borrow_mut(|events| events.push(event));
-            }
+            EVENTS.with_borrow_mut(|queue| {
+                if let Some(events) = queue
+                    && let Some(event) = event(source.addr())
+                {
+                    events.push(event);
+                }
+            });
         });
     }
     let addr = FIRE_ORIGINAL.load(Ordering::Acquire);
@@ -408,5 +416,55 @@ unsafe extern "C" fn client_command(player: *mut c_void, arguments: *const c_voi
     if addr != 0 {
         let original = unsafe { std::mem::transmute::<usize, Command>(addr) };
         unsafe { original(player, arguments) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "thiscall" fn round_start(_: *mut c_void) -> *const c_char {
+        c"round_start".as_ptr()
+    }
+
+    unsafe extern "thiscall" fn original_fire(_: *mut c_void, _: *mut c_void, _: bool) -> bool {
+        true
+    }
+
+    unsafe extern "thiscall" fn unused_id(_: *mut c_void, _: *mut c_void) -> i32 {
+        0
+    }
+
+    unsafe extern "thiscall" fn unused_steam_id(_: *mut c_void, _: *mut c_void) -> *const c_char {
+        ptr::null()
+    }
+
+    unsafe extern "thiscall" fn unused_print(_: *mut c_void, _: *mut c_void, _: *const c_char) {}
+
+    #[test]
+    fn retired_event_callback_still_forwards_without_queueing() {
+        let mut hooks = Hooks {
+            engine: 0,
+            user_id: unused_id,
+            steam_id: unused_steam_id,
+            client_print: unused_print,
+            globals: None,
+            fire: None,
+            commands: None,
+            frame: None,
+            entities: None,
+        };
+        let table = [0usize, round_start as Name as usize];
+        let mut object = table.as_ptr();
+        let source = (&raw mut object).cast::<c_void>();
+        FIRE_ORIGINAL.store(original_fire as Fire as usize, Ordering::Release);
+        EVENTS.with_borrow_mut(|queue| *queue = Some(Vec::new()));
+        assert!(unsafe { fire_event(ptr::null_mut(), source, false) });
+        assert!(matches!(take_events().as_slice(), [Event::RoundStart]));
+
+        hooks.stop().unwrap();
+        assert!(unsafe { fire_event(ptr::null_mut(), source, false) });
+        assert!(take_events().is_empty());
+        FIRE_ORIGINAL.store(0, Ordering::Release);
     }
 }

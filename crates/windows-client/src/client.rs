@@ -127,6 +127,7 @@ pub struct Client {
     cursor: Option<CursorCapture>,
     cursor_hooks: Option<Cursor>,
     last_sync: Option<Instant>,
+    last_inventory_reply: Option<Instant>,
     retries: u8,
     next_host_probe: Option<Instant>,
     next_renderer_probe: Instant,
@@ -255,6 +256,7 @@ impl Client {
             cursor: None,
             cursor_hooks: Cursor::install(),
             last_sync: None,
+            last_inventory_reply: None,
             retries: 0,
             next_host_probe: None,
             next_renderer_probe: Instant::now() + Duration::from_secs(2),
@@ -293,10 +295,25 @@ impl Client {
         self.mutator_generation = None;
         self.pings.clear();
         self.last_sync = None;
+        self.last_inventory_reply = None;
         self.retries = 0;
     }
 
     fn timer(&mut self) -> Option<CString> {
+        let link = self.engine.link;
+        let in_game = link.in_game();
+        if self.was_in_game != in_game {
+            self.clear();
+            self.was_in_game = in_game;
+        }
+        if in_game
+            && self
+                .last_inventory_reply
+                .is_some_and(|reply| reply.elapsed() >= Duration::from_secs(5))
+        {
+            self.clear();
+            log("Inventory sync expired. Restoring the native HUD.");
+        }
         if self.renderer.is_none()
             && !UNLOAD.load(Ordering::Acquire)
             && Instant::now() >= self.next_renderer_probe
@@ -320,14 +337,13 @@ impl Client {
             let hud = &self.settings.hud;
             panel.set_item_boxes(
                 self.snapshot.is_some()
-                    && self.engine.link.in_game()
+                    && in_game
                     && !hud.replace_native_panel
                     && (!hud.view.shows_slots() || hud.show),
             );
         }
-        let link = self.engine.link;
         if self.host.is_none()
-            && link.in_game()
+            && in_game
             && self
                 .next_host_probe
                 .is_none_or(|probe| Instant::now() >= probe)
@@ -349,11 +365,6 @@ impl Client {
             for line in host.take_hud() {
                 let _ = self.receive(&line);
             }
-        }
-        let in_game = link.in_game();
-        if self.was_in_game != in_game {
-            self.clear();
-            self.was_in_game = in_game;
         }
         if !in_game {
             if self.snapshot.is_none() {
@@ -831,6 +842,7 @@ impl Client {
             ));
         }
         self.snapshot = Some(inventory);
+        self.last_inventory_reply = Some(Instant::now());
     }
 
     fn ping(&mut self, mut ping: Ping) -> Option<CString> {

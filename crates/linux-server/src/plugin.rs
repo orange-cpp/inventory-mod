@@ -81,7 +81,21 @@ impl Player {
 
     fn restore_equipment(&mut self, game: &mut Game, entity: NonNull<Entity>) {
         if let Some(reserve) = self.transition_reserve.take() {
-            game.restore_reserve(entity, &reserve);
+            let catalog = self.inventory.catalog();
+            let weapons = game.native_weapons(entity);
+            let kinds = weapons.iter().filter_map(|weapon| {
+                catalog
+                    .find_item(&weapon.classname)
+                    .and_then(|id| catalog.item(id).reserve_kind())
+            });
+            let mut current = game.reserve(entity);
+            inventory_mod::remote_state::restore_uncarried_reserve(
+                &mut current,
+                &reserve,
+                kinds,
+                catalog,
+            );
+            game.restore_reserve(entity, &current);
             game.restore_condition(entity, &self.condition);
             self.condition.clear();
         }
@@ -330,13 +344,20 @@ impl Server {
         self.place_piles_at = None;
         self.clients = None;
         self.next_pickup_scan = None;
-        for player in self.players.values_mut() {
+        for (user, mut player) in std::mem::take(&mut self.players) {
             player.save();
             player.edict = None;
             player.death_position = None;
             player.next_mutators = None;
             player.actions = Actions::default();
             player.last_ping = None;
+            if let Some(file) = &player.file {
+                // Steam identity stays valid even if Source gives the player a
+                // new user ID without notifying us of the old disconnect.
+                self.away.insert(file.clone(), player);
+            } else {
+                self.players.insert(user, player);
+            }
         }
     }
 
@@ -462,6 +483,7 @@ impl Server {
                     .forget_infection(&self.source, user, self.players.contains_key(&user));
                 if let Some(player) = self.players.get_mut(&user)
                     && let Some(edict) = player.edict
+                    && self.source.user_id(edict) == Some(user)
                     && self
                         .source
                         .player_info(edict)
@@ -991,7 +1013,7 @@ pub fn block_reload(weapon: NonNull<Entity>) -> bool {
 }
 
 pub fn keep_empty_chainsaw() -> bool {
-    with_gameplay(false, |_| true)
+    with_gameplay(false, |server| server.game.keep_empty_chainsaw())
 }
 
 pub fn reload_on_empty(weapon: NonNull<Entity>) {

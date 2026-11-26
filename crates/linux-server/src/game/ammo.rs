@@ -171,7 +171,7 @@ impl Game {
         // The pack's physics becomes static on spawn. Find its floor with a temporary entity.
         if let Some(probe) = source.create_entity(c"info_target") {
             unsafe { (self.native.set_origin)(probe.as_ptr(), &at) };
-            if unsafe { (self.native.dispatch_spawn)(probe.as_ptr(), false) } >= 0 {
+            if let Some(probe) = self.dispatch_spawn(probe, false) {
                 if unsafe {
                     (self.native.drop_to_floor)(probe.as_ptr(), 0x200400b, ptr::null_mut())
                 } == 1
@@ -196,9 +196,9 @@ impl Game {
         source.set_key(entity, c"disableshadows", c"1");
         at.z += 0.3;
         unsafe { (self.native.set_origin)(entity.as_ptr(), &at) };
-        if unsafe { (self.native.dispatch_spawn)(entity.as_ptr(), true) } < 0 {
+        let Some(entity) = self.dispatch_spawn(entity, true) else {
             return false;
-        }
+        };
         pile.spawned = true;
         self.ammo.piles.insert(self.handle(entity), pile);
         true
@@ -284,6 +284,11 @@ impl Game {
         catalog: &Catalog,
         inventory: Option<&mut Inventory>,
     ) -> bool {
+        // A later hook may still chain to our callback after a reload that
+        // could not reclaim this slot.
+        if self.ammo.pile_patch.is_none() {
+            return false;
+        }
         if self.pending_removal(pile) {
             return true;
         }

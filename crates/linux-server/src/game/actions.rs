@@ -70,6 +70,10 @@ impl Game {
         }
     }
 
+    pub fn keep_empty_chainsaw(&self) -> bool {
+        self.chainsaw_patch.is_some()
+    }
+
     fn max_fuel(saw: Ent) -> i32 {
         // SAFETY: Called only for a chainsaw in the checked build.
         let max_clip = unsafe {
@@ -292,7 +296,12 @@ impl Game {
             ReviveSource::Held(handle) => {
                 if let Some(weapon) = self.find_entity(handle) {
                     self.release(player, weapon, def, self.native.quiet_drop);
+                }
+                if let Some(weapon) = self.find_entity(handle) {
                     self.remove(weapon);
+                }
+                if self.find_entity(handle).is_some() {
+                    return format!("Got up, but the game could not consume your {title}");
                 }
                 if let Some(home) = ctx.inventory.held_slot(item) {
                     ctx.inventory.clear_held(home);

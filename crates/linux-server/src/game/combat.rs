@@ -495,7 +495,7 @@ impl Game {
         rules: &MeleeRules,
         receives: impl Fn(i32) -> bool,
     ) {
-        if !rules.enabled || !rules.wall_bounce {
+        if self.combat.sound.is_none() || !rules.enabled || !rules.wall_bounce {
             return;
         }
         let (Some(player), Some(now)) = (self.owner(weapon), source.current_time()) else {
@@ -557,6 +557,9 @@ impl Game {
         receives: impl Fn(i32) -> bool,
     ) -> f32 {
         let damage = info.damage();
+        if !self.has_damage_hook(victim) {
+            return damage;
+        }
         if self.combat.attacks.is_none() || !chapter.melee.enabled {
             return self.stamina_damage(victim, info, &chapter.stamina);
         }

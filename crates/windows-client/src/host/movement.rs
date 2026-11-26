@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use inventory_mod::{
     melee::{BUTTON_ATTACK2, BUTTON_RELOAD, BUTTON_WINDING, melee_profile},
-    rules::{ChapterRules, StaminaRules},
+    rules::ChapterRules,
 };
 
 use super::{Game, Host, combat::Combat, hooks::Hooks};
@@ -70,6 +70,16 @@ impl Player {
             self.amount = (self.amount - cost).max(0.0);
             self.spent_at = now;
             self.exhausted |= self.amount <= 0.0;
+        }
+    }
+
+    fn set_stamina_enabled(&mut self, enabled: bool) {
+        if self.uses_stamina != enabled {
+            self.uses_stamina = enabled;
+            self.amount = 100.0;
+            self.exhausted = false;
+            self.spent_at = -1000.0;
+            self.eased_speed = 1.0;
         }
     }
 
@@ -220,8 +230,8 @@ impl Player {
         }
     }
 
-    fn stamina_update(&mut self, rules: &StaminaRules, now: f32) -> Option<String> {
-        if !rules.enabled {
+    fn stamina_update(&mut self, now: f32) -> Option<String> {
+        if !self.uses_stamina {
             return self.sent.take().map(|_| "@sta@ -1 0\n".to_owned());
         }
         let amount = (self.amount * 10.0).round() as i32;
@@ -377,9 +387,10 @@ impl Host {
                 .players
                 .entry(actor)
                 .or_insert_with(|| Player::new(actor, handle, stamina));
-            if state.handle != handle || state.uses_stamina != stamina {
+            if state.handle != handle {
                 *state = Player::new(actor, handle, stamina);
             }
+            state.set_stamina_enabled(stamina);
             state.update(&self.game, hooks, actor, rules, now, dt);
             seen.insert(actor);
             let guest = hooks
@@ -389,7 +400,7 @@ impl Host {
                 continue;
             }
             for line in [
-                state.stamina_update(&rules.stamina, now),
+                state.stamina_update(now),
                 state.melee_update(&self.game, actor, rules, &self.combat, now),
             ]
             .into_iter()
@@ -422,5 +433,30 @@ impl Host {
         } else {
             self.movement = Movement::default();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabling_stamina_keeps_the_base_speed_and_clears_the_hud() {
+        let mut fields = vec![0u32; MOVEMENT_SCALE / 4 + 1];
+        fields[MOVEMENT_SCALE / 4] = 1.0f32.to_bits();
+        let actor = fields.as_ptr().addr();
+        let mut player = Player::new(actor, 1, true);
+        player.spend(100.0, 5.0);
+        player.eased_speed = 0.5;
+        player.applied_speed = 0.5;
+        assert_eq!(player.stamina_update(5.0).as_deref(), Some("@sta@ 0 1\n"));
+
+        player.set_stamina_enabled(false);
+        assert_eq!(player.original_speed, 1.0);
+        assert_eq!(player.applied_speed, 0.5);
+        assert_eq!(player.eased_speed, 1.0);
+        assert!(!player.exhausted);
+        assert_eq!(player.stamina_update(6.0).as_deref(), Some("@sta@ -1 0\n"));
+        assert!(player.stamina_update(7.0).is_none());
     }
 }

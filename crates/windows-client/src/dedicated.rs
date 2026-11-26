@@ -184,8 +184,10 @@ extern "thiscall" fn unload(_: *mut c_void) {
             if let Ok(mut slot) = slot.try_borrow_mut()
                 && let Some(mut host) = slot.take()
             {
+                if let Err(error) = host.stop() {
+                    eprintln!("inventory_mod: could not restore a game hook on unload ({error})");
+                }
                 host.level_shutdown();
-                let _ = host.stop();
             }
         })
     });

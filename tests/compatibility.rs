@@ -15,6 +15,54 @@ use inventory_mod::{
 };
 
 #[test]
+fn carried_melee_condition_requires_a_resolved_matching_subtype() {
+    let mut saved = inventory_mod::remote_state::CarriedCondition {
+        slot: 1,
+        classname: "weapon_melee".into(),
+        melee: "katana".into(),
+        wear: 43,
+        spent: 0,
+    };
+    assert!(saved.matches_weapon("weapon_melee", "Katana"));
+    assert!(!saved.matches_weapon("weapon_melee", "fireaxe"));
+    assert!(!saved.matches_weapon("weapon_melee", ""));
+    saved.melee.clear();
+    assert!(!saved.matches_weapon("weapon_melee", ""));
+    saved.melee = "any".into();
+    assert!(!saved.matches_weapon("weapon_melee", "any"));
+    saved.classname = "weapon_gascan".into();
+    assert!(saved.matches_weapon("weapon_gascan", ""));
+    assert!(!saved.matches_weapon("weapon_propanetank", ""));
+}
+
+#[test]
+fn chapter_restore_only_replenishes_missing_reserves() {
+    let mut catalog = Catalog::default();
+    catalog.set_ammo_max(AmmoKind::AssaultRifle, Some(80));
+    let rifle = AmmoKind::AssaultRifle.definition().index;
+    let smg = AmmoKind::Smg.definition().index;
+    let shotgun = AmmoKind::Shotgun.definition().index;
+    let mut current = [0; 32];
+    current[smg] = 25;
+    current[shotgun] = 12;
+    current[0] = 9;
+    let mut previous = [0; 32];
+    previous[rifle] = 120;
+    previous[smg] = 100;
+    previous[shotgun] = 5;
+    inventory_mod::remote_state::restore_uncarried_reserve(
+        &mut current,
+        &previous,
+        [AmmoKind::Smg].into_iter(),
+        &catalog,
+    );
+    assert_eq!(
+        (current[rifle], current[smg], current[shotgun], current[0]),
+        (80, 25, 12, 9)
+    );
+}
+
+#[test]
 fn legacy_nameless_melee_equips_a_concrete_script() {
     let mut inventory = Inventory::new(Limits {
         slots: 24,

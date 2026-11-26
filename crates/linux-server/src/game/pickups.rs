@@ -22,6 +22,11 @@ type Bump = unsafe extern "C" fn(*mut Entity, *mut Entity) -> bool;
 const BUMP_RVA: usize = 0xd0b0f4;
 pub(super) const USE_SLOT: usize = 107;
 
+fn use_slot(item: Ent) -> usize {
+    let table = unsafe { field::<usize>(item, 0) };
+    table.wrapping_add(USE_SLOT * size_of::<usize>())
+}
+
 thread_local! {
     static BUMP: Cell<Option<Bump>> = const { Cell::new(None) };
     static WORLD_USE: Cell<Option<Use>> = const { Cell::new(None) };
@@ -93,8 +98,7 @@ impl Game {
             if !self.classname(entity).starts_with("weapon_") {
                 continue;
             }
-            let table = unsafe { field::<usize>(entity, 0) };
-            let address = table.wrapping_add(USE_SLOT * size_of::<usize>());
+            let address = use_slot(entity);
             if self.pickups.use_slots.contains_key(&address) {
                 continue;
             }
@@ -133,6 +137,13 @@ impl Game {
         call: PickupCall,
         ctx: &mut PickupContext<'_>,
     ) -> bool {
+        let installed = match call {
+            PickupCall::Bump => self.pickups.bump.is_some(),
+            PickupCall::Use { .. } => self.pickups.use_slots.contains_key(&use_slot(item)),
+        };
+        if !installed {
+            return self.original_pickup(player, item, call);
+        }
         let spawner = matches!(call, PickupCall::Use { spawner: true, .. });
         let Some((def, _)) = self.weapon_candidate(ctx.catalog, item) else {
             return self.original_pickup(player, item, call);

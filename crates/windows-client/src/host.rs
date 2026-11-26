@@ -238,11 +238,15 @@ impl Game {
     }
 
     fn item(&self, entity: usize, catalog: &Catalog) -> Option<ItemId> {
-        // UTIL_Remove sets EFL_KILLME before deleting the entity at frame end.
-        if native::word(entity + 0x138)? & 1 != 0 {
+        if !self.is_live_entity(entity) {
             return None;
         }
         catalog.find_item(&self.classname(entity)?)
+    }
+
+    fn is_live_entity(&self, entity: usize) -> bool {
+        // UTIL_Remove sets EFL_KILLME before deleting the entity at frame end.
+        native::word(entity + 0x138).is_some_and(|flags| flags & 1 == 0)
     }
 
     fn classname(&self, entity: usize) -> Option<String> {
@@ -546,8 +550,18 @@ impl Game {
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
-    fn dispatch_spawn(&self, entity: usize) -> bool {
-        unsafe { (self.spawn)(address(entity), true) >= 0 }
+    fn dispatch_spawn(&self, entity: usize) -> Option<(usize, u32)> {
+        let Some(handle) = ammo::handle(self, entity) else {
+            self.remove(entity);
+            return None;
+        };
+        if unsafe { (self.spawn)(address(entity), true) } < 0 {
+            return None;
+        }
+        let entity = self
+            .resolve(handle)
+            .filter(|&entity| self.is_live_entity(entity))?;
+        Some((entity, handle))
     }
 
     fn create(&self, def: &ItemDef, state: &WeaponState, position: Vector) -> Option<usize> {
@@ -599,9 +613,7 @@ impl Game {
             let precache = unsafe { std::mem::transmute::<usize, Precache>(precache) };
             unsafe { precache(address(entity)) };
         }
-        if !self.dispatch_spawn(entity) {
-            return None;
-        }
+        let (entity, _) = self.dispatch_spawn(entity)?;
         if let Some(state) = state.filter(|_| def.is_weapon()) {
             self.apply(entity, def, state, true);
         }
@@ -815,11 +827,15 @@ impl Session {
                 continue;
             };
             let def = self.inventory.catalog().item(id);
-            if def.classname != saved.classname {
+            let melee = if def.classname == "weapon_melee" {
+                Game::melee_script(entity)
+            } else {
+                String::new()
+            };
+            if !saved.matches_weapon(def.classname, &melee) {
                 continue;
             }
             if saved.wear > 0
-                && Game::melee_script(entity) == saved.melee
                 && let Some(handle) = ammo::handle(game, entity)
             {
                 game.wear.numbers.borrow_mut().insert(handle, saved.wear);
@@ -842,19 +858,18 @@ impl Session {
         };
         self.restore_condition(game, player, cans);
         let catalog = self.inventory.catalog();
-        let mut carried = [false; 32];
-        for (_, id) in game.weapons(player, catalog).into_iter().flatten() {
-            if let Some(kind) = catalog.item(id).reserve_kind() {
-                carried[kind.definition().index] = true;
-            }
-        }
+        let kinds = game
+            .weapons(player, catalog)
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, id)| catalog.item(id).reserve_kind());
         let mut merged = game.ammo(player);
-        for kind in AmmoKind::ALL {
-            let index = kind.definition().index;
-            if !carried[index] {
-                merged[index] = merged[index].max(previous[index].min(catalog.ammo_max(kind)));
-            }
-        }
+        inventory_mod::remote_state::restore_uncarried_reserve(
+            &mut merged,
+            &previous,
+            kinds,
+            catalog,
+        );
         game.restore(player, merged);
         hooks.changed(player);
         self.reserve = None;
@@ -875,6 +890,14 @@ impl Session {
         self.actions = actions::Actions::default();
         self.chapter_start = self.inventory.to_text();
         let _ = self.save();
+    }
+
+    fn archive(mut self) -> Option<(PathBuf, Self)> {
+        let _ = self.save();
+        self.actions = actions::Actions::default();
+        self.reserve = None;
+        self.death = None;
+        Some((self.file.clone()?, self))
     }
 }
 
@@ -972,25 +995,27 @@ impl Host {
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
-        self.reload.stop()?;
-        self.combat.stop()?;
-        self.pickups.stop()?;
+        let mut result = self
+            .reload
+            .stop()
+            .and(self.combat.stop())
+            .and(self.pickups.stop());
         self.director_reset();
         self.pings.reset(&self.game, self.hooks.as_ref());
         self.clear_infection(true);
         if let Some(infection) = &mut self.infection {
-            infection.stop()?;
+            result = result.and(infection.stop());
         }
         self.clear_actions();
-        self.actions.stop()?;
+        result = result.and(self.actions.stop());
         self.reset_movement(true);
         if let Some(ammo) = &mut self.ammo {
-            ammo.stop()?;
+            result = result.and(ammo.stop());
         }
         if let Some(hooks) = &mut self.hooks {
-            hooks.stop()?;
+            result = result.and(hooks.stop());
         }
-        Ok(())
+        result
     }
 
     pub fn active(&self) -> bool {
@@ -1143,18 +1168,6 @@ impl Host {
         {
             return false;
         }
-        let ping = (command == "inv_ping").then(|| self.ping(player));
-        let spawn = command
-            .strip_prefix("inv_spawn ")
-            .map(|name| self.debug_spawn(player, name));
-        let command = if command == "inv_infect" {
-            self.infect(player);
-            "inv_sync"
-        } else if ping.is_some() || spawn.is_some() {
-            "inv_sync"
-        } else {
-            command
-        };
         let Some(hooks) = &self.hooks else {
             return false;
         };
@@ -1174,6 +1187,23 @@ impl Host {
         if identity.as_deref() == Some("BOT") {
             return false;
         }
+        let (command, notice) = match command.split_once(' ').unwrap_or((command, "")) {
+            ("inv_ping", _) => ("inv_sync", Some(self.ping(player))),
+            ("inv_spawn", name) => ("inv_sync", Some(self.debug_spawn(player, name))),
+            ("inv_infect", _) => {
+                self.infect(player);
+                ("inv_sync", None)
+            }
+            _ => (command, None),
+        };
+        if !self.guests.contains_key(&user) {
+            // A reconnect can send inv_sync before the next frame notices the
+            // old connection. Archive it before looking up the Steam save.
+            self.archive_disconnected_guests();
+        }
+        let Some(hooks) = &self.hooks else {
+            return false;
+        };
         let limits = Limits {
             max_weight: self.effective.max_weight(self.limits.max_weight),
             ..self.limits
@@ -1213,7 +1243,7 @@ impl Host {
                 .session
                 .restore_equipment(&self.game, player, &mut self.cans, hooks);
         }
-        if let Some(notice) = ping.or(spawn) {
+        if let Some(notice) = notice {
             guest.session.notice = notice;
         }
         finish_death(
@@ -1282,6 +1312,19 @@ impl Host {
                 }
                 Event::PlayerTransitioned(user) => {
                     self.transitioned_players.insert(user);
+                }
+                Event::PlayerActivated(user) => {
+                    // The listen host is spawned directly into the next map.
+                    // It activates after equipping, without a takeover event.
+                    if !self.dedicated
+                        && !self.transition
+                        && self.local.carry_ammo.is_some()
+                        && let Some(player) = self.game.host()
+                        && native::word(player + 0x28).and_then(|edict| hooks.user(edict as usize))
+                            == Some(user)
+                    {
+                        self.transitioned_players.insert(user);
+                    }
                 }
                 Event::RoundStart => {
                     if !self.transition {
@@ -1369,8 +1412,8 @@ impl Host {
         }
     }
 
-    // The engine raises player_transitioned after it has installed that user's
-    // replacement weapon entities. On reconnect the event can precede inv_sync.
+    // A restore or listen-host activation is remembered until the survivor
+    // and their new weapon entities are available in the destination round.
     fn restore_transitioned_players(&mut self) {
         let Some(hooks) = &self.hooks else { return };
         if self.transition || self.transitioned_players.is_empty() {
@@ -1399,6 +1442,7 @@ impl Host {
 
     pub fn tick(&mut self) {
         self.events();
+        self.archive_disconnected_guests();
         self.restore_transitioned_players();
         self.cans.prune(&self.game);
         self.reserve_frame();
@@ -1426,7 +1470,6 @@ impl Host {
         if let Some(ammo) = &mut self.ammo {
             ammo.place_due(&self.game, hooks, &self.effective.ammo_piles);
         }
-        let mut disconnected = Vec::new();
         for (&user, guest) in &mut self.guests {
             if hooks.user(guest.edict) == Some(user) {
                 finish_death(
@@ -1437,19 +1480,6 @@ impl Host {
                     self.ammo.as_mut().map(|ammo| (ammo, hooks)),
                     guest.player,
                 );
-            } else {
-                disconnected.push(user);
-            }
-        }
-        for user in disconnected {
-            if let Some(mut guest) = self.guests.remove(&user) {
-                let _ = guest.session.save();
-                guest.session.actions = actions::Actions::default();
-                guest.session.reserve = None;
-                guest.session.death = None;
-                if let Some(file) = &guest.session.file {
-                    self.away.insert(file.clone(), guest.session);
-                }
             }
         }
         if self.next_mutators.is_none_or(|next| Instant::now() >= next) {
@@ -1464,6 +1494,15 @@ impl Host {
                 }
             }
         }
+    }
+
+    fn archive_disconnected_guests(&mut self) {
+        let Some(hooks) = &self.hooks else { return };
+        self.away.extend(
+            self.guests
+                .extract_if(|user, guest| hooks.user(guest.edict) != Some(*user))
+                .filter_map(|(_, guest)| guest.session.archive()),
+        );
     }
 
     fn reserve_frame(&mut self) {
@@ -1500,11 +1539,16 @@ impl Host {
     }
 
     pub fn level_shutdown(&mut self) {
+        self.events();
         self.reset_movement(false);
         let _ = self.local.save();
         self.local.death = None;
+        self.away.extend(
+            self.guests
+                .extract_if(|_, guest| guest.session.file.is_some())
+                .filter_map(|(_, guest)| guest.session.archive()),
+        );
         for guest in self.guests.values_mut() {
-            let _ = guest.session.save();
             guest.session.death = None;
         }
         self.cans.clear();

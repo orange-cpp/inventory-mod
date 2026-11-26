@@ -2,7 +2,7 @@ use std::{
     ffi::{CStr, c_char, c_void},
     io, ptr,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, TryLockError,
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
 };
@@ -19,6 +19,7 @@ use windows_sys::Win32::{
     System::{
         LibraryLoader::{GetProcAddress, LoadLibraryW},
         SystemInformation::GetTickCount64,
+        Threading::GetCurrentThreadId,
     },
 };
 
@@ -54,7 +55,6 @@ static PRESENT: AtomicUsize = AtomicUsize::new(0);
 static RESET: AtomicUsize = AtomicUsize::new(0);
 static LIVE: AtomicBool = AtomicBool::new(false);
 static RETIRING: AtomicBool = AtomicBool::new(false);
-static RETIRED: AtomicBool = AtomicBool::new(false);
 static READY: AtomicU8 = AtomicU8::new(0);
 static DEVICE: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicU8 = AtomicU8::new(0);
@@ -188,7 +188,6 @@ impl Renderer {
             hooked_reset as Reset as usize,
         )?;
         RETIRING.store(false, Ordering::Release);
-        RETIRED.store(false, Ordering::Release);
         LIVE.store(true, Ordering::Release);
         Ok(Self {
             present,
@@ -201,11 +200,28 @@ impl Renderer {
         LIVE.store(false, Ordering::Release);
         self.queue.stop()?;
         RETIRING.store(true, Ordering::Release);
-        if !RETIRED.load(Ordering::Acquire) && RENDER.lock().is_ok_and(|render| render.is_some()) {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "waiting for Direct3D to retire its resources on Present",
-            ));
+        {
+            let mut render = match RENDER.try_lock() {
+                Ok(render) => render,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "waiting for a Direct3D callback to return",
+                    ));
+                }
+            };
+            if let Some(graphics) = render.as_ref() {
+                if graphics.owner_thread != unsafe { GetCurrentThreadId() } {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "waiting for Direct3D to retire its resources on Present",
+                    ));
+                }
+                // In single-threaded mode the window thread owns the device
+                // resources. A minimized window may never present again.
+                *render = None;
+            }
         }
         self.reset.stop()?;
         self.present.stop()?;
@@ -245,6 +261,7 @@ fn game_device_table() -> Option<usize> {
 
 struct Graphics {
     device: IDirect3DDevice9,
+    owner_thread: u32,
     programs: Option<Programs>,
     frame_copy: Option<(u32, u32, D3DFORMAT, IDirect3DTexture9)>,
     saved: Option<IDirect3DStateBlock9>,
@@ -281,6 +298,7 @@ impl Graphics {
         }
         Self {
             device,
+            owner_thread: unsafe { GetCurrentThreadId() },
             programs,
             frame_copy: None,
             saved: None,
@@ -291,18 +309,17 @@ impl Graphics {
     }
 
     fn games_frame(&mut self, frame: Frame, outside_scene: bool) -> bool {
-        let requested = (u8::from(frame.infection.is_some()) * INFECTION)
-            | (u8::from(frame.stamina.is_some()) * STAMINA);
-        if !frame.has_effect()
-            || self.programs.is_none()
-            || READY.load(Ordering::Acquire) & requested == 0
-        {
-            return false;
-        }
         let frame = Frame {
             infection: frame.infection.filter(|_| infection_ready()),
             stamina: frame.stamina.filter(|_| stamina_ready()),
         };
+        if !frame.has_effect() || self.programs.is_none() {
+            return false;
+        }
+        let requested = (u8::from(frame.infection.is_some()) * INFECTION)
+            | (u8::from(frame.stamina.is_some()) * STAMINA);
+        let mut failed = requested;
+        let mut drawn = false;
         let result = (|| -> windows::core::Result<()> {
             let device = &self.device;
             let target = unsafe {
@@ -353,6 +370,7 @@ impl Graphics {
             let work = (|| -> windows::core::Result<()> {
                 unsafe { configure_draw(device, w, h) }?;
                 if let Some((effect, shader)) = frame.stamina.zip(programs.stamina.as_ref()) {
+                    failed = STAMINA;
                     unsafe {
                         pass(
                             device,
@@ -364,8 +382,10 @@ impl Graphics {
                             effect.params,
                         )
                     }?;
+                    drawn = true;
                 }
                 if let Some((effect, shader)) = frame.infection.zip(programs.infection.as_ref()) {
+                    failed = INFECTION;
                     unsafe {
                         pass(
                             device,
@@ -377,27 +397,32 @@ impl Graphics {
                             effect.params,
                         )
                     }?;
+                    drawn = true;
                 }
                 Ok(())
             })();
-            let _ = unsafe { state.Apply() };
-            if started {
-                let _ = unsafe { device.EndScene() };
+            let restore = unsafe { state.Apply() };
+            let finish = if started {
+                unsafe { device.EndScene() }
+            } else {
+                Ok(())
+            };
+            if restore.is_err() || finish.is_err() {
+                failed = requested;
             }
-            work
+            work.and(restore).and(finish)
         })();
         if let Err(error) = result {
-            // A lost device or unsupported render target may reject a frame copy.
-            // Invalidate the state on Reset and let the game continue presenting.
+            // Shared setup failures affect all pass requests. A shader or copy
+            // failure during a pass leaves the other effect available.
             self.saved = None;
-            READY.fetch_and(!requested, Ordering::AcqRel);
+            READY.fetch_and(!failed, Ordering::AcqRel);
             if !self.warned {
                 self.warned = true;
                 crate::client::log(&format!("Direct3D screen-effects pass failed ({error})"));
             }
-            return false;
         }
-        true
+        drawn
     }
 }
 
@@ -609,51 +634,54 @@ unsafe extern "system" fn hooked_present(
 ) -> i32 {
     let original = PRESENT.load(Ordering::Acquire);
     let _ = std::panic::catch_unwind(|| {
-        if let Ok(mut render) = RENDER.lock() {
-            if RETIRING.load(Ordering::Acquire) {
-                *render = None;
-                RETIRED.store(true, Ordering::Release);
-                return;
-            }
-            if !LIVE.load(Ordering::Acquire) {
-                return;
-            }
-            let Some(device) = (unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }) else {
-                return;
-            };
+        let mut render = RENDER.lock().unwrap_or_else(|error| error.into_inner());
+        if RETIRING.load(Ordering::Acquire) {
             if render
                 .as_ref()
-                .is_some_and(|render| render.device.as_raw() != device.as_raw())
+                .is_some_and(|graphics| graphics.device.as_raw() == device)
             {
-                return;
+                *render = None;
             }
-            let render = render.get_or_insert_with(|| Graphics::new(device.clone()));
-            DEVICE.store(true, Ordering::Release);
-            let existing = DONE.swap(0, Ordering::AcqRel);
-            let frame = current();
-            let fallback = FALLBACK.lock().ok().and_then(|frame| frame.clone());
-            for layer in [
-                Layer::BeforeGameHud,
-                Layer::BeforeInventory,
-                Layer::AfterInventory,
-            ] {
-                if let Some(drawing) = &fallback {
-                    let list = match layer {
-                        Layer::BeforeGameHud => None,
-                        Layer::BeforeInventory => Some(&drawing.hud),
-                        Layer::AfterInventory => Some(&drawing.inventory),
-                    };
-                    if let Some(list) = list
-                        && let Err(error) = render.painter.draw(&render.device, list)
-                        && !render.warned_fallback
-                    {
-                        render.warned_fallback = true;
-                        crate::client::log(&format!("Direct3D HUD fallback failed ({error})"));
-                    }
+            return;
+        }
+        if !LIVE.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(device) = (unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }) else {
+            return;
+        };
+        if render
+            .as_ref()
+            .is_some_and(|render| render.device.as_raw() != device.as_raw())
+        {
+            return;
+        }
+        let render = render.get_or_insert_with(|| Graphics::new(device.clone()));
+        DEVICE.store(true, Ordering::Release);
+        let existing = DONE.swap(0, Ordering::AcqRel);
+        let frame = current();
+        let fallback = FALLBACK.lock().ok().and_then(|frame| frame.clone());
+        for layer in [
+            Layer::BeforeGameHud,
+            Layer::BeforeInventory,
+            Layer::AfterInventory,
+        ] {
+            if let Some(drawing) = &fallback {
+                let list = match layer {
+                    Layer::BeforeGameHud => None,
+                    Layer::BeforeInventory => Some(&drawing.hud),
+                    Layer::AfterInventory => Some(&drawing.inventory),
+                };
+                if let Some(list) = list
+                    && let Err(error) = render.painter.draw(&render.device, list)
+                    && !render.warned_fallback
+                {
+                    render.warned_fallback = true;
+                    crate::client::log(&format!("Direct3D HUD fallback failed ({error})"));
                 }
-                if existing & layer.bit() == 0 {
-                    render.games_frame(frame.for_layer(layer), true);
-                }
+            }
+            if existing & layer.bit() == 0 {
+                render.games_frame(frame.for_layer(layer), true);
             }
         }
     });

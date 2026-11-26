@@ -126,3 +126,29 @@ fn patch_model(model: &[u8], kind: &str) -> io::Result<Vec<u8>> {
     data[at..at + new.len()].copy_from_slice(new.as_bytes());
     Ok(data)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_texture_rejects_ammo_pack() {
+        let missing = std::env::temp_dir().join(format!(
+            "inventory-mod-missing-textures-{}",
+            std::process::id()
+        ));
+        let mask = vtf::encode(&image::RgbaImage::from_pixel(4, 4, image::Rgba([255; 4]))).unwrap();
+        let error = files(&missing, |name| {
+            Ok(if name.ends_with(".vtf") {
+                mask.clone()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+}

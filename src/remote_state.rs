@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use crate::{
-    inventory::{Inventory, Limits, WeaponState},
-    items::{Catalog, ItemId},
+    inventory::{Inventory, Limits, WeaponState, melee_script_name},
+    items::{AmmoKind, Catalog, ItemId},
 };
 
 pub const NATIVE_SLOTS: usize = 6;
@@ -24,6 +24,36 @@ pub struct CarriedCondition {
     pub melee: String,
     pub wear: i32,
     pub spent: i32,
+}
+
+impl CarriedCondition {
+    pub fn matches_weapon(&self, classname: &str, melee: &str) -> bool {
+        self.classname == classname
+            && (classname != "weapon_melee"
+                || melee_script_name(&self.melee)
+                    .zip(melee_script_name(melee))
+                    .is_some_and(|(saved, current)| saved.eq_ignore_ascii_case(current)))
+    }
+}
+
+/// Source restores the reserve for equipped weapons itself. Replenish only
+/// the ammo types that it omitted and preserve rounds already in those pools.
+pub fn restore_uncarried_reserve(
+    current: &mut [i32; 32],
+    previous: &[i32; 32],
+    weapons: impl Iterator<Item = AmmoKind>,
+    catalog: &Catalog,
+) {
+    let mut carried = [false; 32];
+    for kind in weapons {
+        carried[kind.definition().index] = true;
+    }
+    for kind in AmmoKind::ALL {
+        let index = kind.definition().index;
+        if !carried[index] {
+            current[index] = current[index].max(previous[index].min(catalog.ammo_max(kind)));
+        }
+    }
 }
 
 pub fn reconcile_native_inventory(

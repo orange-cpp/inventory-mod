@@ -127,8 +127,12 @@ pub fn linux(repo: &Path, plugin: &Path, output: &Path) -> Result<()> {
     })
 }
 
-fn check_windows_binary(file: &mut File, name: &str, dll: bool) -> io::Result<()> {
-    use std::io::{Read, Seek, SeekFrom};
+fn check_windows_binary(
+    file: &mut (impl io::Read + io::Seek),
+    name: &str,
+    dll: bool,
+) -> io::Result<()> {
+    use std::io::SeekFrom;
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -205,4 +209,35 @@ fn write_zip(file: File, repo: &Path, release: &Path, game: Option<&Path>) -> Re
     }
     zip.finish()?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn windows_package_checks_architecture_and_binary_kind() {
+        let mut header = [0_u8; 90];
+        header[..2].copy_from_slice(b"MZ");
+        header[60] = 64;
+        header[64..68].copy_from_slice(b"PE\0\0");
+        header[68..70].copy_from_slice(&0x014c_u16.to_le_bytes());
+        header[86..88].copy_from_slice(&0x2002_u16.to_le_bytes());
+        header[88..90].copy_from_slice(&0x010b_u16.to_le_bytes());
+
+        let mut dll = Cursor::new(header);
+        check_windows_binary(&mut dll, "mod.dll", true).unwrap();
+        assert_eq!(dll.position(), 0);
+        assert!(check_windows_binary(&mut Cursor::new(header), "launcher.exe", false).is_err());
+
+        header[68..70].copy_from_slice(&0x8664_u16.to_le_bytes());
+        header[88..90].copy_from_slice(&0x020b_u16.to_le_bytes());
+        assert_eq!(
+            check_windows_binary(&mut Cursor::new(header), "mod.dll", true)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+        );
+    }
 }

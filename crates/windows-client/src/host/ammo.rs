@@ -123,9 +123,9 @@ impl Ammo {
             return position;
         }
         key(game, probe, c"origin", &position_string(position));
-        if !game.dispatch_spawn(probe) {
+        let Some((probe, _)) = game.dispatch_spawn(probe) else {
             return position;
-        }
+        };
         let landed = unsafe { floor(address(probe), 0x0200_400b, ptr::null_mut()) };
         let at = if landed == 1 {
             Vector::read(probe + ENTITY_ORIGIN).unwrap_or(position)
@@ -140,15 +140,15 @@ impl Ammo {
         if pile.rounds <= 0 {
             return false;
         }
-        self.piles
-            .retain(|&handle, _| game.resolve(handle).is_some());
         let position = pile.position;
         let close = |a: Vector, b: Vector, distance: f32| {
             let delta = a.difference(b);
             delta.z.abs() < 72.0 && delta.x * delta.x + delta.y * delta.y < distance * distance
         };
-        self.piles
-            .retain(|&handle, _| game.resolve(handle).is_some());
+        self.piles.retain(|&handle, _| {
+            game.resolve(handle)
+                .is_some_and(|entity| game.is_live_entity(entity))
+        });
         if !pile.map
             && let Some(close_pack) = self.piles.values_mut().find(|existing| {
                 !existing.map
@@ -217,10 +217,7 @@ impl Ammo {
                 ..at
             }),
         );
-        if !game.dispatch_spawn(probe) {
-            return false;
-        }
-        let Some(handle) = handle(game, probe) else {
+        let Some((_, handle)) = game.dispatch_spawn(probe) else {
             return false;
         };
         pile.position = at;
@@ -329,6 +326,9 @@ impl Ammo {
             inventory,
             bot,
         } = context;
+        if !game.is_live_entity(pile) {
+            return true;
+        }
         let Some(handle) = handle(game, pile) else {
             return false;
         };
