@@ -60,7 +60,9 @@ jobs:
           # Wait for any child process created when SteamCMD updates itself.
           $steamArgs = '+@ShutdownOnFailedCommand 1 +@NoPromptForPassword 1 +force_install_dir "{0}" +login anonymous +app_update 222860 +quit' -f $gameDir
           $steam = Start-Process -FilePath (Join-Path $steamDir 'steamcmd.exe') -WorkingDirectory $steamDir -ArgumentList $steamArgs -WindowStyle Hidden -Wait -PassThru
-          if ($steam.ExitCode -ne 0 -or
+          $manifest = Get-Content (Join-Path $gameDir 'steamapps/appmanifest_222860.acf') -Raw -ErrorAction SilentlyContinue
+          # The launcher can exit 7 after handing off to the updated SteamCMD.
+          if ($steam.ExitCode -notin 0, 7 -or $manifest -notmatch '"StateFlags"\s+"4"' -or
               -not (Test-Path (Join-Path $gameDir 'update/pak01_dir.vpk')) -or
               -not (Test-Path (Join-Path $gameDir 'left4dead2/pak01_dir.vpk'))) {
             Get-Content (Join-Path $steamDir 'logs/content_log.txt') -Tail 40 -ErrorAction SilentlyContinue
