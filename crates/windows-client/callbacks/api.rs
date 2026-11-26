@@ -18,4 +18,5 @@ pub struct Api {
     pub disconnect: extern "system" fn(Method, usize) -> bool,
     pub new_task: extern "system" fn(u32, extern "system" fn(u32)) -> *const c_void,
     pub retire_task: unsafe extern "system" fn(*const c_void) -> bool,
+    pub retain_for_queue: unsafe extern "system" fn(*const c_void),
 }

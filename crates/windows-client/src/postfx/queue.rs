@@ -152,12 +152,18 @@ pub fn schedule(layer: Layer) {
             });
             if let Some(method) = method {
                 let enqueue = unsafe { std::mem::transmute::<usize, QueueFunctor>(method) };
-                // The queue takes its own reference inside enqueue. Keep the owner
-                // until that handoff completes, including during shutdown.
+                // The wrapper balances its own temporary AddRef/Release.
+                // Transfer a separate reference for the queued call.
                 if let Ok(tasks) = TASKS.lock() {
                     let task = tasks[layer as usize];
-                    if task != 0 {
-                        unsafe { enqueue(queue, ptr::with_exposed_provenance(task)) };
+                    if task != 0
+                        && let Ok(api) = resident::api()
+                    {
+                        let task = ptr::with_exposed_provenance(task);
+                        unsafe {
+                            (api.retain_for_queue)(task);
+                            enqueue(queue, task);
+                        }
                     }
                 }
             }

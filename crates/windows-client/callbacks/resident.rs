@@ -101,6 +101,8 @@ extern "system" fn disconnect(kind: Method, client: usize) -> bool {
 #[repr(C)]
 struct Task {
     methods: &'static TaskMethods,
+    // CFunctor::m_nUserID belongs to Source, independently of reference counting.
+    user_id: u32,
     references: AtomicUsize,
     layer: u32,
     client: RwLock<Option<extern "system" fn(u32)>>,
@@ -144,6 +146,7 @@ static METHODS: TaskMethods = TaskMethods {
 extern "system" fn new_task(layer: u32, client: extern "system" fn(u32)) -> *const c_void {
     Box::into_raw(Box::new(Task {
         methods: &METHODS,
+        user_id: 0,
         references: AtomicUsize::new(1),
         layer,
         client: RwLock::new(Some(client)),
@@ -163,11 +166,16 @@ unsafe extern "system" fn retire_task(task: *const c_void) -> bool {
     true
 }
 
+unsafe extern "system" fn retain_for_queue(task: *const c_void) {
+    unsafe { retain(task.cast()) };
+}
+
 static API: Api = Api {
     connect,
     disconnect,
     new_task,
     retire_task,
+    retain_for_queue,
 };
 #[unsafe(no_mangle)]
 pub extern "system" fn inventory_callbacks_v1() -> &'static Api {

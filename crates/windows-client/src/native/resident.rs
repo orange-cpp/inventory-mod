@@ -73,6 +73,11 @@ pub fn api() -> io::Result<&'static Api> {
     if let Some(api) = API.get() {
         return Ok(api);
     }
+    static INITIALIZING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = INITIALIZING.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(api) = API.get() {
+        return Ok(api);
+    }
     let folder = std::env::var_os("LOCALAPPDATA")
         .map_or_else(std::env::temp_dir, PathBuf::from)
         .join("Inventory Mod")
@@ -253,7 +258,9 @@ mod tests {
             let task = (api.new_task)(2, draw);
             let methods = unsafe { &**task.cast::<*const TestMethods>() };
             unsafe {
-                assert_eq!((methods.retain)(task), 2);
+                (api.retain_for_queue)(task);
+                assert_eq!((methods.retain)(task), 3);
+                assert_eq!((methods.release)(task), 2);
                 if execute {
                     (methods.invoke)(task);
                 }
