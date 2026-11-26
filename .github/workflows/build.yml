@@ -1,0 +1,142 @@
+name: Build and package
+
+on:
+  workflow_call:
+    inputs:
+      include_addons:
+        description: Generate the Windows add-ons from the dedicated server's game files
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x86
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: true
+
+      - name: Locate the Visual Studio toolchain
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vcvars = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Auxiliary\Build\vcvarsall.bat'
+          if (-not $vcvars) { throw 'Visual Studio x86 tools were not found' }
+          "VCVARSALL=$vcvars" >> $env:GITHUB_ENV
+
+      - name: Configure, build, and test Release
+        shell: cmd
+        run: |
+          call "%VCVARSALL%" x86 || exit /b 1
+          set "VCPKG_ROOT=%VCPKG_INSTALLATION_ROOT%"
+          cmake --preset x86-Release || exit /b 1
+          cmake --build --preset Release || exit /b 1
+          ctest --test-dir build/x86-Release --output-on-failure --no-tests=error || exit /b 1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: inputs.include_addons
+        with:
+          python-version: '3.12'
+
+      - name: Download game files for the add-ons
+        if: inputs.include_addons
+        shell: pwsh
+        timeout-minutes: 35
+        run: |
+          python -m pip install Pillow==12.3.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $steamDir = Join-Path $env:RUNNER_TEMP 'steamcmd'
+          $gameDir = Join-Path $env:RUNNER_TEMP 'l4d2-server'
+          $zip = Join-Path $env:RUNNER_TEMP 'steamcmd.zip'
+          Invoke-WebRequest 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $steamDir
+
+          $steamCmd = Join-Path $steamDir 'steamcmd.exe'
+          $steamArgs = '+@ShutdownOnFailedCommand 1 +@NoPromptForPassword 1 +@sSteamCmdForcePlatformType windows +force_install_dir "{0}" +login anonymous +app_info_update 1 +app_info_print 222860 +app_update 222860 +quit' -f $gameDir
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Installing the dedicated server with SteamCMD (attempt $attempt)"
+            # Wait for SteamCMD's self-update child process. The launcher can exit 7 after handing off.
+            $steam = Start-Process -FilePath $steamCmd -WorkingDirectory $steamDir -ArgumentList $steamArgs -WindowStyle Hidden -Wait -PassThru
+            $manifest = Get-Content (Join-Path $gameDir 'steamapps/appmanifest_222860.acf') -Raw -ErrorAction SilentlyContinue
+            if ($steam.ExitCode -in 0, 7 -and $manifest -match '"StateFlags"\s+"4"' -and
+                (Test-Path (Join-Path $gameDir 'update/pak01_dir.vpk')) -and
+                (Test-Path (Join-Path $gameDir 'left4dead2/pak01_dir.vpk'))) {
+              "L4D2_GAME_DIR=$gameDir" >> $env:GITHUB_ENV
+              exit 0
+            }
+            Get-Content (Join-Path $steamDir 'logs/content_log.txt') -Tail 25 -ErrorAction SilentlyContinue
+            if ($attempt -lt 3) { Start-Sleep -Seconds 10 }
+          }
+          throw "SteamCMD could not install the dedicated server (exit $($steam.ExitCode))"
+
+      - name: Package the player ZIP
+        shell: pwsh
+        env:
+          INCLUDE_ADDONS: ${{ inputs.include_addons }}
+        run: |
+          ./tools/make_dist.ps1 -SkipBuild -SkipTests -ArchiveName inventory-mod-windows-x86.zip `
+            -SkipAddons:($env:INCLUDE_ADDONS -ne 'true') -GameDir $env:L4D2_GAME_DIR
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: inventory-mod-windows-x86
+          path: dist/inventory-mod-windows-x86.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  linux:
+    name: Linux dedicated server x86
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the x86 toolchain and Source SDK
+        shell: bash
+        env:
+          SDK_REVISION: ee978cde412bb8720453f1f89e5748ec1449a4b3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-multilib ninja-build
+          git init "$RUNNER_TEMP/hl2sdk-l4d2"
+          git -C "$RUNNER_TEMP/hl2sdk-l4d2" fetch --depth 1 https://github.com/alliedmodders/hl2sdk.git "$SDK_REVISION"
+          git -C "$RUNNER_TEMP/hl2sdk-l4d2" checkout --detach FETCH_HEAD
+          # GCC 11 rejects the template argument list on this constructor in C++20.
+          sed -i 's/CAutoLockT<MUTEX_TYPE>( const CAutoLockT/CAutoLockT( const CAutoLockT/' \
+            "$RUNNER_TEMP/hl2sdk-l4d2/public/tier0/threadtools.h"
+
+      - name: Configure, build, and test Release
+        shell: bash
+        run: |
+          cmake -S . -B build/linux-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-m32 \
+            -DINVENTORY_LINUX_SERVER=ON -DINVENTORY_L4D2_SDK_DIR="$RUNNER_TEMP/hl2sdk-l4d2"
+          cmake --build build/linux-x86
+          ctest --test-dir build/linux-x86 --output-on-failure --no-tests=error
+
+      - name: Package the dedicated server archive
+        shell: bash
+        run: |
+          package="$RUNNER_TEMP/linux-package"
+          install -Dm755 build/linux-x86/inventory_mod_server.so "$package/left4dead2/addons/inventory_mod_server.so"
+          install -Dm644 inventory_mod.example.toml "$package/left4dead2/addons/inventory_mod/inventory_mod.example.toml"
+          install -Dm644 build/linux-x86/_deps/tomlplusplus-src/LICENSE "$package/tomlplusplus-LICENSE.txt"
+          mkdir -p dist
+          tar -czf dist/inventory-mod-linux-x86.tar.gz -C "$package" left4dead2 tomlplusplus-LICENSE.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: inventory-mod-linux-x86
+          path: dist/inventory-mod-linux-x86.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

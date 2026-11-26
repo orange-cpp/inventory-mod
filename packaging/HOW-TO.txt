@@ -7,8 +7,9 @@ What is in this folder
   load-mod.bat                runs the injector for you
   inventory_mod.example.toml  rules (box count, weight limit, item weights), for whoever hosts
   inventory_mod_screamer.jpg  the infection's screamer picture
-  addons\                     the mod's addons, which the mod loads from there (keep the folder next to the DLL):
+  addons\                     included in full releases (keep the folder next to the DLL):
     inventory_mod_rounds.vpk  the ammo pack of each round type
+    inventory_mod_menu.vpk    the Options > Inventory Mod page
 
 
 1. Start the game in insecure mode (important)

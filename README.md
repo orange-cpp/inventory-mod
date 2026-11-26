@@ -2,7 +2,7 @@
 
 An inventory system for Left 4 Dead 2, as a DLL loaded into `left4dead2.exe`. The HUD (boxes, ammo counter, stamina
 bar, melee ring, radial wheel) is drawn by the game itself, with its VGUI surface, fonts and icons; the inventory window
-(I) uses the [imgui-nullcore](../imgui-nullcore) look, drawn over the game by hooking `IDirect3DDevice9::Present`. The inventory
+(I) uses the [imgui-nullcore](third_party/imgui-nullcore/UPSTREAM.md) look, drawn over the game by hooking `IDirect3DDevice9::Present`. The inventory
 talks to the game's own functions (found by reverse engineering, see [docs/game-notes.md](docs/game-notes.md)).
 
 L4D2 is a **32-bit** process, so everything here is built for x86.
@@ -362,9 +362,9 @@ build.bat Release inventory_mod
 
 `build.bat` uses the Visual Studio 18 toolchain (vcvarsall x86, its bundled CMake, Ninja and vcpkg). Libraries come
 from vcpkg in manifest mode ([vcpkg.json](vcpkg.json), triplet `x86-windows-static`, pinned by `builtin-baseline`):
-MinHook and toml++; `VCPKG_ROOT` picks another vcpkg. ImGui 1.92.8 is fetched by CMake, since imgui-nullcore builds
-against its sources; imgui-nullcore is taken from the sibling folder (`-DINVENTORY_NULLCORE_DIR=...` to change). A
-build folder configured before vcpkg needs a fresh configure (delete `build\x86-Release\CMakeCache.txt`).
+MinHook and toml++. `VCPKG_ROOT` picks another vcpkg. CMake fetches ImGui 1.92.8 and builds it with the pinned
+C++ snapshot in `third_party/imgui-nullcore`. Set `INVENTORY_NULLCORE_DIR` in CMake to use a different checkout.
+If an existing CMake cache still points at the old sibling checkout, clear that cache entry to use the bundled copy.
 
 Outputs in `out\Release`: `inventory_mod.dll`, `injector.exe`, `inventory_tests.exe` (the inventory model's tests).
 
@@ -381,6 +381,8 @@ SDK headers. The commands below fetch the tested SDK revision.
 git init ../hl2sdk-l4d2
 git -C ../hl2sdk-l4d2 fetch --depth 1 https://github.com/alliedmodders/hl2sdk.git ee978cde412bb8720453f1f89e5748ec1449a4b3
 git -C ../hl2sdk-l4d2 checkout --detach FETCH_HEAD
+# Fix the SDK's copy constructor declaration for GCC 11 in C++20 mode.
+sed -i 's/CAutoLockT<MUTEX_TYPE>( const CAutoLockT/CAutoLockT( const CAutoLockT/' ../hl2sdk-l4d2/public/tier0/threadtools.h
 cmake -S . -B build/linux-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-m32 \
   -DINVENTORY_LINUX_SERVER=ON -DINVENTORY_L4D2_SDK_DIR="$PWD/../hl2sdk-l4d2"
 cmake --build build/linux-x86
@@ -409,16 +411,27 @@ and durability display.
 
 ## Release
 
+The **CI** workflow builds, tests and uploads a Windows x86 ZIP and a Linux x86 dedicated server tarball for pull
+requests into `main` and pushes to `main`. The Windows CI package contains the binaries, rules and player guide.
+
+The **Release** workflow also generates both Windows add-ons using the dedicated server's SteamCMD download.
+Packaging changes trigger this check on pull requests. Run it manually from the Actions tab for an on-demand build.
+Push a version tag such as `v0.1.0` to publish both archives and `SHA256SUMS.txt` after both builds and tests pass.
+Tags with a suffix such as `v0.1.0-rc.1` publish as prereleases. The Linux tarball can be unpacked at the dedicated
+server root and loaded as described in [Linux dedicated server](#linux-dedicated-server).
+
+For a local Windows release, run the following commands.
+
 ```
 make_dist.bat                # build, test, then dist\inventory-mod and dist\inventory-mod-<date>.zip
 make_dist.bat -SkipBuild     # the DLL already built (e.g. while the game has it loaded)
+make_dist.bat -SkipAddons    # package the binaries without needing the game installed
 ```
 
-[tools/make_dist.ps1](tools/make_dist.ps1) runs `build.bat Release` and the tests (it stops on a failure, or when the
-game has the DLL loaded: unload it with `Ctrl+End` first), builds the addon into the release, and puts together
-`inventory_mod.dll`, `injector.exe`, `load-mod.bat` and `HOW-TO.txt` (from [packaging](packaging), the players'
-instructions), `inventory_mod.example.toml`, `inventory_mod_screamer.jpg` and `addons\inventory_mod_rounds.vpk`, then
-zips the folder. `dist` is not in git.
+[tools/make_dist.ps1](tools/make_dist.ps1) runs `build.bat Release` and the tests. Unload the DLL with `Ctrl+End`
+before rebuilding if the game is running. The script packages the DLL, injector, launcher, player guide, sample
+rules, screamer image and both add-ons. Pass `-GameDir` with a game or dedicated server installation path if Steam
+installed it outside the default location. Packages are written to `dist`.
 
 ## Run
 
